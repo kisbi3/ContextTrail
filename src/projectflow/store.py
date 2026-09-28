@@ -12,6 +12,9 @@ from typing import Any, Iterator
 from .model import SourceRecord, empty_graph
 from .util import FlowError, dumps, merge_focus, now, private_dir
 
+# Conservative floor for SQLite's per-statement bound variable limit (999).
+_SQL_VARIABLES = 900
+
 
 class Store:
     """Short transactions only. No DB write transaction is held across an AI call."""
@@ -187,14 +190,25 @@ class Store:
                  "dependencies": json.loads(row["dependencies"]),
                  "result": json.loads(row["result"]) if row["result"] is not None else None} for row in rows]
 
+    # The `cache_key` column is vestigial and nothing reads it. Extraction reuse
+    # is decided in Engine._extract_unit from `routing_signature` and
+    # `context_digest` inside the stored result. Two call sites used to compute
+    # the column from different formulas and never read either back, so the
+    # parameter is gone and callers cannot pass a value that goes nowhere. Rows
+    # written by earlier versions keep whatever they stored, and the named-column
+    # INSERT leaves those in place. The column itself stays: dropping it needs a
+    # schema migration, and an unread nullable column costs nothing.
     def save_unit(self, unit_id: str, sources: list[str], dependencies: dict[str, str], status: str,
-                  result: dict | None = None, cache_key: str | None = None) -> None:
+                  result: dict | None = None) -> None:
         with self.connection() as db, db:
-            db.execute("""INSERT INTO work_units VALUES (?,?,?,?,?,?,?)
+            # Columns are named rather than positional so the vestigial
+            # cache_key column can stay in the schema without being written.
+            db.execute("""INSERT INTO work_units (id,sources,dependencies,status,result,updated_at)
+                VALUES (?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET sources=excluded.sources,dependencies=excluded.dependencies,
-                status=excluded.status,result=excluded.result,cache_key=excluded.cache_key,updated_at=excluded.updated_at""",
+                status=excluded.status,result=excluded.result,updated_at=excluded.updated_at""",
                 (unit_id, dumps(sources), dumps(dependencies), status,
-                 dumps(result) if result is not None else None, cache_key, now()))
+                 dumps(result) if result is not None else None, now()))
 
     def evidence(self, evidence_id: str) -> dict | None:
         with self.connection() as db:
@@ -202,11 +216,30 @@ class Store:
             return json.loads(row[0]) if row else None
 
     def evidence_many(self, ids: list[str]) -> dict[str, dict]:
-        result = {}
-        for evidence_id in set(ids):
-            item = self.evidence(evidence_id)
-            if item:
-                result[evidence_id] = item
+        """Fetch many evidence items in one query.
+
+        A Harness is built twice per work unit and collects every evidence id in
+        the graph, so calling `evidence` per id meant thousands of connection
+        open/close cycles per unit: 3.7s for 4,000 items on this machine, which
+        grew with the graph. Chunked below, 0.02s. SQLite caps bound variables
+        per statement, so the id list is sent in batches.
+        """
+        wanted = sorted({i for i in ids if isinstance(i, str)})
+        if not wanted:
+            return {}
+        result: dict[str, dict] = {}
+        with self.connection() as db:
+            for start in range(0, len(wanted), _SQL_VARIABLES - 10):
+                batch = wanted[start:start + _SQL_VARIABLES - 10]
+                marks = ",".join("?" * len(batch))
+                for row in db.execute(
+                        f"SELECT id, data FROM evidence_items WHERE id IN ({marks})", batch):
+                    # Same contract as the per-id read this replaced: a row that
+                    # decodes to a falsey value is not reported, so callers that
+                    # treat a missing key as "no evidence" keep doing so.
+                    item = json.loads(row[1])
+                    if item:
+                        result[row[0]] = item
         return result
 
     def publish(self, graph: dict, unit_ids: list[str], processed: dict[str, str], evidence: dict[str, dict],

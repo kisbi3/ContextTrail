@@ -21,7 +21,7 @@ from langsmith import traceable, tracing_context
 
 from projectflow.analysis import (AnalysisConfig, Engine, IdAliases, PreparedExtraction,
                                   PreparedIntegration, _incomplete_input, _rehydrate,
-                                  build_task, prompt, review_signal_items, REVIEW_SIGNALS)
+                                  build_task, review_signal_items, REVIEW_SIGNALS)
 from projectflow.analysis import link_request_turns as analysis_link_request_turns
 from projectflow.analysis import calibration, call_cap, plan_summary
 from projectflow.demo import FixtureRunner, create_demo
@@ -33,7 +33,7 @@ from projectflow.runners.cli_runner import CLIRunner
 from projectflow.routing import RunnerPool
 from projectflow.schema import DELTA_SCHEMA, EXTRACT_SCHEMA, EvidenceValidator
 from projectflow.store import Store
-from projectflow.util import Cancelled, FlowError, digest, ident, private_dir
+from projectflow.util import Cancelled, FlowError, ident, private_dir
 
 
 ROOT = Path(tempfile.gettempdir()) / "contexttrail-studio-fixtures"
@@ -731,10 +731,12 @@ def publish_result(state: StudioState) -> StudioState:
     else:
         graph.pop("out_of_order_events", None)
     cached = {**state["extracted"]["cached"], "evidence": state["evidence"]}
+    # This call site used to compute a cache_key from a different formula than
+    # Engine._extract_unit did. Neither was ever read back, so both were removed
+    # rather than reconciled; reuse keys off routing_signature and context_digest
+    # inside `cached`.
     store.save_unit(state["unit_id"], state["source_ids"], state["dependencies"],
-                    "extracted", cached,
-                    digest([state["dependencies"], engine._routing_signature(), prompt("integrate"),
-                            DELTA_SCHEMA, engine.config.integrate_model]))
+                    "extracted", cached)
     pool = {r.source_id: r for r in snapshot.records}
     published = store.publish(graph, [state["unit_id"]],
                               {i: pool[i].content_hash for i in state["source_ids"]},

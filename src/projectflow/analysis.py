@@ -1538,8 +1538,9 @@ class Engine:
                   "extraction_graph_version": graph["version"], "read_manifest": h.read_manifest,
                   "context_selection": context.get("context_selection", {}),
                   "context_digest": current_context_digest}
-        key = digest([signature, h.dependencies, digest(context)])
-        self.store.save_unit(unit["id"], unit["sources"], h.dependencies, "extracted", cached, key)
+        # Reuse is decided above from `routing_signature` and `context_digest`,
+        # both already inside `cached`; the vestigial cache_key column is not used.
+        self.store.save_unit(unit["id"], unit["sources"], h.dependencies, "extracted", cached)
         return {"output": output, "evidence": validator.evidence, "dependencies": h.dependencies,
                 "cached": cached, "reused": reuse}
 

@@ -1,8 +1,10 @@
 import copy
+import re
 import xml.etree.ElementTree as ET
 import pytest
 from projectflow.demo import CASES, FixtureRunner
-from projectflow.render import mermaid, parse_safe_mermaid, terminal_graph, svg
+from projectflow.render import (MAX_DETOUR_LANES, mermaid, parse_safe_mermaid,
+                                 terminal_graph, svg)
 from projectflow.util import FlowError, safe_text, cell_slice
 
 
@@ -74,3 +76,60 @@ def test_long_evidence_shows_cited_focus_with_context():
     assert evidence_excerpt({"quote": quote}) is None
     assert evidence_excerpt({"quote": "short CITED", "focus": [[6, 11]]}) is None
     assert evidence_excerpt({"quote": quote, "focus": [[900, 5000]]}) is None
+
+
+def _chain_with_back_edges(count, nodes=30):
+    """A forward chain plus `count` edges that jump back to the first node.
+
+    Those back edges are what force the long-edge detour gutter: they skip
+    ranks, so they cannot be drawn as the one-layer S-curve.
+    """
+    events = [{'id': f'ev_{i}', 'kind': 'action', 'title': f'작업 {i}', 'summary': '',
+               'status': 'applied', 'created_at': '2026-01-01T00:00:00Z'}
+              for i in range(nodes)]
+    edges = [{'id': f'e{i}', 'from_event_id': f'ev_{i}', 'to_event_id': f'ev_{i + 1}',
+              'relation': 'follows', 'basis': 'structural', 'active': True,
+              'rationale': 'x', 'evidence_ids': []} for i in range(nodes - 1)]
+    for i in range(count):
+        edges.append({'id': f'b{i}', 'from_event_id': f'ev_{nodes - 1 - i}', 'to_event_id': 'ev_0',
+                      'relation': 'motivates', 'basis': 'inferred', 'active': True,
+                      'rationale': 'x', 'evidence_ids': []})
+    return {'events': events, 'edges': edges, 'version': 1, 'analysis_status': 'partial'}
+
+
+# A detour path is the only shape written as "V.. H<lane> V.. H<target> V..".
+_DETOUR_LANE = re.compile(r'<path d="M[\d.]+ [\d.]+ V-?[\d.]+ H([\d.]+) V-?[\d.]+ H')
+
+
+def test_detour_lanes_never_overlap():
+    """Regression: lanes were `detour_index % 10` while the canvas grew for 10,
+    so the 11th detour reused lane 0 and two lines were drawn on top of each
+    other. Overlapping paths read as one wrong line, so this asserts distinct
+    lanes rather than trusting a modulo bound.
+    """
+    for back in (1, 10, 11, MAX_DETOUR_LANES):
+        lanes = _DETOUR_LANE.findall(svg(_chain_with_back_edges(back)))
+        assert len(lanes) == len(set(lanes)), f"{back} back edges reused a lane"
+        assert len(lanes) == min(back, MAX_DETOUR_LANES)
+
+
+def test_detours_beyond_the_lane_budget_are_stated_not_dropped_silently():
+    graph = _chain_with_back_edges(MAX_DETOUR_LANES + 6)
+    out = svg(graph)
+    assert len(_DETOUR_LANE.findall(out)) == MAX_DETOUR_LANES
+    assert f'긴 연결 6개는 선이 겹쳐 생략했습니다' in out
+
+
+def test_detour_lane_count_drives_the_canvas_width():
+    """The canvas must grow for every lane actually drawn, or lines fall off it."""
+    narrow = svg(_chain_with_back_edges(3))
+    wide = svg(_chain_with_back_edges(20))
+    width = lambda s: int(re.search(r'width="(\d+)"', s).group(1))
+    assert width(wide) > width(narrow)
+    lanes = _DETOUR_LANE.findall(wide)
+    assert max(float(x) for x in lanes) < width(wide)
+
+
+def test_under_the_budget_draws_every_connection():
+    out = svg(_chain_with_back_edges(5))
+    assert '생략했습니다' not in out

@@ -25,7 +25,7 @@
 | 실제 긴 세션 경계 probe | 13개 모두 바로 앞 기록 조회 가능 |
 | 원본 ZIP 무결성 | 처리 전후 SHA-256 동일 |
 
-현재 원시 pytest 출력은 [tests-a4.txt](artifacts/tests-a4.txt), [tests-a4.xml](artifacts/tests-a4.xml) — 350 passed. 위 표의 150은 그 이전 a3 시점의 값이라 이 파일과 숫자가 다르다. 추가 검사 코드는 `tests/test_prelive_audit.py`에 있다. a3 최초 실패 출력 묶음은 정리했다. Python 3.13의 이 컨테이너에서 확인했으며 모든 지원 Python/OS/CLI 조합을 시험한 것은 아니다.
+현재 원시 pytest 출력은 [tests-a4.txt](artifacts/tests-a4.txt), [tests-a4.xml](artifacts/tests-a4.xml) — 363 passed. 위 표의 150은 그 이전 a3 시점의 값이라 이 파일과 숫자가 다르다. 추가 검사 코드는 `tests/test_prelive_audit.py`에 있다. a3 최초 실패 출력 묶음은 정리했다. Python 3.13의 이 컨테이너에서 확인했으며 모든 지원 Python/OS/CLI 조합을 시험한 것은 아니다.
 
 ## 3. 발견하고 수정한 문제
 

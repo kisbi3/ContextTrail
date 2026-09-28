@@ -4,7 +4,7 @@
 
 ## 현재 상태
 
-- 자동 테스트 350개 통과(2026-09-28 갱신): `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 <venv>/bin/python -m pytest -q`.
+- 자동 테스트 363개 통과(2026-09-28 갱신): `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 <venv>/bin/python -m pytest -q`.
   `scripts/test.sh`는 2026-09-28에 `import pytest, projectflow`가 되는 인터프리터를 고르도록 고쳤다 — langgraph가 없는 python을 고르는 문제가 있었다.
   CI: `.github/workflows/test.yml`이 ubuntu·macOS × Python 3.11–3.13에서 같은 명령을 돌린다.
 - 2026-09-27에 넣은 것은 실제 평가를 한 번 거쳤고 품질이 떨어졌다(1절): 영어 프롬프트, 출력 언어, 사건 선별과 제목·요약 규칙, 추론 수준 medium, 읽기 결과 짧게, 다음 단위 미리 추출, 실패 호출 줄이기(답변받은 사용자 목표, 짧은 인용, 통과한 후보 살리기).

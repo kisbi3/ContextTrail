@@ -188,10 +188,16 @@ class CLIRunner:
         home = Path(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")).expanduser()
         return home / ".credentials.json", "/pf-home/.claude/.credentials.json"
 
+    def _require_executable(self) -> str:
+        """`assert` is stripped under `python -O`, turning a clear failure into a TypeError."""
+        if not self.executable:
+            raise FlowError(f"{self.name} CLI 실행 파일을 찾지 못했습니다. "
+                            f"PATH를 확인하거나 해당 CLI를 설치하세요.")
+        return self.executable
+
     def _runtime_roots(self) -> list[Path]:
-        assert self.executable
+        executable = Path(self._require_executable()).resolve()
         roots: list[Path] = []
-        executable = Path(self.executable).resolve()
         # System runtime roots are already mounted below. Node/nvm native CLI installs
         # require their version directory, not the user's whole home.
         for candidate in [executable, Path(shutil.which("node") or "/usr/bin/node").resolve()]:
@@ -212,8 +218,7 @@ class CLIRunner:
         return list(dict.fromkeys(roots))
 
     def _macos_runtime_roots(self) -> list[Path]:
-        assert self.executable
-        executable = Path(self.executable).resolve()
+        executable = Path(self._require_executable()).resolve()
         parts = executable.parts
         if "node_modules" in parts:
             index = parts.index("node_modules")
@@ -399,15 +404,15 @@ class CLIRunner:
                 "live_model_test": False}
 
     def build_cli(self, schema: dict, *, work: str = "/work", output: str = "/out") -> list[str]:
-        assert self.executable
+        executable = self._require_executable()
         if self.name == "claude":
-            command = [self.executable, "--restricted", "--safe-mode", "--print", "--output-format", "json",
+            command = [executable, "--restricted", "--safe-mode", "--print", "--output-format", "json",
                        "--tools", "", "--disallowedTools", "mcp__*", "--strict-mcp-config",
                        "--mcp-config", f"{work}/mcp.json", "--setting-sources", "",
                        "--settings", f"{work}/settings.json", "--no-session-persistence",
                        "--system-prompt-file", f"{work}/system.md", "--json-schema", dumps(schema)]
         else:
-            command = [self.executable]
+            command = [executable]
             risky = {"shell_tool", "unified_exec", "shell_snapshot", "js_repl", "apply_patch_freeform",
                      "multi_agent", "hooks", "codex_hooks", "remote_plugin", "plugins", "apps", "memories",
                      "skill_mcp_dependency_install", "image_generation", "browser", "goals"}

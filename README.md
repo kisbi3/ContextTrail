@@ -11,7 +11,7 @@
 | Reproducibility | **Not characterized.** The same `installer` fixture scored 8/18 and 16/18 on consecutive runs, but the two runs used different integration effort (medium vs high), so that pair is confounded and does not isolate run-to-run variance | No same-configuration repeat has been run |
 | Platform validation | macOS only. `sandbox-exec` + Codex smoke + one live segment | **Linux/bubblewrap: 0 live runs**, despite being the stated primary platform |
 | Tool-denial tests | One macOS canary escape probe at startup ([SECURITY](docs/SECURITY.md)) | `~`, `.ssh`, project tree, and real credential write-blocking all unverified |
-| Tests | **350** in the suite, all passing ([results](docs/reports/artifacts/tests-a4.txt) · [state](docs/reports/artifacts/self-analysis-a4.json)); CI runs them on Linux + macOS × Python 3.11–3.13 | 0 real model calls in CI, by design |
+| Tests | **363** in the suite, all passing ([results](docs/reports/artifacts/tests-a4.txt) · [state](docs/reports/artifacts/self-analysis-a4.json)); CI runs them on Linux + macOS × Python 3.11–3.13 | 0 real model calls in CI, by design |
 
 Evidence behind these numbers is published, not summarized: [design & evaluation history](docs/DECISIONS.md) · [pre-live audit](docs/reports/PRELIVE_AUDIT.md) · [real-CLI evaluation](docs/reports/TWO_CALL_LIVE_EVAL_2026-09-25.md) · [a3 validation](docs/reports/A3_VALIDATION.md) · [what is left](docs/plans/NEXT_STEPS.md).
 

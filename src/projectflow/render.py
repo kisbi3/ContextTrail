@@ -23,6 +23,11 @@ PROVIDER = {"codex": "Codex", "claude": "Claude Code", "git": "Git"}
 # One glyph per tone so a terminal list reads at a glance, with ASCII fallbacks.
 MARK = {"ok": "✓", "warn": "!", "fail": "✗", "plain": "·"}
 ASCII_MARK = {"ok": "v", "warn": "!", "fail": "x", "plain": "-"}
+# Detour lanes past this count would overlap if wrapped, so extras are reported
+# as a count instead of drawn on top of each other. Verified: wrapping made the
+# 11th detour reuse lane 0.
+MAX_DETOUR_LANES = 24
+DETOUR_LANE_PITCH = 18
 
 
 def verification_links(graph: dict) -> tuple[dict[str, list[dict]], set[str]]:
@@ -388,9 +393,11 @@ def svg(graph: dict) -> str:
     detours = [e for e in graph["edges"] if e["active"] and
                positions[e["to_event_id"]][1] - positions[e["from_event_id"]][1] != 164]
     gutter_start = width + 12
+    drawn_detours = detours[:MAX_DETOUR_LANES]
     if detours:
-        width += 120 + min(len(detours), 10) * 18
+        width += 120 + len(drawn_detours) * DETOUR_LANE_PITCH
     detour_index = 0
+    undrawn = 0
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="프로젝트 흐름" font-family="Noto Sans CJK KR, Noto Sans KR, Malgun Gothic, Apple SD Gothic Neo, sans-serif">',
            '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#778593"/></marker></defs>']
     for edge in graph["edges"]:
@@ -407,7 +414,12 @@ def svg(graph: dict) -> str:
         else:
             # Skipping an intermediate rank must NOT draw through an unrelated node.
             # Route long/backward edges outside all boxes, retaining the exact target.
-            lane = gutter_start + (detour_index % 10) * 18
+            if detour_index >= MAX_DETOUR_LANES:
+                # Lanes are finite. Overlapping paths read as one wrong line, which
+                # is worse than a stated omission, so count the rest instead.
+                undrawn += 1
+                continue
+            lane = gutter_start + detour_index * DETOUR_LANE_PITCH
             detour_index += 1
             top, bottom = y1 + 20, y2 - 20
             path = f"M{x1} {y1} V{top} H{lane} V{bottom} H{x2} V{y2 - 5}"
@@ -431,6 +443,10 @@ def svg(graph: dict) -> str:
         out.append(f'<text x="16" y="92" fill="#617686" font-size="11">{html.escape(status)}</text></g>')
     if not graph["events"]:
         out.append('<text x="32" y="70" fill="#617686" font-size="18">저장된 사건이 없습니다.</text>')
+    if undrawn:
+        out.append(f'<text x="32" y="{height - 14}" fill="#8a97a4" font-size="11">'
+                   f'긴 연결 {undrawn}개는 선이 겹쳐 생략했습니다. 전체 목록은 '
+                   f'text 출력이나 브라우저 보기를 사용하세요.</text>')
     return "\n".join(out) + "</svg>"
 
 

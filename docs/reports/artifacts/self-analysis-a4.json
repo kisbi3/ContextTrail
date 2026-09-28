@@ -20,6 +20,6 @@
   "graph_events": 17,
   "graph_edges": 15,
   "graph_analysis_status": "partial",
-  "tests_in_suite": 350,
+  "tests_in_suite": 363,
   "suite_command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q"
 }
