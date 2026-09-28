@@ -1,0 +1,122 @@
+{
+  "all_cwd_in_scope": true,
+  "archive_integrity": {
+    "06.zip": {
+      "after": "7f9a964e173676dff1b15c50fbd2e170da3699d335a7db37186ab94c297fd969",
+      "before": "7f9a964e173676dff1b15c50fbd2e170da3699d335a7db37186ab94c297fd969",
+      "jsonl_files": 116
+    },
+    "-home-<user>-dev-<project>.zip": {
+      "after": "36771dc4e9294cff1898fd546318e158aff8279413e3262a86bfccf4ca32f419",
+      "before": "36771dc4e9294cff1898fd546318e158aff8279413e3262a86bfccf4ca32f419",
+      "jsonl_files": 40
+    }
+  },
+  "elapsed_seconds": 14.252,
+  "limitations": [],
+  "llm_calls": 0,
+  "long_session_boundary_probes": [
+    {
+      "context_record_count": 4,
+      "immediately_previous_discoverable": true,
+      "provider": "codex",
+      "records": 283,
+      "session_id": "<session-0>"
+    },
+    {
+      "context_record_count": 4,
+      "immediately_previous_discoverable": true,
+      "provider": "codex",
+      "records": 271,
+      "session_id": "<session-1>"
+    },
+    {
+      "context_record_count": 4,
+      "immediately_previous_discoverable": true,
+      "provider": "codex",
+      "records": 4276,
+      "session_id": "<session-2>"
+    },
+    {
+      "context_record_count": 4,
+      "immediately_previous_discoverable": true,
+      "provider": "codex",
+      "records": 3371,
+      "session_id": "<session-3>"
+    },
+    {
+      "context_record_count": 4,
+      "immediately_previous_discoverable": true,
+      "provider": "codex",
+      "records": 692,
+      "session_id": "<session-4>"
+    },
+    {
+      "context_record_count": 4,
+      "immediately_previous_discoverable": true,
+      "provider": "codex",
+      "records": 287,
+      "session_id": "<session-5>"
+    },
+    {
+      "context_record_count": 4,
+      "immediately_previous_discoverable": true,
+      "provider": "codex",
+      "records": 405,
+      "session_id": "<session-6>"
+    },
+    {
+      "context_record_count": 4,
+      "immediately_previous_discoverable": true,
+      "provider": "codex",
+      "records": 860,
+      "session_id": "<session-7>"
+    },
+    {
+      "context_record_count": 4,
+      "immediately_previous_discoverable": true,
+      "provider": "codex",
+      "records": 2140,
+      "session_id": "<session-8>"
+    },
+    {
+      "context_record_count": 4,
+      "immediately_previous_discoverable": true,
+      "provider": "codex",
+      "records": 1886,
+      "session_id": "<session-9>"
+    },
+    {
+      "context_record_count": 4,
+      "immediately_previous_discoverable": true,
+      "provider": "claude",
+      "records": 5768,
+      "session_id": "<session-10>"
+    },
+    {
+      "context_record_count": 4,
+      "immediately_previous_discoverable": true,
+      "provider": "claude",
+      "records": 7637,
+      "session_id": "<session-11>"
+    },
+    {
+      "context_record_count": 4,
+      "immediately_previous_discoverable": true,
+      "provider": "claude",
+      "records": 1897,
+      "session_id": "<session-12>"
+    }
+  ],
+  "mode": "local_parse_and_context_contracts_NO_LLM",
+  "normalization_body_fingerprint": "0b775745c06579e87db393193eeb7bba88d921463e57c4771d4078593eb2398f",
+  "note": "Git checkout was not uploaded; the archived source paths are scoped explicitly, not guessed as linked worktrees. Native metadata hash is v2.",
+  "scope": "/home/<user>/dev/<project>",
+  "selected_by_provider": {
+    "claude": 16227,
+    "codex": 15521
+  },
+  "selected_records": 31748,
+  "source_snapshot_id": "<snapshot-id>",
+  "unique_source_ids": true
+}

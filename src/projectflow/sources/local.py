@@ -15,6 +15,105 @@ MAX_LINE_BYTES = 4 * 1024 * 1024
 # Keep a single prompt-visible record below Engine.record_chars (48k by default).
 SEGMENT_CHARS = 32_000
 
+# Record types that carry no decision narrative, so dropping them loses nothing.
+# Keyed by the literal string the parser would otherwise add to `unknown`.
+# Adding an entry here is a claim: "this cannot change a reconstructed goal,
+# attempt, failure, or decision". tests/test_source_coverage.py enforces the
+# other half — any record type that is neither parsed nor listed here fails CI.
+IGNORED_NO_ANALYSIS_VALUE = {
+    # Billing only. ContextTrail tracks analysis cost in its own LLM call ledger
+    # (store.llm_calls), not from transcript usage records.
+    "token_usage_record": "과금 정보 — 분석 비용은 로컬 호출 ledger에서 따로 집계한다",
+    # Session configuration (model, provider, approval policy, cwd). Describes
+    # how the coding agent was configured, not what it decided or why.
+    "event_msg:thread_settings_applied": "세션 설정 — 의사결정 서사에 기여하지 않는다",
+    # Claude telemetry and session metadata. Counts verified against real logs.
+    "system:turn_duration": "턴 소요 시간·메시지 수 — 성능 지표",
+    "system:away_summary": "자리 비움 요약 — 의사결정과 무관",
+    # `system:compact_boundary` is deliberately absent: it becomes a record
+    # below and marks a work-unit boundary, so it is not "unread".
+    "file-history-snapshot": "파일 백업 스냅샷 목록 — 서사 없음",
+    "last-prompt": "현재 리프 UUID 포인터 — 내용 없음",
+    "custom-title": "사용자가 붙인 세션 제목",
+    "ai-title": "Claude가 붙인 세션 제목 — 사건 제목은 추출 단계에서 새로 만든다",
+    "atis-latch": "빈 상태 비트",
+    "mode": "세션 모드(normal 등)",
+    "permission-mode": "세션 권한 모드(auto 등)",
+    "agent-name": "세션 표시 이름",
+    # Carries ownerAccountUuid / ownerOrganizationId. Ignored, and deliberately
+    # never forwarded: this is an account identifier, not project history.
+    "bridge-session": "계정 식별자(소유 계정·조직 ID)를 담고 있어 분석 대상이 아니다",
+    "bridge-config": "브리지 설정",
+    "pr-link": "PR 링크 메타데이터",
+    "progress": "진행 표시",
+    "tag": "태그",
+}
+
+# Record types that may hold decision-relevant context but are not parsed yet.
+# These are surfaced once per scan so a gap is visible instead of silent.
+KNOWN_UNPARSED = {
+    # `world_state` carries `agents_md.text`, i.e. a verbatim copy of the
+    # project instructions the coding agent was operating under. "Why was it
+    # done this way" frequently answers "because AGENTS.md said so", so this is
+    # analysis-relevant. It is not parsed because it duplicates the repository
+    # file and re-sends it on every turn; deciding how to model that is open.
+    "world_state": "프로젝트 지시문(AGENTS.md 등) 전문을 담고 있으나 아직 분석에 보내지 않는다",
+    # 473 enqueue records across 22 of 40 real Claude files, each carrying the
+    # full text of a prompt the person queued. If a queued prompt never also
+    # appears as a `user` record, the request is invisible to the graph.
+    "queue-operation": "사용자가 대기시킨 요청문 전문을 담고 있으나 아직 분석에 보내지 않는다",
+    # 91 records in real logs. A stop hook that ran checks is direct evidence of
+    # verification, and a failing one is direct evidence of a failed attempt.
+    "system:stop_hook_summary": "stop hook 실행 결과 요약 — 검증/실패 근거가 될 수 있으나 아직 분석에 보내지 않는다",
+    # 14 records in real logs; records which slash command a person invoked,
+    # which is part of intent.
+    "system:local_command": "사용자가 실행한 슬래시 명령 — 의도 일부이나 아직 분석에 보내지 않는다",
+}
+
+
+def _classify_unknown(record_type: str, unknown: set[str], deferred: dict[str, int]) -> None:
+    """Route a record type we do not parse into one of three explicit buckets.
+
+    Without this, "the model emitted a billing field we do not use" and "the
+    model emitted a field we cannot read" produce the same warning, so a real
+    upstream format change hides inside routine noise.
+    """
+    if record_type in IGNORED_NO_ANALYSIS_VALUE:
+        return
+    if record_type in KNOWN_UNPARSED:
+        deferred[record_type] = deferred.get(record_type, 0) + 1
+        return
+    unknown.add(record_type)
+
+
+def _flush_deferred(deferred: dict[str, int], warnings: list[str], label: str, path: Path) -> None:
+    """Report unparsed-but-maybe-relevant types once per file, with a count.
+
+    The message carries a path that distinguishes files, not just the basename:
+    `collect_logs` deduplicates identical warning strings across files, so two
+    same-named files in different session directories would otherwise collapse
+    into a single warning and one file's gap would go unreported.
+    """
+    for record_type, count in sorted(deferred.items()):
+        warnings.append(f"{label} 분석 미전달 레코드 {record_type} {count}개 ({_warning_path(path)}): "
+                        f"{KNOWN_UNPARSED[record_type]}")
+
+
+def _warning_path(path: Path) -> str:
+    """A label that is unique per file, so dedup cannot merge two files.
+
+    Session directories nest by date, so the immediate parent is not enough:
+    `sessions/2026/01/01/rollout.jsonl` and `sessions/2026/02/01/rollout.jsonl`
+    share both basename and parent name. A short digest of the full path keeps
+    the message short while staying unique.
+    """
+    label = path.name
+    if path.parent.name:
+        label = f"{path.parent.name}/{label}"
+    if path.parent.parent.name and path.parent.parent.name not in ("", ".", ".."):
+        label = f"{path.parent.parent.name}/{label}"
+    return f"{label}#{digest(str(path))[:8]}"
+
 
 def _jsonl(path: Path) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
     """Freeze the initial byte length. Only newline-terminated records are committed."""
@@ -171,6 +270,8 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
     inherited = metadata.get("subagent_history_start_ordinal") if metadata.get("forked_from_id") else None
     inherited = inherited if isinstance(inherited, int) and inherited > 0 else 0
     skipped, seen_items = 0, False
+    unknown: set[str] = set()
+    deferred: dict[str, int] = {}
     if not metadata.get("id"):
         warnings.append(f"Codex native session ID 없음; 파일 이름 기반 식별: {path.name}")
     if metadata.get("source") == "projectflow" or (cwd and Path(cwd).name.startswith("projectflow-run-")):
@@ -197,17 +298,20 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
             continue
         if record_type == "event_msg":
             event_type = payload.get("type")
-            if event_type == "thread_goal_updated" and selected(cwd):
-                goal = payload.get("goal") if isinstance(payload.get("goal"), dict) else {}
-                objective = goal.get("objective")
-                if objective:
-                    result.append(_record("codex", session, f"line:{line}:thread-goal", "metadata",
-                        f"Thread goal: {objective}\nStatus: {goal.get('status', 'unknown')}", path, line, raw_hash, cwd, scope,
-                        recorded_at=data.get("timestamp"), lineage={**lineage, "kind": "thread_goal"}, git=context_git))
+            if event_type == "thread_goal_updated":
+                # Recognised, so it must never fall through to the classifier.
+                # An out-of-scope goal is a scope decision, not a parse gap.
+                if selected(cwd):
+                    goal = payload.get("goal") if isinstance(payload.get("goal"), dict) else {}
+                    objective = goal.get("objective")
+                    if objective:
+                        result.append(_record("codex", session, f"line:{line}:thread-goal", "metadata",
+                            f"Thread goal: {objective}\nStatus: {goal.get('status', 'unknown')}", path, line, raw_hash, cwd, scope,
+                            recorded_at=data.get("timestamp"), lineage={**lineage, "kind": "thread_goal"}, git=context_git))
             elif event_type not in {"user_message", "agent_message", "agent_reasoning", "token_count",
                     "task_started", "task_complete", "turn_aborted", "context_compacted", "item_completed",
                     "item_started", "exec_command_begin", "exec_command_end"}:
-                unknown.add("event_msg:" + str(event_type))
+                _classify_unknown("event_msg:" + str(event_type), unknown, deferred)
             continue
         if record_type in {"compacted", "compact"}:
             if not selected(cwd):
@@ -223,7 +327,7 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
                                       lineage={**lineage, "kind": "compaction", "replacement_items": len(payload.get("replacement_history", []))}))
             continue
         if record_type != "response_item":
-            unknown.add(str(record_type))
+            _classify_unknown(str(record_type), unknown, deferred)
             continue
         item_type = payload.get("type")
         seen_items = True
@@ -238,6 +342,9 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
         if item_type == "message":
             role = payload.get("role")
             if role not in {"user", "assistant", "developer"}:
+                # A new role would otherwise vanish: a system or tool message is
+                # not the same as no message, and only the model can weigh it.
+                _classify_unknown("response_item:message:role=" + str(role), unknown, deferred)
                 continue
             # Developer/system context is metadata, not a user decision.
             normalized_role = role if role in {"user", "assistant"} else "metadata"
@@ -305,8 +412,8 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
         warnings.append(f"Codex 경로 귀속 불명확 레코드 {decisions['unattributed']}개 제외: {path.name}")
     if unknown:
         warnings.append(f"Codex 미지원 레코드 {path.name}: {', '.join(sorted(unknown))}")
-    if not any(r.role in {"user", "assistant"} for r in result) and any(
-            d.get("type") == "event_msg" and d.get("payload", {}).get("type") in {"user_message", "agent_message"}
+    _flush_deferred(deferred, warnings, "Codex", path)
+    if not any(r.role in {"user", "assistant"} for r in result) and any(            d.get("type") == "event_msg" and d.get("payload", {}).get("type") in {"user_message", "agent_message"}
             for _, d, _ in rows):
         warnings.append(f"response_item 없는 Codex UI 메시지 형식은 아직 미지원: {path.name}")
     return finish(_segments(result), warnings)
@@ -426,6 +533,7 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
     session = next((d.get("sessionId") for _, d, _ in rows if d.get("sessionId")), path.stem)
     cwd = None
     result, unknown, relevant = [], set(), False
+    deferred: dict[str, int] = {}
     call_cwd: dict[str, str | None] = {}
     is_subagent_file = "subagents" in path.parts or any(bool(d.get("isSidechain")) for _, d, _ in rows)
     if is_subagent_file and not subagent_link:
@@ -443,7 +551,15 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
         if typ in {"file-history-snapshot", "file-history-delta", "queue-operation", "progress", "last-prompt",
                    "custom-title", "ai-title", "atis-latch", "mode", "permission-mode", "bridge-session",
                    "agent-name", "tag", "bridge-config", "pr-link"}:
+            _classify_unknown(str(typ), unknown, deferred)
             continue
+        if typ == "system" and not data.get("isCompactSummary"):
+            # Two shapes below still produce a compaction record and must reach it:
+            # a `compact_boundary` marker (a work-unit boundary) and any system row
+            # carrying summary text. Only rows with neither are unread.
+            if data.get("subtype") != "compact_boundary" and not data.get("summary"):
+                _classify_unknown("system:" + str(data.get("subtype")), unknown, deferred)
+                continue
         if data.get("isCompactSummary"):
             if scope.includes(cwd):
                 message = data.get("message", {})
@@ -470,6 +586,14 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
                     parent_record_id=data.get("parentUuid"), recorded_at=data.get("timestamp"),
                     git={"branch": data["gitBranch"]} if data.get("gitBranch") else {},
                     lineage={**lineage, "kind": "attachment", **attachment_meta}))
+            elif not extracted and "attachment" in data:
+                # An attachment shape we cannot read is a format gap, not an
+                # intentionally skipped file, and it used to vanish silently.
+                # Keyed on presence, not truthiness: `[]`, `""` and `{}` are
+                # malformed too, and a falsey value must not hide that.
+                shape = data["attachment"]
+                name = shape.get("type") if isinstance(shape, dict) else type(shape).__name__
+                _classify_unknown(f"attachment:{name}", unknown, deferred)
             continue
         if typ not in {"user", "assistant"}:
             unknown.add(str(typ))
@@ -551,6 +675,7 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
         return Snapshot([])
     if unknown:
         warnings.append(f"Claude 미지원 레코드 {path.name}: {', '.join(sorted(unknown))}")
+    _flush_deferred(deferred, warnings, "Claude", path)
     return Snapshot(_segments(result), list(dict.fromkeys(warnings)), [manifest] if manifest else [])
 
 

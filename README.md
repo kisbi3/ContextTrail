@@ -1,10 +1,31 @@
-> **⚠️ Development alpha — `0.1.0a4`**  
-> Not a live-CLI-qualified release. Real two-CLI integration and full semantic-reconstruction quality are not yet validated. See [Implementation Status](docs/reports/IMPLEMENTATION_STATUS.md) for verified behavior and remaining limits.
-> A zero-real-model walkthrough is available after installation: `python scripts/prelive_walkthrough.py --output /tmp/pf-prelive-walkthrough`
+> **⚠️ Development alpha — `0.1.0a4`.** Not a live-CLI-qualified release. Below is every number we have actually measured. Nothing on this page is an estimate presented as a result.
+
+## Measured so far
+
+| | Measured | Not yet done |
+| --- | --- | --- |
+| Real model calls | **Codex CLI 8 calls** (`gpt-6-sol`) on this repository's own logs; **20 calls** across the 6 scored fixture runs ([table](docs/plans/NEXT_STEPS.md)) | **Claude Runner: 0 calls.** Used only as a log source |
+| Real analysis scale | 4,199 records → 17 events / 15 edges, published as v2, `partial` ([state](docs/reports/artifacts/self-analysis-a4.json)) | — |
+| Archive parse audit | **156 files** (Claude 40, Codex 116), **31,748 records** selected, `limitations: 0` as of the a4 parser ([audit](docs/reports/artifacts/archive-audit-a4.json) · [report](docs/reports/PRELIVE_AUDIT.md)) | **Stale for this parser.** The record-type split in `sources/local.py` now reports types that audit did not. Re-run needed |
+| Semantic quality | **79/111 expectations met (71%)** across 6 runs of 2 fixtures | Only 1 human-verified WorkUnit (14 records, 27,230 chars) end to end |
+| Reproducibility | **Not characterized.** The same `installer` fixture scored 8/18 and 16/18 on consecutive runs, but the two runs used different integration effort (medium vs high), so that pair is confounded and does not isolate run-to-run variance | No same-configuration repeat has been run |
+| Platform validation | macOS only. `sandbox-exec` + Codex smoke + one live segment | **Linux/bubblewrap: 0 live runs**, despite being the stated primary platform |
+| Tool-denial tests | One macOS canary escape probe at startup ([SECURITY](docs/SECURITY.md)) | `~`, `.ssh`, project tree, and real credential write-blocking all unverified |
+| Tests | **350** in the suite, all passing ([results](docs/reports/artifacts/tests-a4.txt) · [state](docs/reports/artifacts/self-analysis-a4.json)); CI runs them on Linux + macOS × Python 3.11–3.13 | 0 real model calls in CI, by design |
+
+Evidence behind these numbers is published, not summarized: [design & evaluation history](docs/DECISIONS.md) · [pre-live audit](docs/reports/PRELIVE_AUDIT.md) · [real-CLI evaluation](docs/reports/TWO_CALL_LIVE_EVAL_2026-09-25.md) · [a3 validation](docs/reports/A3_VALIDATION.md) · [what is left](docs/plans/NEXT_STEPS.md).
+
+Redaction in those files: real project names, native session UUIDs, source snapshot IDs, and machine-specific absolute paths are replaced with placeholders. What is deliberately **kept** is the aggregate evidence — record and session counts, work-unit counts, token totals, durations, and the archive SHA-256 digests, because a digest is what proves the audit did not modify the archive. The `LICENSE` copyright name is unchanged, and so is the GitHub account in the badge above.
+
+> The quality row is the honest one: extraction is good enough to be useful on a project you remember well, and there is no measurement showing it is stable across repeated runs. Treat a reconstructed flow as a draft to check, not a record.
+
+A zero-real-model walkthrough is available after installation: `python scripts/prelive_walkthrough.py --output /tmp/pf-prelive-walkthrough`
 
 ---
 
 # Project Flow · ContextTrail
+
+[![test](https://github.com/kisbi3/ContextTrail/actions/workflows/test.yml/badge.svg)](https://github.com/kisbi3/ContextTrail/actions/workflows/test.yml)
 
 **Reads local Codex and Claude Code conversation/tool logs and Git changes to reconstruct a project's goals, attempts, failures, and decisions as an evidence-linked flow.**
 
@@ -15,7 +36,7 @@ Version: `0.1.0a4` · 2026-09-23 · Linux / SSH primary, macOS experimental · n
 
 **Additional features:** [model tiering, project filters, and test usage](docs/guides/TIERED_ANALYSIS.md). Before opening the UI, run `project scan .` to review input selection, and `project eval --fixture demo --runner mock --output /tmp/pf-eval` to exercise the execution path without account calls.
 
-**Translations:** [한국어](docs/README.ko.md) · [日本語](docs/README.ja.md)
+**Translations:** Korean and Japanese READMEs are not written yet. All UI strings, CLI help, and validation messages are Korean for now.
 
 ---
 
@@ -327,11 +348,17 @@ The constraint `record_chars ≤ unit_chars < task_chars` must hold. `task_chars
 ## 7. Development and Regression Testing
 
 ```bash
-python -m pip install -e '.[dev]'
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q
+python3 -m venv .venv && .venv/bin/python -m pip install -e '.[dev]'
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 ```
 
+Or simply `scripts/test.sh -q`, which picks the right interpreter. On most current Linux and macOS systems there is no bare `python`, so prefer `python3` or an explicit virtualenv.
+
 This reproducible command prevents unnecessary external pytest plugins from auto-activating. Tests create synthetic logs and Git fixtures in temporary directories; HTTP tests use a loopback port; TUI tests use a PTY. No real AI accounts are called.
+
+**CI runs this suite on Linux and macOS across Python 3.11, 3.12, and 3.13** — see [`.github/workflows/test.yml`](.github/workflows/test.yml). Linux is included because it is the platform README claims as primary; a green badge there is a real signal, not a formality.
+
+The mouse assertion in `tests/test_cli_ui.py` checks the portable invariant — with `--no-mouse` no mouse-reporting enable sequence may appear, and any enable that does appear must have a matching disable before exit — rather than one terminfo-specific escape sequence, so it does not depend on the local terminfo database. A separate test in the same file renders across `xterm-256color`, `screen-256color`, `tmux-256color`, `linux`, and `vt100`.
 
 Structure:
 

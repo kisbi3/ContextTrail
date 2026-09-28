@@ -13,7 +13,7 @@
 실행 명령:
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q --junitxml=docs/reports/artifacts/test-results.xml
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q --junitxml=docs/reports/artifacts/tests-a4.xml
 ```
 
 기존 81개 회귀에 실제 archive에서 발견한 compact summary, replacement_history, tool-search, content attachment, verified subagent lineage, relocated sidecar, long-record fragmentation, binary marker, LLM Ops ledger 사례를 합성 fixture로 고정해 10개 회귀를 추가했다.
@@ -60,4 +60,4 @@ Claude Code 40 JSONL + Codex 116 JSONL, 합계 156개 파일을 읽어 31,748개
 
 100개 이상 사건의 번호 잘림, 특수문자 export 경로 제외, Codex 금지 tool 시작 이벤트의 차단, Runner 인스턴스 재사용 시 호출 집계, 다른 명시적 갱신의 저장 graph TUI 반영, 긴 SVG 연결의 중간 노드 관통을 수정했다. 테스트 실행도 현재 shell의 PYTHONPATH에 의존하지 않도록 PTY 자식 환경을 명시했다. 최종 회귀 실행에서 위 테스트는 모두 통과했다.
 
-원본 JUnit 결과는 [test-results.xml](artifacts/test-results.xml)에 포함했다. 합성 데모의 출력은 `examples/`와 [demo-noop.txt](artifacts/demo-noop.txt)에서 확인할 수 있다.
+원본 JUnit 결과는 [tests-a4.xml](artifacts/tests-a4.xml)에 있다. 이 보고서 본문의 회귀 수치는 a2 시점(2026-09-23) 값이고, 현재 스위트는 350개다 — [tests-a4.txt](artifacts/tests-a4.txt). 합성 데모의 출력은 `examples/`와 [demo-noop.txt](artifacts/demo-noop.txt)에서 확인할 수 있다.

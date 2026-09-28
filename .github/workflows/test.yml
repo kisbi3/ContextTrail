@@ -1,0 +1,54 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux is the stated primary platform in README.md, so it is not optional.
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # Tests build synthetic logs and git fixtures in tmp dirs, drive a real
+      # loopback socket and a real PTY, and make zero model calls. No secrets
+      # and no AI credentials are needed.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      - name: Test
+        env:
+          # Keep unrelated pytest plugins from activating; see AGENTS.md.
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+          LANG: C.UTF-8
+        run: python -m pytest -q --junitxml=pytest-report.xml
+
+      - name: Test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-${{ matrix.os }}-py${{ matrix.python }}
+          path: pytest-report.xml
+          retention-days: 14

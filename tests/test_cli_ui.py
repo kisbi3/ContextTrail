@@ -10,6 +10,16 @@ import sys
 import termios
 import time
 from pathlib import Path
+
+# ncurses picks the mouse protocol from the terminfo entry, so the exact enable
+# sequence differs per terminal: xterm-256color/xterm/vt100 emit none at enable
+# time here, while screen-256color/tmux-256color/linux emit SGR (1006) and X10
+# (1000). Asserting one literal byte sequence made this test pass or fail
+# depending on the local terminfo database rather than on our behaviour.
+MOUSE_ENABLE = (b'\x1b[?1000h', b'\x1b[?1002h', b'\x1b[?1003h',
+                b'\x1b[?1005h', b'\x1b[?1006h', b'\x1b[?1015h')
+MOUSE_DISABLE = (b'\x1b[?1000l', b'\x1b[?1002l', b'\x1b[?1003l',
+                 b'\x1b[?1005l', b'\x1b[?1006l', b'\x1b[?1015l')
 import pytest
 from projectflow.cli import main
 from projectflow.git_context import Scope
@@ -195,11 +205,48 @@ def test_new_keys_mouse_and_korean_quit_in_a_real_terminal(tmp_path, mouse):
         process.wait(timeout=2)
         assert process.returncode==0,output.decode('utf-8','replace')  # ㅂ quit like Q
         assert b'Traceback' not in output
-        assert (b'\x1b[?1000h' in output)==mouse  # click reports only, and none with --no-mouse
+        enabled = [seq for seq in MOUSE_ENABLE if seq in output]
+        if not mouse:
+            # --no-mouse must never turn on reporting, whatever the terminfo offers.
+            assert not enabled, output.decode('utf-8','replace')
+        else:
+            # If this terminfo made us enable reporting, it must also be turned
+            # back off before exit. Not enabling at all is a valid outcome.
+            for seq in enabled:
+                assert seq.replace(b'h', b'l') in output, output.decode('utf-8','replace')
         assert '키 도움말'.encode() in output and "검색 'SQLite'".encode() in output
     finally:
         if process.poll() is None: process.kill();process.wait()
         os.close(master)
+
+
+def test_start_screen_requests_mouse_reporting_only_when_asked(monkeypatch):
+    """The portable half of the mouse contract.
+
+    The PTY test above can only observe what this terminfo chooses to emit, and
+    on xterm-256color ncurses emits no enable sequence at all, so the
+    mouse=True branch there is vacuous. Assert the request directly instead:
+    `_start_screen` must call `curses.mousemask` when mouse is wanted and must
+    not call it when `--no-mouse` was passed.
+    """
+    import curses
+
+    from projectflow import ui
+
+    def screen():
+        class Fake:
+            def keypad(self, flag): return True
+        return Fake()
+
+    for mouse, expected in ((True, True), (False, False)):
+        calls = []
+        monkeypatch.setattr(ui.curses, 'mousemask', lambda *a: calls.append(a) or 0)
+        monkeypatch.setattr(ui.curses, 'mouseinterval', lambda *a: None)
+        monkeypatch.setattr(ui.curses, 'curs_set', lambda *a: None, raising=False)
+        monkeypatch.setattr(ui, '_styles', lambda color: {})
+        ui._start_screen(screen(), color=False, mouse=mouse)
+        assert bool(calls) is expected, f"mouse={mouse} called mousemask {len(calls)} times"
+    assert issubclass(curses.error, Exception)  # the real module is intact
 
 
 def test_no_command_opens_the_current_or_given_folder_without_ai(tmp_path, monkeypatch, capsys):

@@ -33,17 +33,18 @@ id_ed25519
 .aws/
 .config/gcloud/
 
-# Private development notes and real-workspace audit material
+# Stale file-hash list. Nothing reads it and it is no longer accurate.
 /SOURCE_MANIFEST.json
-/docs/DECISIONS.md
+
+# In-progress working plans (rewritten often; not part of the public record)
 /docs/plans/ANALYSIS_IMPROVEMENT_PLAN.md
 /docs/plans/INPUT_QUALITY_PLAN.md
-/docs/plans/NEXT_STEPS.md
 /docs/plans/TWO_CALL_GRAPH_ANALYSIS.md
-/docs/reports/A3_VALIDATION.md
-/docs/reports/PRELIVE_AUDIT.md
-/docs/reports/TWO_CALL_LIVE_EVAL_2026-09-25.md
-/docs/reports/artifacts/archive-audit-a4.json
+
+# Published evidence. These are tracked on purpose: the design/evaluation history,
+# the pre-live audit, the real-CLI evaluation, the archive audit, and the
+# measured-numbers summary are what make the claims in README.md checkable.
+# Real project names and absolute paths are redacted; aggregate counts are kept.
 
 # LangSmith / LangGraph
 .langsmith

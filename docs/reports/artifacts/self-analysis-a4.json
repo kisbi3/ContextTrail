@@ -1,0 +1,25 @@
+{
+  "note": "Local state DB summary for this repository's own dogfood run, plus the current suite size. Counts only: no transcript text, no absolute paths, no identifiers. Does NOT cover the fixture evaluation runs; see docs/plans/NEXT_STEPS.md for those.",
+  "captured_at": "2026-09-28",
+  "scope": "ContextTrail analysing its own repository",
+  "codex_cli_version": "0.157.1",
+  "python": "3.13",
+  "host": "macOS (sandbox-exec). Linux/bubblewrap NOT exercised.",
+  "source_records": 4199,
+  "evidence_items": 37,
+  "sessions": 6,
+  "llm_calls": 8,
+  "llm_call_models": [
+    "gpt-6-sol"
+  ],
+  "work_units_by_status": {
+    "integrated": 2,
+    "parsed": 1
+  },
+  "graph_versions": 2,
+  "graph_events": 17,
+  "graph_edges": 15,
+  "graph_analysis_status": "partial",
+  "tests_in_suite": 350,
+  "suite_command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q"
+}

@@ -9,7 +9,7 @@ This is a Python 3.11+ package under `src/projectflow/`. `analysis.py` coordinat
 - `python -m pip install -e '.[dev]'`: install the package and pytest for local development.
 - `scripts/project demo --path /tmp/projectflow-demo`: create a synthetic demo without a live AI account.
 - `scripts/project view /tmp/projectflow-demo/sample-project`: inspect saved results locally.
-- `scripts/test.sh -q`: run the pytest suite with external pytest plugins disabled. Equivalent: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q`.
+- `scripts/test.sh -q`: run the pytest suite with external pytest plugins disabled. It picks `python` or `python3` automatically; override with the `PYTHON` environment variable. Equivalent: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q`. CI runs the same command on Linux and macOS across Python 3.11-3.13.
 - `python scripts/prelive_walkthrough.py --output /tmp/pf-prelive-walkthrough`: exercise the scripted prelive flow and write artifacts outside the repository.
 
 ## Coding Style & Naming Conventions
