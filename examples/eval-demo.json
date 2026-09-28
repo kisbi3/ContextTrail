@@ -1,0 +1,193 @@
+{
+  "format": "projectflow-eval-v1",
+  "name": "synthetic-storage-revision",
+  "records": [
+    {
+      "source_id": "eval-s0",
+      "provider": "codex",
+      "session_id": "eval-codex",
+      "role": "user",
+      "content": "우선 JSON 파일로 저장하자.",
+      "cwd": "/fixture/project",
+      "worktree_id": "wt_fixture",
+      "tool_call_id": null,
+      "recorded_at": "2026-09-22T10:00:00Z",
+      "locator": {
+        "kind": "frozen_fixture",
+        "line": 1
+      }
+    },
+    {
+      "source_id": "eval-s1",
+      "provider": "codex",
+      "session_id": "eval-codex",
+      "role": "assistant",
+      "content": "SQLite도 검토할 수 있습니다.",
+      "cwd": "/fixture/project",
+      "worktree_id": "wt_fixture",
+      "tool_call_id": null,
+      "recorded_at": "2026-09-22T10:01:00Z",
+      "locator": {
+        "kind": "frozen_fixture",
+        "line": 2
+      }
+    },
+    {
+      "source_id": "eval-s2",
+      "provider": "codex",
+      "session_id": "eval-codex",
+      "role": "tool_result",
+      "content": "JSON 저장 코드 patch 적용 완료.",
+      "cwd": "/fixture/project",
+      "worktree_id": "wt_fixture",
+      "tool_call_id": "eval-call-2",
+      "recorded_at": "2026-09-22T10:02:00Z",
+      "locator": {
+        "kind": "frozen_fixture",
+        "line": 3
+      }
+    },
+    {
+      "source_id": "eval-s3",
+      "provider": "codex",
+      "session_id": "eval-codex",
+      "role": "tool_result",
+      "content": "동시 쓰기 테스트: FAILED — JSONDecodeError",
+      "cwd": "/fixture/project",
+      "worktree_id": "wt_fixture",
+      "tool_call_id": "eval-call-3",
+      "recorded_at": "2026-09-22T10:03:00Z",
+      "locator": {
+        "kind": "frozen_fixture",
+        "line": 4
+      }
+    },
+    {
+      "source_id": "eval-s4",
+      "provider": "claude",
+      "session_id": "eval-claude",
+      "role": "user",
+      "content": "동시 쓰기 때문에 SQLite로 바꾸자.",
+      "cwd": "/fixture/project",
+      "worktree_id": "wt_fixture",
+      "tool_call_id": null,
+      "recorded_at": "2026-09-22T10:04:00Z",
+      "locator": {
+        "kind": "frozen_fixture",
+        "line": 5
+      }
+    },
+    {
+      "source_id": "eval-s5",
+      "provider": "claude",
+      "session_id": "eval-claude",
+      "role": "assistant",
+      "content": "SQLite로 변경했고 테스트도 통과했습니다.",
+      "cwd": "/fixture/project",
+      "worktree_id": "wt_fixture",
+      "tool_call_id": null,
+      "recorded_at": "2026-09-22T10:05:00Z",
+      "locator": {
+        "kind": "frozen_fixture",
+        "line": 6
+      }
+    },
+    {
+      "source_id": "eval-s6",
+      "provider": "claude",
+      "session_id": "eval-claude",
+      "role": "tool_result",
+      "content": "SQLite 동시 쓰기 테스트: 4 passed",
+      "cwd": "/fixture/project",
+      "worktree_id": "wt_fixture",
+      "tool_call_id": "eval-call-6",
+      "recorded_at": "2026-09-22T10:06:00Z",
+      "locator": {
+        "kind": "frozen_fixture",
+        "line": 7
+      }
+    }
+  ],
+  "expectations": {
+    "events": [
+      {
+        "label": "event0",
+        "title_contains": "JSON 저장 채택",
+        "status": "adopted",
+        "kind": "decision",
+        "actor": "user",
+        "source_ids": [
+          "eval-s0"
+        ]
+      },
+      {
+        "label": "event1",
+        "title_contains": "SQLite 대안 제안",
+        "status": "proposed",
+        "kind": "proposal",
+        "actor": "assistant",
+        "source_ids": [
+          "eval-s1"
+        ]
+      },
+      {
+        "label": "event2",
+        "title_contains": "JSON 저장 구현",
+        "status": "reported_complete",
+        "kind": "action",
+        "actor": "tool",
+        "source_ids": [
+          "eval-s2"
+        ]
+      },
+      {
+        "label": "event3",
+        "title_contains": "동시 쓰기 테스트 실패",
+        "status": "observed_failure",
+        "kind": "outcome",
+        "actor": "tool",
+        "source_ids": [
+          "eval-s3"
+        ]
+      },
+      {
+        "label": "event4",
+        "title_contains": "SQLite로 전환 결정",
+        "status": "adopted",
+        "kind": "revision",
+        "actor": "user",
+        "source_ids": [
+          "eval-s4"
+        ]
+      },
+      {
+        "label": "event5",
+        "title_contains": "SQLite 변경 완료 보고",
+        "status": "reported_complete",
+        "kind": "outcome",
+        "actor": "assistant",
+        "source_ids": [
+          "eval-s5"
+        ]
+      },
+      {
+        "label": "event6",
+        "title_contains": "SQLite 동시 쓰기 확인",
+        "status": "observed_success",
+        "kind": "outcome",
+        "actor": "tool",
+        "source_ids": [
+          "eval-s6"
+        ]
+      }
+    ],
+    "relations": [
+      {
+        "from": "event3",
+        "to": "event4",
+        "relation": "motivates"
+      }
+    ]
+  },
+  "notes": "合成 / synthetic fixture. Mock passes do not measure LLM understanding."
+}

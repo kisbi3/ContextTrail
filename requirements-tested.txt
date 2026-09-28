@@ -1,0 +1,3 @@
+# Direct runtime versions used for this delivery. Not a fully transitive lockfile.
+jsonschema==4.26.0
+wcwidth==0.7.0

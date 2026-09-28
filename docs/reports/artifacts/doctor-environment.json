@@ -1,0 +1,18 @@
+[
+  {
+    "auth": "not_verified",
+    "bubblewrap": false,
+    "error": "codex CLI가 PATH에 없습니다. 설치·로그인은 해당 CLI에서 진행하세요.",
+    "installed": false,
+    "live_model_test": "not_run",
+    "runner": "codex"
+  },
+  {
+    "auth": "not_verified",
+    "bubblewrap": false,
+    "error": "claude CLI가 PATH에 없습니다. 설치·로그인은 해당 CLI에서 진행하세요.",
+    "installed": false,
+    "live_model_test": "not_run",
+    "runner": "claude"
+  }
+]

@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "contexttrail_analysis": "./src/projectflow/studio_graph.py:graph"
+  }
+}

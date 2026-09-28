@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "projectflow-contexttrail"
+version = "0.1.0a4"
+description = "Evidence-linked project history from local Codex and Claude Code transcripts"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "Jaesung Kim" }]
+requires-python = ">=3.11"
+dependencies = ["jsonschema>=4.23,<5", "wcwidth>=0.2.13,<1", "langgraph>=1,<2"]
+classifiers = ["Development Status :: 3 - Alpha", "Operating System :: POSIX :: Linux", "Operating System :: MacOS :: MacOS X", "Programming Language :: Python :: 3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+langsmith = ["langsmith>=0.14,<1"]
+studio = ["langgraph-cli[inmem]>=0.4,<1", "langsmith>=0.14,<1",
+          "python-dotenv[cli]>=1,<2"]
+
+[project.scripts]
+project = "projectflow.cli:main"
+projectflow = "projectflow.cli:main"
+contexttrail = "projectflow.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+projectflow = ["prompts/*.md", "assets/*.html", "assets/*.js", "assets/*.css"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra"

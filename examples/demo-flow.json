@@ -1,0 +1,427 @@
+{
+  "evidence": {
+    "evi_35a4c3d6167f45c97f606b7a": {
+      "content_hash": "a1b259c3e043d6fc1b5245d3f5cd84d2bfa77d9d9ababbfba83fce2157242177",
+      "end_line": 1,
+      "id": "evi_35a4c3d6167f45c97f606b7a",
+      "quote": "SQLite도 검토할 수 있습니다.",
+      "quote_hash": "70f389362e4f6353c867856e506305678cecd3e8483e4b8ef23d2f56e6d69970",
+      "source": {
+        "content_hash": "a1b259c3e043d6fc1b5245d3f5cd84d2bfa77d9d9ababbfba83fce2157242177",
+        "cwd": "/mnt/data/pf-build/installed-demo/sample-project",
+        "derivation": "original",
+        "git": {},
+        "locator": {
+          "kind": "jsonl",
+          "line": 3,
+          "path": "/mnt/data/pf-build/installed-demo/fixture-codex/sessions/demo.jsonl",
+          "raw_hash": "d4a6ee6df006a8fa63e76ad4aa3091649f84cb934720eafcf044f0dad7f19c62"
+        },
+        "native_record_id": null,
+        "parent_record_id": null,
+        "provider": "codex",
+        "recorded_at": "2026-09-22T10:01:00Z",
+        "role": "assistant",
+        "session_id": "demo-codex",
+        "source_id": "src_847b527dfd30542c1c6b4e2b",
+        "source_version": "a1b259c3e043d6fc",
+        "tool_call_id": null,
+        "worktree_id": "wt_7b879ac9db8cac380b08473b"
+      },
+      "source_id": "src_847b527dfd30542c1c6b4e2b",
+      "source_version": "a1b259c3e043d6fc",
+      "start_line": 1
+    },
+    "evi_7cfad278ae564a558ef37af6": {
+      "content_hash": "ba249ad6c39b3b87e26db09fc527198d756f9057c5044140ac61247e136cc506",
+      "end_line": 1,
+      "id": "evi_7cfad278ae564a558ef37af6",
+      "quote": "동시 쓰기 때문에 SQLite로 바꾸자.",
+      "quote_hash": "b57e28bb99688b56371118390e5dc06a356ba8b8db582a74249e56febc9184a1",
+      "source": {
+        "content_hash": "ba249ad6c39b3b87e26db09fc527198d756f9057c5044140ac61247e136cc506",
+        "cwd": "/mnt/data/pf-build/installed-demo/sample-project",
+        "derivation": "original",
+        "git": {},
+        "locator": {
+          "kind": "jsonl",
+          "line": 1,
+          "path": "/mnt/data/pf-build/installed-demo/fixture-claude/projects/demo/demo-claude.jsonl",
+          "raw_hash": "65650fa3fbeb2a573d5f1db8e4f09171a6b8e7c2ce63edd5440ca4fabee65f79"
+        },
+        "native_record_id": "demo-record-4",
+        "parent_record_id": null,
+        "provider": "claude",
+        "recorded_at": "2026-09-22T10:04:00Z",
+        "role": "user",
+        "session_id": "demo-claude",
+        "source_id": "src_d5b4116553d00a40e995e14f",
+        "source_version": "ba249ad6c39b3b87",
+        "tool_call_id": null,
+        "worktree_id": "wt_7b879ac9db8cac380b08473b"
+      },
+      "source_id": "src_d5b4116553d00a40e995e14f",
+      "source_version": "ba249ad6c39b3b87",
+      "start_line": 1
+    },
+    "evi_c4532aab5162e8967673bc88": {
+      "content_hash": "404164c2b91a2bd06321ac092e4d7b30dd9c79df319471a26c3a1e2da478e018",
+      "end_line": 1,
+      "id": "evi_c4532aab5162e8967673bc88",
+      "quote": "우선 JSON 파일로 저장하자.",
+      "quote_hash": "3679497bf57aad5272574592a188d0439ed662b97fdfd2170a895fd798f3d2d5",
+      "source": {
+        "content_hash": "404164c2b91a2bd06321ac092e4d7b30dd9c79df319471a26c3a1e2da478e018",
+        "cwd": "/mnt/data/pf-build/installed-demo/sample-project",
+        "derivation": "original",
+        "git": {},
+        "locator": {
+          "kind": "jsonl",
+          "line": 2,
+          "path": "/mnt/data/pf-build/installed-demo/fixture-codex/sessions/demo.jsonl",
+          "raw_hash": "2e5a4fd6b607da642e3ef0421ab5029e0b721f847d8f4e29548daed545554164"
+        },
+        "native_record_id": null,
+        "parent_record_id": null,
+        "provider": "codex",
+        "recorded_at": "2026-09-22T10:00:00Z",
+        "role": "user",
+        "session_id": "demo-codex",
+        "source_id": "src_839ee34c948caf4194f7c8f3",
+        "source_version": "404164c2b91a2bd0",
+        "tool_call_id": null,
+        "worktree_id": "wt_7b879ac9db8cac380b08473b"
+      },
+      "source_id": "src_839ee34c948caf4194f7c8f3",
+      "source_version": "404164c2b91a2bd0",
+      "start_line": 1
+    },
+    "evi_df8d2b3234e4ae931bf687a2": {
+      "content_hash": "30dd49c20c6e60e58b0af40fa6b52f77cd2f7c90b392665243339e0336a89f60",
+      "end_line": 1,
+      "id": "evi_df8d2b3234e4ae931bf687a2",
+      "quote": "SQLite로 변경했고 테스트도 통과했습니다.",
+      "quote_hash": "7a8503287355f1ccfc0e1a3a55630e843eadcea9a5b8ebe1049473b3eafa793c",
+      "source": {
+        "content_hash": "30dd49c20c6e60e58b0af40fa6b52f77cd2f7c90b392665243339e0336a89f60",
+        "cwd": "/mnt/data/pf-build/installed-demo/sample-project",
+        "derivation": "original",
+        "git": {},
+        "locator": {
+          "kind": "jsonl",
+          "line": 2,
+          "path": "/mnt/data/pf-build/installed-demo/fixture-claude/projects/demo/demo-claude.jsonl",
+          "raw_hash": "5c845128649fca7d525d9376b31c55d4454ef5ac5332f06e11f683cfdd62d3a7"
+        },
+        "native_record_id": "demo-record-5",
+        "parent_record_id": null,
+        "provider": "claude",
+        "recorded_at": "2026-09-22T10:05:00Z",
+        "role": "assistant",
+        "session_id": "demo-claude",
+        "source_id": "src_6dd41ced977d266e61f38d37",
+        "source_version": "30dd49c20c6e60e5",
+        "tool_call_id": null,
+        "worktree_id": "wt_7b879ac9db8cac380b08473b"
+      },
+      "source_id": "src_6dd41ced977d266e61f38d37",
+      "source_version": "30dd49c20c6e60e5",
+      "start_line": 1
+    },
+    "evi_e08f83a8bfd14b7666e86406": {
+      "content_hash": "13a2f31883051484463b928152a952e99c17af6a762f2d471eacac0babbd09c9",
+      "end_line": 1,
+      "id": "evi_e08f83a8bfd14b7666e86406",
+      "quote": "JSON 저장 코드 patch 적용 완료.",
+      "quote_hash": "75f72f0fc911fa70678dc692997f9b67d3edf9e4687948dfbf6de9fc4505933e",
+      "source": {
+        "content_hash": "13a2f31883051484463b928152a952e99c17af6a762f2d471eacac0babbd09c9",
+        "cwd": "/mnt/data/pf-build/installed-demo/sample-project",
+        "derivation": "original",
+        "git": {},
+        "locator": {
+          "kind": "jsonl",
+          "line": 4,
+          "path": "/mnt/data/pf-build/installed-demo/fixture-codex/sessions/demo.jsonl",
+          "raw_hash": "d25de41670bc2a842d488bbb833d9e1b19d5233ceb7468b1311878ce728b046d"
+        },
+        "native_record_id": null,
+        "parent_record_id": null,
+        "provider": "codex",
+        "recorded_at": "2026-09-22T10:02:00Z",
+        "role": "tool_result",
+        "session_id": "demo-codex",
+        "source_id": "src_712612d7420ff8ee3702a0f8",
+        "source_version": "13a2f31883051484",
+        "tool_call_id": "demo-call-2",
+        "worktree_id": "wt_7b879ac9db8cac380b08473b"
+      },
+      "source_id": "src_712612d7420ff8ee3702a0f8",
+      "source_version": "13a2f31883051484",
+      "start_line": 1
+    },
+    "evi_f1bc54afd7d7e8edfd2b7b17": {
+      "content_hash": "0541f694f566b8767af34f771afd328570cf70f894b8dbbc25a3b1b4596b2f18",
+      "end_line": 1,
+      "id": "evi_f1bc54afd7d7e8edfd2b7b17",
+      "quote": "동시 쓰기 테스트: FAILED — JSONDecodeError",
+      "quote_hash": "c9aa0e885bd5d94524ff41b4db88d31b2ecc78c01b141f6ebd477cb418581a17",
+      "source": {
+        "content_hash": "0541f694f566b8767af34f771afd328570cf70f894b8dbbc25a3b1b4596b2f18",
+        "cwd": "/mnt/data/pf-build/installed-demo/sample-project",
+        "derivation": "original",
+        "git": {},
+        "locator": {
+          "kind": "jsonl",
+          "line": 5,
+          "path": "/mnt/data/pf-build/installed-demo/fixture-codex/sessions/demo.jsonl",
+          "raw_hash": "d3c534986d220c52befc6435905d5332c019ce3235d6f5eb2fe61aa89479bc17"
+        },
+        "native_record_id": null,
+        "parent_record_id": null,
+        "provider": "codex",
+        "recorded_at": "2026-09-22T10:03:00Z",
+        "role": "tool_result",
+        "session_id": "demo-codex",
+        "source_id": "src_3d77bd75d691e4466b402764",
+        "source_version": "0541f694f566b876",
+        "tool_call_id": "demo-call-3",
+        "worktree_id": "wt_7b879ac9db8cac380b08473b"
+      },
+      "source_id": "src_3d77bd75d691e4466b402764",
+      "source_version": "0541f694f566b876",
+      "start_line": 1
+    }
+  },
+  "format": "projectflow.export.v1",
+  "graph": {
+    "analysis_mode": "synthetic_mock",
+    "analysis_status": "complete",
+    "analyzed_at": "2026-09-22T12:11:42+00:00",
+    "coverage": {
+      "completed_units_this_run": 2,
+      "planned_units_this_run": 2,
+      "selected_records": 6
+    },
+    "edges": [
+      {
+        "active": true,
+        "basis": "structural",
+        "evidence_ids": [
+          "evi_35a4c3d6167f45c97f606b7a"
+        ],
+        "from_event_id": "ev_07c659776aae32b5cd17f767",
+        "id": "edge_bac78c305f2f3f078b9aab9b",
+        "rationale": "합성 fixture에 명시된 순서/전환 이유",
+        "relation": "follows",
+        "to_event_id": "ev_232d84c7e2db480ff70605fd"
+      },
+      {
+        "active": true,
+        "basis": "structural",
+        "evidence_ids": [
+          "evi_e08f83a8bfd14b7666e86406"
+        ],
+        "from_event_id": "ev_07c659776aae32b5cd17f767",
+        "id": "edge_97850da4a660840bbea1604b",
+        "rationale": "합성 fixture에 명시된 순서/전환 이유",
+        "relation": "follows",
+        "to_event_id": "ev_315a199124d73e4b60a64f50"
+      },
+      {
+        "active": true,
+        "basis": "structural",
+        "evidence_ids": [
+          "evi_f1bc54afd7d7e8edfd2b7b17"
+        ],
+        "from_event_id": "ev_315a199124d73e4b60a64f50",
+        "id": "edge_ce1aeba0c991afa5bd8742ef",
+        "rationale": "합성 fixture에 명시된 순서/전환 이유",
+        "relation": "follows",
+        "to_event_id": "ev_14a049eca520e554f5482d1e"
+      },
+      {
+        "active": true,
+        "basis": "explicit",
+        "evidence_ids": [
+          "evi_7cfad278ae564a558ef37af6"
+        ],
+        "from_event_id": "ev_14a049eca520e554f5482d1e",
+        "id": "edge_3d7a50a71ef05eef08921d37",
+        "rationale": "합성 fixture에 명시된 순서/전환 이유",
+        "relation": "motivates",
+        "to_event_id": "ev_db1c5710614901ecec74ee43"
+      },
+      {
+        "active": true,
+        "basis": "structural",
+        "evidence_ids": [
+          "evi_7cfad278ae564a558ef37af6"
+        ],
+        "from_event_id": "ev_232d84c7e2db480ff70605fd",
+        "id": "edge_36bf124b3d995a2f77c1393c",
+        "rationale": "합성 fixture에 명시된 순서/전환 이유",
+        "relation": "follows",
+        "to_event_id": "ev_db1c5710614901ecec74ee43"
+      },
+      {
+        "active": true,
+        "basis": "structural",
+        "evidence_ids": [
+          "evi_df8d2b3234e4ae931bf687a2"
+        ],
+        "from_event_id": "ev_db1c5710614901ecec74ee43",
+        "id": "edge_e049eadac8a149fcab9a2f61",
+        "rationale": "합성 fixture에 명시된 순서/전환 이유",
+        "relation": "follows",
+        "to_event_id": "ev_bdecbeb42d06df8a57a61a3d"
+      }
+    ],
+    "events": [
+      {
+        "actor": "user",
+        "basis": "explicit_statement",
+        "created_in_run": "run_cf6334055ce14d608b55bdcc0d107190",
+        "evidence_ids": [
+          "evi_c4532aab5162e8967673bc88"
+        ],
+        "id": "ev_07c659776aae32b5cd17f767",
+        "kind": "decision",
+        "occurred_at": null,
+        "recorded_at": "2026-09-22T10:00:00Z",
+        "session_ids": [
+          "demo-codex"
+        ],
+        "status": "adopted",
+        "summary": "우선 JSON 파일로 저장하자.",
+        "title": "JSON 저장 채택",
+        "updated_in_run": "run_cf6334055ce14d608b55bdcc0d107190",
+        "worktree_ids": [
+          "wt_7b879ac9db8cac380b08473b"
+        ]
+      },
+      {
+        "actor": "assistant",
+        "basis": "explicit_statement",
+        "created_in_run": "run_cf6334055ce14d608b55bdcc0d107190",
+        "evidence_ids": [
+          "evi_35a4c3d6167f45c97f606b7a"
+        ],
+        "id": "ev_232d84c7e2db480ff70605fd",
+        "kind": "proposal",
+        "occurred_at": null,
+        "recorded_at": "2026-09-22T10:01:00Z",
+        "session_ids": [
+          "demo-codex"
+        ],
+        "status": "proposed",
+        "summary": "SQLite도 검토할 수 있습니다.",
+        "title": "SQLite 대안 제안",
+        "updated_in_run": "run_cf6334055ce14d608b55bdcc0d107190",
+        "worktree_ids": [
+          "wt_7b879ac9db8cac380b08473b"
+        ]
+      },
+      {
+        "actor": "tool",
+        "basis": "tool_record",
+        "created_in_run": "run_cf6334055ce14d608b55bdcc0d107190",
+        "evidence_ids": [
+          "evi_e08f83a8bfd14b7666e86406"
+        ],
+        "id": "ev_315a199124d73e4b60a64f50",
+        "kind": "action",
+        "occurred_at": null,
+        "recorded_at": "2026-09-22T10:02:00Z",
+        "session_ids": [
+          "demo-codex"
+        ],
+        "status": "reported_complete",
+        "summary": "JSON 저장 코드 patch 적용 완료.",
+        "title": "JSON 저장 구현",
+        "updated_in_run": "run_cf6334055ce14d608b55bdcc0d107190",
+        "worktree_ids": [
+          "wt_7b879ac9db8cac380b08473b"
+        ]
+      },
+      {
+        "actor": "tool",
+        "basis": "tool_record",
+        "created_in_run": "run_cf6334055ce14d608b55bdcc0d107190",
+        "evidence_ids": [
+          "evi_f1bc54afd7d7e8edfd2b7b17"
+        ],
+        "id": "ev_14a049eca520e554f5482d1e",
+        "kind": "outcome",
+        "occurred_at": null,
+        "recorded_at": "2026-09-22T10:03:00Z",
+        "session_ids": [
+          "demo-codex"
+        ],
+        "status": "observed_failure",
+        "summary": "동시 쓰기 테스트: FAILED — JSONDecodeError",
+        "title": "동시 쓰기 테스트 실패",
+        "updated_in_run": "run_cf6334055ce14d608b55bdcc0d107190",
+        "worktree_ids": [
+          "wt_7b879ac9db8cac380b08473b"
+        ]
+      },
+      {
+        "actor": "user",
+        "basis": "explicit_statement",
+        "created_in_run": "run_cf6334055ce14d608b55bdcc0d107190",
+        "evidence_ids": [
+          "evi_7cfad278ae564a558ef37af6"
+        ],
+        "id": "ev_db1c5710614901ecec74ee43",
+        "kind": "revision",
+        "occurred_at": null,
+        "recorded_at": "2026-09-22T10:04:00Z",
+        "session_ids": [
+          "demo-claude"
+        ],
+        "status": "adopted",
+        "summary": "동시 쓰기 때문에 SQLite로 바꾸자.",
+        "title": "SQLite로 전환 결정",
+        "updated_in_run": "run_cf6334055ce14d608b55bdcc0d107190",
+        "worktree_ids": [
+          "wt_7b879ac9db8cac380b08473b"
+        ]
+      },
+      {
+        "actor": "assistant",
+        "basis": "explicit_statement",
+        "created_in_run": "run_cf6334055ce14d608b55bdcc0d107190",
+        "evidence_ids": [
+          "evi_df8d2b3234e4ae931bf687a2"
+        ],
+        "id": "ev_bdecbeb42d06df8a57a61a3d",
+        "kind": "outcome",
+        "occurred_at": null,
+        "recorded_at": "2026-09-22T10:05:00Z",
+        "session_ids": [
+          "demo-claude"
+        ],
+        "status": "reported_complete",
+        "summary": "SQLite로 변경했고 테스트도 통과했습니다.",
+        "title": "SQLite 변경 완료 보고",
+        "updated_in_run": "run_cf6334055ce14d608b55bdcc0d107190",
+        "worktree_ids": [
+          "wt_7b879ac9db8cac380b08473b"
+        ]
+      }
+    ],
+    "input_limitations": [
+      "Git 저장소가 아니므로 Git 근거는 없습니다."
+    ],
+    "limitations": [
+      "이 그래프는 합성 fixture와 Mock Runner로 생성했습니다. 실제 AI 복원 정확도를 나타내지 않습니다."
+    ],
+    "open_items": [],
+    "schema_version": 1,
+    "scope_id": "scope_7b879ac9db8cac380b08473b",
+    "source_snapshot_id": "snap_a5a2b0037c404801c288847a",
+    "version": 2
+  },
+  "sensitive": true
+}

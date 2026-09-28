@@ -1,0 +1,489 @@
+from __future__ import annotations
+
+import html
+import re
+from collections import Counter, deque
+from datetime import datetime
+from typing import Any, Callable
+
+from .util import FlowError, cell_slice, dumps, ellipsis, merge_focus, safe_text
+
+RELATION = {"follows": "후속", "motivates": "동기", "produces": "결과", "revises": "수정",
+            "verifies": "검증", "answers": "답변"}
+STATUS = {"proposed": "제안", "adopted": "채택", "in_progress": "진행 중", "asked": "요청", "applied": "변경 적용",
+          "reported_complete": "완료 보고·미검증", "observed_success": "관측 성공", "observed_failure": "관측 실패",
+          "withdrawn": "철회", "unknown": "미확인"}
+KIND = {"goal": "목표", "question": "요청", "proposal": "제안", "decision": "결정", "action": "변경",
+        "outcome": "결과", "revision": "수정"}
+ACTOR = {"user": "사용자", "assistant": "어시스턴트", "tool": "도구", "system": "시스템",
+         "subagent": "하위 에이전트", "git": "Git"}
+ROLE = {"user": "사용자 발화", "assistant": "어시스턴트 응답", "tool_call": "도구 호출",
+        "tool_result": "도구 결과", "metadata": "세션 정보", "git": "Git 변경"}
+PROVIDER = {"codex": "Codex", "claude": "Claude Code", "git": "Git"}
+# One glyph per tone so a terminal list reads at a glance, with ASCII fallbacks.
+MARK = {"ok": "✓", "warn": "!", "fail": "✗", "plain": "·"}
+ASCII_MARK = {"ok": "v", "warn": "!", "fail": "x", "plain": "-"}
+
+
+def verification_links(graph: dict) -> tuple[dict[str, list[dict]], set[str]]:
+    """Outcomes that checked each change, and observed outcomes nothing leads to."""
+    events = {event["id"]: event for event in graph["events"]}
+    checks: dict[str, list[dict]] = {}
+    reached = set()
+    for edge in graph["edges"]:
+        if not edge["active"]:
+            continue
+        reached.add(edge["to_event_id"])
+        if edge["relation"] == "verifies" and edge["to_event_id"] in events:
+            checks.setdefault(edge["from_event_id"], []).append(events[edge["to_event_id"]])
+    unlinked = {event["id"] for event in graph["events"] if event["kind"] == "outcome" and
+                event["status"] in ("observed_success", "observed_failure") and event["id"] not in reached}
+    return checks, unlinked
+
+
+def graph_summary(graph: dict) -> dict:
+    """Counts only, so a metadata-only trace can show how the graph is shaped."""
+    checks, unlinked = verification_links(graph)
+    active = [edge for edge in graph["edges"] if edge["active"]]
+    answered = {edge["from_event_id"] for edge in active if edge["relation"] == "answers"}
+    changes = [event for event in graph["events"] if event["kind"] in ("action", "revision")
+               and event["status"] in ("applied", "reported_complete")]
+    questions = [event for event in graph["events"] if event["kind"] == "question"]
+    revised = {edge["to_event_id"] for edge in active if edge["relation"] == "revises"}
+    return {"events": len(graph["events"]), "relations": len(active),
+            "events_by_kind": dict(Counter(event["kind"] for event in graph["events"])),
+            "events_by_status": dict(Counter(event["status"] for event in graph["events"])),
+            "relations_by_type": dict(Counter(edge["relation"] for edge in active)),
+            "changes_verified": sum(bool(checks.get(event["id"])) for event in changes),
+            "changes_unverified": sum(not checks.get(event["id"]) for event in changes),
+            "observed_results_unlinked": len(unlinked),
+            "revisions_unlinked": sum(event["kind"] == "revision" and event["id"] not in revised
+                                      for event in graph["events"]),
+            "questions_answered": sum(event["id"] in answered for event in questions),
+            "questions_unanswered": sum(event["id"] not in answered for event in questions)}
+
+
+def status_labels(graph: dict) -> dict[str, str]:
+    """Each event's status plus what its relations add: checks of a change, an answer to a question."""
+    checks, unlinked = verification_links(graph)
+    answered = {edge["from_event_id"] for edge in graph["edges"]
+                if edge["active"] and edge["relation"] == "answers"}
+    labels = {}
+    for event in graph["events"]:
+        status = event["status"]
+        if event["kind"] == "question" and status == "asked":
+            labels[event["id"]] = "요청 · " + ("답변됨" if event["id"] in answered else "답변 없음")
+        elif event["kind"] in ("action", "revision") and status in ("applied", "reported_complete"):
+            results = checks.get(event["id"], [])
+            passed = sum(item["status"] == "observed_success" for item in results)
+            failed = sum(item["status"] == "observed_failure" for item in results)
+            base = "변경 적용" if status == "applied" else "완료 보고"
+            if len(results) == 1:
+                # A lone check is named, so a syntax check does not read like a full run.
+                verdict = "검증" if passed else "검증 실패"
+                title = safe_text(results[0]["title"], multiline=False)
+                labels[event["id"]] = f"{base} · {verdict}: {ellipsis(title, 40)}"
+            else:
+                parts = ([f"검증 통과 {passed}건"] if passed else []) + ([f"검증 실패 {failed}건"] if failed else [])
+                labels[event["id"]] = base + " · " + (" · ".join(parts) or "미검증")
+        elif event["id"] in unlinked:
+            labels[event["id"]] = STATUS.get(status, status) + " · 확인 대상 미연결"
+        else:
+            labels[event["id"]] = STATUS.get(status, status)
+    return labels
+
+
+def status_tones(graph: dict) -> dict[str, str]:
+    """ok / warn / fail / plain per event, from the same relations as the labels."""
+    checks, unlinked = verification_links(graph)
+    answered = {edge["from_event_id"] for edge in graph["edges"]
+                if edge["active"] and edge["relation"] == "answers"}
+    tones = {}
+    for event in graph["events"]:
+        kind, status = event["kind"], event["status"]
+        if kind == "question" and status == "asked":
+            tone = "ok" if event["id"] in answered else "warn"
+        elif kind in ("action", "revision") and status in ("applied", "reported_complete"):
+            results = {item["status"] for item in checks.get(event["id"], [])}
+            tone = "fail" if "observed_failure" in results else "ok" if results else "warn"
+        elif status == "observed_failure":
+            tone = "fail"
+        elif event["id"] in unlinked or status == "reported_complete":
+            tone = "warn"
+        elif status == "observed_success":
+            tone = "ok"
+        else:
+            tone = "plain"
+        tones[event["id"]] = tone
+    return tones
+
+
+def readable_quote(text: str) -> str:
+    """Show a one-line tool record (escaped JSON arguments) with its line breaks restored.
+
+    Display only: stored evidence keeps the exact source text.
+    """
+    # Two or more escapes: a code line with a single "\\n" in a string literal stays as written.
+    if "\n" not in text and text.count("\\n") >= 2:
+        text = (text.replace("\\r\\n", "\n").replace("\\n", "\n")
+                .replace("\\t", "    ").replace('\\"', '"'))
+    return text
+
+
+def _when(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    return moment.astimezone().strftime("%m-%d %H:%M")
+
+
+def linked_events(graph: dict, event_id: str) -> list[str]:
+    """Events linked to one event, in the order its detail lists them: checks first, then the rest."""
+    events = {event["id"] for event in graph["events"]}
+    active = [edge for edge in graph["edges"] if edge["active"] and
+              event_id in (edge["from_event_id"], edge["to_event_id"])]
+    ordered = sorted(active, key=lambda edge: edge["relation"] != "verifies")
+    others = [edge["to_event_id"] if edge["from_event_id"] == event_id else edge["from_event_id"] for edge in ordered]
+    return list(dict.fromkeys(key for key in others if key in events))
+
+
+def event_detail(graph: dict, event_id: str, evidence: Callable[[str], dict | None], *,
+                 ascii_only: bool = False, quote_lines: int = 8, keys: bool = False) -> list[tuple[str, str]]:
+    """What a terminal shows for one event, as (text, style) lines.
+
+    Styles: title, heading, ok, warn, fail, plain, dim. Text is not wrapped. With keys, the
+    first nine linked events are numbered 1–9 (`linked_events` order) for a screen to jump to.
+    """
+    events = {event["id"]: event for event in graph["events"]}
+    event = events.get(event_id)
+    if not event:
+        return [("사건을 선택하면 설명과 원문 근거가 표시됩니다.", "dim")]
+    numbers = {item["id"]: f"[{n:02d}]" for n, item in enumerate(graph["events"], 1)}
+    labels, tones = status_labels(graph), status_tones(graph)
+    marks = ASCII_MARK if ascii_only else MARK
+    clean = lambda value: safe_text(value, multiline=False)
+    lines: list[tuple[str, str]] = [
+        (f"{numbers[event_id]} {clean(event['title'])}", "title"),
+        (f"{marks[tones[event_id]]} {clean(labels[event_id])}", tones[event_id]),
+        (" · ".join(part for part in (KIND.get(event["kind"], event["kind"]),
+                                      ACTOR.get(event.get("actor"), clean(event.get("actor") or "")),
+                                      _when(event.get("occurred_at") or event.get("recorded_at"))) if part), "dim"),
+        ("", ""), ("무슨 일이 있었나", "heading")]
+    lines += [("  " + clean(part), "") for part in safe_text(event["summary"]).splitlines() if part.strip()]
+    active = [edge for edge in graph["edges"] if edge["active"] and
+              event_id in (edge["from_event_id"], edge["to_event_id"])]
+    def other(edge: dict) -> dict | None:
+        return events.get(edge["to_event_id"] if edge["from_event_id"] == event_id else edge["from_event_id"])
+    key_of = {key: f"{n} " for n, key in enumerate(linked_events(graph, event_id)[:9], 1)} if keys else {}
+    def key(item: dict) -> str:
+        return key_of.get(item["id"], "  " if keys else "")
+    checks = [edge for edge in active if edge["relation"] == "verifies"]
+    if checks:
+        # A change lists what checked it; a result lists what it checked.
+        heading = "검증한 결과" if event["kind"] in ("action", "revision") else "이 결과가 확인한 변경"
+        lines += [("", ""), (heading, "heading")]
+        for edge in checks:
+            item = other(edge)
+            if item:
+                tone = tones[item["id"]] if heading == "검증한 결과" else "plain"
+                lines.append((f"  {key(item)}{marks[tone]} {numbers[item['id']]} {clean(item['title'])}", tone))
+    rest = [edge for edge in active if edge["relation"] != "verifies"]
+    if rest:
+        lines += [("", ""), ("연결된 사건", "heading")]
+        for edge in rest:
+            item = other(edge)
+            if item:
+                arrow = ("->" if ascii_only else "→") if edge["from_event_id"] == event_id else (
+                    "<-" if ascii_only else "←")
+                # A turn link is the dialog's order, not a claim the model made.
+                turn = " (대화 순서)" if edge.get("origin") == "dialog_turn" else ""
+                lines.append((f"  {key(item)}{arrow} {RELATION.get(edge['relation'], edge['relation'])}{turn}  "
+                              f"{numbers[item['id']]} {clean(item['title'])}", "dim" if turn else ""))
+    if event["evidence_ids"]:
+        lines += [("", ""), (f"원문 근거 {len(event['evidence_ids'])}개", "heading")]
+        for index, evidence_id in enumerate(event["evidence_ids"], 1):
+            item = evidence(evidence_id)
+            if not item:
+                lines.append((f"  {index}) 보존된 근거 없음 · {evidence_id}", "dim"))
+                continue
+            source = item.get("source") or {}
+            where = (f"{item.get('start_line')}번째 줄" if item.get("start_line") == item.get("end_line")
+                     else f"{item.get('start_line', '?')}–{item.get('end_line', '?')}번째 줄")
+            head = " · ".join(part for part in (ROLE.get(source.get("role"), source.get("role") or ""),
+                                                PROVIDER.get(source.get("provider"), source.get("provider") or ""),
+                                                _when(source.get("recorded_at")), where) if part)
+            lines.append((f"  {index}) {head}", "dim"))
+            # Excerpt windows are joined by line breaks; each window may be one escaped line.
+            quote = "\n".join(readable_quote(part) for part in
+                              (evidence_excerpt(item) or item.get("quote", "")).split("\n"))
+            shown = [part.rstrip() for part in safe_text(quote).splitlines()]
+            while shown and not shown[-1].strip():
+                shown.pop()
+            for part in shown[:quote_lines]:
+                lines.append(("     " + clean(part) if part.strip() else "", ""))
+            if len(shown) > quote_lines:
+                lines.append((f"     … {len(shown) - quote_lines}줄 더 있음", "dim"))
+    open_items = [item for item in graph.get("open_items", []) if isinstance(item, dict) and
+                  event_id in item.get("related_event_ids", [])]
+    if open_items:
+        lines += [("", ""), ("아직 확인되지 않은 일", "heading")]
+        lines += [("  • " + clean(item.get("text", "")), "") for item in open_items]
+    return lines
+
+
+# A model may cite a few words inside a very long line (a whole patch or tool output).
+# Show those cited parts with nearby context instead of the whole stored line.
+EXCERPT_MIN_CHARS = 400
+EXCERPT_CONTEXT = 120
+
+
+def evidence_excerpt(item: dict) -> str | None:
+    """Cited parts of a long evidence quote, or None when the whole quote should be shown."""
+    quote = item.get("quote") or ""
+    focus = [[s, e] for s, e in item.get("focus") or [] if 0 <= s < e <= len(quote)]
+    if len(quote) <= EXCERPT_MIN_CHARS or not focus:
+        return None
+    windows = merge_focus([[max(0, s - EXCERPT_CONTEXT), min(len(quote), e + EXCERPT_CONTEXT)] for s, e in focus])
+    return "\n".join(("…" if start > 0 else "") + quote[start:end] + ("…" if end < len(quote) else "")
+                     for start, end in windows)
+
+
+def _label(text: str) -> str:
+    # Encode syntax characters so user content cannot introduce Mermaid directives.
+    return "".join(c if c.isalnum() or c in " _-·" else f"#{ord(c)};" for c in safe_text(text, multiline=False))
+
+
+def _decode(text: str) -> str:
+    return re.sub(r"#(\d+);", lambda m: chr(int(m[1])), text)
+
+
+def mermaid(graph: dict) -> str:
+    ids = {event["id"]: f"n{n}" for n, event in enumerate(graph["events"])}
+    lines = ["flowchart TB"]
+    statuses = status_labels(graph)
+    for n, event in enumerate(graph["events"]):
+        label = _label(f"{n + 1:02d} {event['title']} / {statuses[event['id']]}")
+        lines.append(f'  n{n}["{label}"]')
+    for edge in graph["edges"]:
+        if not edge["active"]:
+            continue
+        left, right = ids[edge["from_event_id"]], ids[edge["to_event_id"]]
+        inferred = edge["basis"] == "inferred"
+        arrow = "-.->" if inferred else "-->"
+        label = _label(RELATION[edge["relation"]] + ("·추정" if inferred else ""))
+        lines.append(f"  {left} {arrow}|{label}| {right}")
+    return "\n".join(lines) + "\n"
+
+
+def parse_safe_mermaid(text: str) -> tuple[dict[str, str], list[tuple[str, str, str, bool]]]:
+    """Only parse our generated subset, not general Mermaid or untrusted instructions."""
+    nodes, edges = {}, []
+    lines = text.splitlines()
+    if not lines or lines[0] != "flowchart TB":
+        raise FlowError("지원하지 않는 Mermaid subset")
+    for line in lines[1:]:
+        node = re.fullmatch(r'\s*(n\d+)\["([^"\n]*)"\]', line)
+        edge = re.fullmatch(r"\s*(n\d+) (-->|-\.->)\|([^|\n]*)\| (n\d+)", line)
+        if node:
+            nodes[node[1]] = _decode(node[2])
+        elif edge:
+            edges.append((edge[1], edge[4], _decode(edge[3]), edge[2] == "-.->"))
+        elif line.strip():
+            raise FlowError("지원하지 않는 Mermaid 문법")
+    if any(left not in nodes or right not in nodes for left, right, _, _ in edges):
+        raise FlowError("Mermaid의 노드 참조가 유효하지 않습니다.")
+    return nodes, edges
+
+
+def terminal_graph(graph: dict, *, ascii_only: bool = False,
+                   marks: bool = False) -> list[tuple[str, str | None]]:
+    """An actual branching graph. Revisited nodes are references (joins/cycles), not duplicates.
+
+    With marks, each event starts with its tone glyph (✓ ! ✗ ·) so a list reads at a glance.
+    """
+    nodes, edges = parse_safe_mermaid(mermaid(graph))
+    real_ids = {f"n{n}": event["id"] for n, event in enumerate(graph["events"])}
+    glyphs = ASCII_MARK if ascii_only else MARK
+    tones = status_tones(graph) if marks else {}
+    outgoing = {n: [] for n in nodes}
+    incoming = {n: 0 for n in nodes}
+    for source, target, label, inferred in edges:
+        outgoing[source].append((target, label, inferred))
+        incoming[target] += 1
+    roots = [n for n in nodes if incoming[n] == 0] + [n for n in nodes if incoming[n] != 0]
+    seen, result = set(), []
+    branch, last, vertical = ("+--", "`--", "|  ") if ascii_only else ("├──", "└──", "│  ")
+    def walk(node: str, prefix: str, connector: str = "", relation: str = "", depth: int = 0) -> None:
+        if node in seen:
+            reference = "->" if ascii_only else "↗"
+            result.append((f"{prefix}{connector}{relation}{reference} [{int(node[1:]) + 1:02d}] (합류/되돌아감)", real_ids[node]))
+            return
+        seen.add(node)
+        label = nodes[node]
+        number, _, description = label.partition(" ")
+        mark = glyphs[tones[real_ids[node]]] + " " if marks else ""
+        result.append((f"{prefix}{connector}{relation}[{number}] {mark}{description}", real_ids[node]))
+        # Iterative call depth is bounded for pathological thousand-node histories.
+        if depth >= 70 and outgoing[node]:
+            for child, tag, inferred in outgoing[node]:
+                result.append((f"{prefix}   -> [{int(child[1:]) + 1:02d}] {tag} (깊은 분기 참조)", real_ids[child]))
+            return
+        children = outgoing[node]
+        for n, (child, tag, inferred) in enumerate(children):
+            is_last = n == len(children) - 1
+            next_prefix = prefix + ("   " if connector == last else vertical if connector else "")
+            arrow = "..>" if inferred else "->" if ascii_only else "→"
+            walk(child, next_prefix, last if is_last else branch, f"{tag} {arrow} ", depth + 1)
+    for node in roots:
+        if node not in seen:
+            if result:
+                result.append(("", None))
+            walk(node, "")
+    if not result:
+        result = [("아직 저장된 사건이 없습니다.", None)]
+    return result
+
+
+def _positions(graph: dict) -> tuple[dict[str, tuple[int, int]], int, int]:
+    events = graph["events"]
+    outgoing = {e["id"]: [] for e in events}
+    degree = {e["id"]: 0 for e in events}
+    for edge in graph["edges"]:
+        if edge["active"]:
+            outgoing[edge["from_event_id"]].append(edge["to_event_id"])
+            degree[edge["to_event_id"]] += 1
+    rank, queue = {key: 0 for key in degree}, deque(k for k in degree if degree[k] == 0)
+    visited = set()
+    while queue:
+        node = queue.popleft()
+        visited.add(node)
+        for child in outgoing[node]:
+            rank[child] = max(rank[child], rank[node] + 1)
+            degree[child] -= 1
+            if degree[child] == 0:
+                queue.append(child)
+    # Cycles remain visible, with original edges. No DAG restriction is imposed on stored data.
+    last = max(rank.values(), default=0)
+    for event in events:
+        if event["id"] not in visited:
+            last += 1
+            rank[event["id"]] = last
+    layers: dict[int, list[str]] = {}
+    for event in events:
+        layers.setdefault(rank[event["id"]], []).append(event["id"])
+    positions = {key: (32 + column * 330, 32 + layer * 164)
+                 for layer, keys in layers.items() for column, key in enumerate(keys)}
+    width = max((x + 310 for x, _ in positions.values()), default=600) + 32
+    height = max((y + 108 for _, y in positions.values()), default=180) + 32
+    return positions, width, height
+
+
+def svg(graph: dict) -> str:
+    # Same safe subset as the terminal path; intentionally not a general Mermaid engine.
+    parse_safe_mermaid(mermaid(graph))
+    positions, width, height = _positions(graph)
+    detours = [e for e in graph["edges"] if e["active"] and
+               positions[e["to_event_id"]][1] - positions[e["from_event_id"]][1] != 164]
+    gutter_start = width + 12
+    if detours:
+        width += 120 + min(len(detours), 10) * 18
+    detour_index = 0
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="프로젝트 흐름" font-family="Noto Sans CJK KR, Noto Sans KR, Malgun Gothic, Apple SD Gothic Neo, sans-serif">',
+           '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#778593"/></marker></defs>']
+    for edge in graph["edges"]:
+        if not edge["active"]:
+            continue
+        x1, y1 = positions[edge["from_event_id"]]
+        x2, y2 = positions[edge["to_event_id"]]
+        x1, y1, x2 = x1 + 145, y1 + 108, x2 + 145
+        dashed = ' stroke-dasharray="5 5"' if edge["basis"] == "inferred" else ""
+        if y2 - y1 == 56:
+            midpoint = (y1 + y2) / 2
+            path = f"M{x1} {y1} C{x1} {midpoint} {x2} {midpoint} {x2} {y2 - 5}"
+            label_x, label_y = (x1 + x2) / 2 + 9, midpoint
+        else:
+            # Skipping an intermediate rank must NOT draw through an unrelated node.
+            # Route long/backward edges outside all boxes, retaining the exact target.
+            lane = gutter_start + (detour_index % 10) * 18
+            detour_index += 1
+            top, bottom = y1 + 20, y2 - 20
+            path = f"M{x1} {y1} V{top} H{lane} V{bottom} H{x2} V{y2 - 5}"
+            label_x, label_y = lane + 5, (top + bottom) / 2
+        label = RELATION[edge["relation"]] + ("·추정" if edge["basis"] == "inferred" else "")
+        out += [f'<path d="{path}" fill="none" stroke="#778593" stroke-width="1.7"{dashed} marker-end="url(#arrow)"/>',
+                f'<text x="{label_x}" y="{label_y}" fill="#667788" font-size="11">{html.escape(label)}</text>']
+    statuses = status_labels(graph)
+    for number, event in enumerate(graph["events"], 1):
+        x, y = positions[event["id"]]
+        status = statuses[event["id"]]
+        title = safe_text(event["title"], multiline=False)
+        first, second = cell_slice(title, 0, 31), cell_slice(title, 31, 31)
+        if len(title) > len(first + second):
+            second = ellipsis(second, 28) + "…"
+        out.append(f'<g data-event-id="{html.escape(event["id"], quote=True)}" tabindex="0" role="button" aria-label="{html.escape(title, quote=True)}" transform="translate({x},{y})">')
+        out.append('<rect width="290" height="108" rx="9" fill="#ffffff" stroke="#ced7df"/>')
+        out.append(f'<text x="16" y="23" fill="#7b8995" font-size="11">{number:02d} · {html.escape(event["kind"])}</text>')
+        out.append(f'<text x="16" y="47" fill="#203343" font-size="14" font-weight="600">{html.escape(first)}</text>')
+        out.append(f'<text x="16" y="67" fill="#203343" font-size="14" font-weight="600">{html.escape(second)}</text>')
+        out.append(f'<text x="16" y="92" fill="#617686" font-size="11">{html.escape(status)}</text></g>')
+    if not graph["events"]:
+        out.append('<text x="32" y="70" fill="#617686" font-size="18">저장된 사건이 없습니다.</text>')
+    return "\n".join(out) + "</svg>"
+
+
+def _md(text: Any) -> str:
+    return re.sub(r"([\\`*_{}\[\]()#+.!|>~-])", r"\\\1", html.escape(safe_text(text), quote=False))
+
+
+def export_text(graph: dict, evidence: dict[str, dict], fmt: str) -> str:
+    if fmt == "mmd":
+        return mermaid(graph)
+    if fmt == "json":
+        return dumps({"format": "projectflow.export.v1", "sensitive": True, "graph": graph, "evidence": evidence}, pretty=True) + "\n"
+    if fmt != "md":
+        raise FlowError("내보내기 형식은 md, mmd, json입니다.")
+    lines = ["# Project Flow", "", "> 민감한 대화·코드가 포함될 수 있습니다. 공유 전에 확인하세요.", "",
+             f"그래프 버전: {graph['version']} · 분석 기준: {_md(graph.get('analyzed_at') or '없음')}", "",
+             "```mermaid", mermaid(graph).strip(), "```", "", "## 사건과 근거"]
+    statuses = status_labels(graph)
+    for number, event in enumerate(graph["events"], 1):
+        lines += ["", f"### {number:02d}. {_md(event['title'])}", "", _md(event["summary"]), "",
+                  f"상태: {_md(statuses[event['id']])} · 근거 수준: {_md(event['basis'])}",
+                  f"ID: `{event['id']}`", ""]
+        for evidence_id in event["evidence_ids"]:
+            item = evidence.get(evidence_id)
+            if not item:
+                continue
+            lines += [f"근거 `{evidence_id}` · `{item['source_id']}` · 줄 {item['start_line']}–{item['end_line']}", ""]
+            excerpt = evidence_excerpt(item)
+            if excerpt:
+                lines += [f"원문 줄 {len(item['quote'])}자 중 인용 부분 발췌 · 전체는 근거 색인 참조", ""]
+            quote = safe_text(excerpt or item["quote"])
+            fence = "~" * max(4, max((len(m) for m in re.findall(r"~+", quote)), default=0) + 1)
+            lines += [fence + "text", quote, fence, ""]
+    if graph["edges"]:
+        titles = {event["id"]: event["title"] for event in graph["events"]}
+        lines += ["", "## 관계와 연결 근거", ""]
+        for edge in graph["edges"]:
+            lines += [f"### {_md(titles[edge['from_event_id']])} → {_md(titles[edge['to_event_id']])}", "",
+                      f"관계: {_md(edge['relation'])} · {_md(edge['basis'])} · 활성: {edge['active']}",
+                      _md(edge["rationale"]), "근거: " + ", ".join(f"`{i}`" for i in edge["evidence_ids"]), ""]
+    if graph["open_items"]:
+        lines += ["## 미해결 사항", ""]
+        for item in graph["open_items"]:
+            lines += [f"[{_md(item['status'])}] {_md(item['text'])}",
+                      "근거: " + ", ".join(f"`{i}`" for i in item["evidence_ids"]), ""]
+    # Relation-only citations also remain inspectable in the standalone Markdown export.
+    lines += ["## 전체 근거 색인", ""]
+    for evidence_id, item in sorted(evidence.items()):
+        lines += [f"### `{evidence_id}`", "",
+                  f"원문: `{item['source_id']}` · 줄 {item['start_line']}–{item['end_line']}",
+                  _md(dumps(item["source"]["locator"])), ""]
+        quote = safe_text(item["quote"])
+        fence = "~" * max(4, max((len(m) for m in re.findall(r"~+", quote)), default=0) + 1)
+        lines += [fence + "text", quote, fence, ""]
+    lines += ["## 한계", ""] + [_md(message) for message in graph["limitations"] + graph.get("input_limitations", [])]
+    return "\n".join(lines) + "\n"

@@ -1,0 +1,59 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# ContextTrail runtime state
+.projectflow/
+.langgraph_api/
+*.sqlite
+*.sqlite-journal
+
+# Credentials & secrets — never commit these
+.env
+.env.*
+*.env
+.envrc
+.secrets
+auth.json
+.credentials.json
+credentials.json
+*.pem
+*.p12
+*.key
+id_rsa
+id_ed25519
+.npmrc
+.pypirc
+.netrc
+.aws/
+.config/gcloud/
+
+# Private development notes and real-workspace audit material
+/SOURCE_MANIFEST.json
+/docs/DECISIONS.md
+/docs/plans/ANALYSIS_IMPROVEMENT_PLAN.md
+/docs/plans/INPUT_QUALITY_PLAN.md
+/docs/plans/NEXT_STEPS.md
+/docs/plans/TWO_CALL_GRAPH_ANALYSIS.md
+/docs/reports/A3_VALIDATION.md
+/docs/reports/PRELIVE_AUDIT.md
+/docs/reports/TWO_CALL_LIVE_EVAL_2026-09-25.md
+/docs/reports/artifacts/archive-audit-a4.json
+
+# LangSmith / LangGraph
+.langsmith
+langgraph.json.local
+
+# macOS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
