@@ -35,9 +35,9 @@ if ! "$install_python" -c 'import ensurepip' >/dev/null 2>&1; then
   printf '%s\n' "ContextTrail needs venv support, which is a separate package on Debian/Ubuntu." >&2
   printf 'Install it, then run this script again:\n\n' >&2
   if [ "$(id -u)" = 0 ]; then
-    printf '    apt install python3%s-venv\n\n' "${install_version%.*}" >&2
+    printf '    apt install python%s-venv\n\n' "$install_version" >&2
   else
-    printf '    sudo apt install python3%s-venv\n\n' "${install_version%.*}" >&2
+    printf '    sudo apt install python%s-venv\n\n' "$install_version" >&2
   fi
   printf 'Already have it? Set CONTEXTTRAIL_PYTHON to an interpreter whose venv works.\n' >&2
   exit 1
