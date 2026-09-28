@@ -19,7 +19,8 @@ GitHub에 공개하는 사용자 문서와 검증 기록을 정리했다. 실제
 
 최상위 README의 "Measured so far" 표는 아래 문서에서 나온 값만 옮겼다. 확인이 필요하면 원본을 보라.
 
-- [실제 CLI 평가](reports/TWO_CALL_LIVE_EVAL_2026-09-25.md): 유일한 실제 LLM 호출 검증. WorkUnit 1개, 14개 기록, 27,230자 수동 대조.
+- [실제 CLI 평가](reports/TWO_CALL_LIVE_EVAL_2026-09-25.md): macOS 실제 LLM 호출 검증. WorkUnit 1개, 14개 기록, 27,230자 수동 대조.
+- [Linux 실측](reports/LINUX_LIVE_EVAL_2026-09-28.md): Ubuntu 24.04 + bubblewrap + 실제 Codex CLI로 외부 프로젝트를 처음 끝까지 실행한 기록. 격리 사전 점검, 실인증, 1단위 분석, 읽기 전용 검증 포함.
 - [사전 실측 감사](reports/PRELIVE_AUDIT.md): 실제 계정 호출 전 단계별 결과. 실행한 독립 검토와 LLM 호출은 0회.
 - [a3 검증](reports/A3_VALIDATION.md): 아카이브 156개 파일, 선택 레코드 31,748개, 파싱 limitation 0.
 - [설계·평가 이력](DECISIONS.md):dated 결정 기록. 측정한 것과 하지 않은 것을 함께 적었고, 되돌린 변경도 남겼다.

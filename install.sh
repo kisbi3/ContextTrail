@@ -25,6 +25,24 @@ if [ -e "$install_bin/contexttrail" ] || [ -L "$install_bin/contexttrail" ]; the
 fi
 
 mkdir -p "$(dirname -- "$install_venv")" "$install_bin"
+
+# `python -m venv` fails with a raw ensurepip error on Debian/Ubuntu hosts that
+# do not ship python3-venv, which is the default on Ubuntu 24.04. That message
+# does not tell the reader what to run, and a failed install with no next step
+# is where a first-time user stops. Check first and say the exact command.
+if ! "$install_python" -c 'import ensurepip' >/dev/null 2>&1; then
+  install_version=$("$install_python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo '')
+  printf '%s\n' "ContextTrail needs venv support, which is a separate package on Debian/Ubuntu." >&2
+  printf 'Install it, then run this script again:\n\n' >&2
+  if [ "$(id -u)" = 0 ]; then
+    printf '    apt install python3%s-venv\n\n' "${install_version%.*}" >&2
+  else
+    printf '    sudo apt install python3%s-venv\n\n' "${install_version%.*}" >&2
+  fi
+  printf 'Already have it? Set CONTEXTTRAIL_PYTHON to an interpreter whose venv works.\n' >&2
+  exit 1
+fi
+
 "$install_python" -m venv "$install_venv"
 "$install_venv/bin/python" -m pip install --upgrade "$install_repo"
 

@@ -1,0 +1,148 @@
+{
+  "captured_at": "2026-09-28",
+  "purpose": "Close the 'Linux 0 live runs' gap recorded in README.md, and produce a second human-checked quality sample on a non-self project.",
+  "host": {
+    "os": "Ubuntu 24.04.4 LTS",
+    "kernel": "Linux 7.0.0-31-generic x86_64",
+    "python": "3.12.3",
+    "bubblewrap": "/usr/bin/bwrap",
+    "unprivileged_userns_clone": 1,
+    "max_user_namespaces": 146109,
+    "codex_cli": "codex-cli 0.157.1",
+    "claude_cli": "not installed, so the Claude Runner was not exercised"
+  },
+  "install": {
+    "script": "install.sh",
+    "result": "failed: python3-venv is not installed on this host, so ensurepip is unavailable and `python -m venv` cannot create the environment",
+    "workaround_used_for_this_run": "python3 -m venv --without-pip, then get-pip.py, then pip install -e .",
+    "note": "A first attempt left a corrupted bytecode cache in site-packages (ValueError: bad marshal data). Clearing __pycache__ fixed it. Neither issue is caused by ContextTrail itself, but install.sh should detect the missing venv support and say so."
+  },
+  "doctor": {
+    "runner": "codex",
+    "sandbox": "bubblewrap",
+    "installed": true,
+    "bubblewrap": true,
+    "auth_before_smoke": "credential_file_present_not_authenticated_tested",
+    "auth_after_smoke": "model_call_succeeded",
+    "live_model_test": "passed_for_this_invocation",
+    "model_calls": 0,
+    "note": "The default doctor run made no model call. The --smoke run sent a small synthetic JSON round-trip, not project data."
+  },
+  "scope": {
+    "project": "a third-party deep-learning repository (unrelated to ContextTrail)",
+    "git_commits": 153,
+    "pre_existing_dirty_files": 13,
+    "worktrees_detected": 2,
+    "state_dir": "<git-common-dir>/projectflow/<scope-key>/",
+    "state_dir_mode": "0700",
+    "state_file_mode": "0600"
+  },
+  "input_scale": {
+    "codex_log_files_on_host": 1231,
+    "claude_log_files_on_host": 47,
+    "codex_records_on_host": 1225814,
+    "claude_records_on_host": 51449,
+    "records_in_scope": {
+      "codex": 4755,
+      "claude": 9,
+      "git": 518
+    },
+    "note": "Scope selection reduced 1.28M host records to 5,282 in-scope records. The path filter is what keeps a shared log directory from making a run enormous."
+  },
+  "run": {
+    "command": "project analyze . --runner codex --units 1 --yes --no-tui",
+    "work_units_pending": 171,
+    "work_units_processed": 1,
+    "runner_calls": 4,
+    "wall_clock_seconds": 402,
+    "input_tokens": 153943,
+    "output_tokens": 21018,
+    "calls": [
+      {
+        "stage": "extract",
+        "status": "validation_error",
+        "input_tokens": 48408,
+        "output_tokens": 4187,
+        "duration_ms": 79912
+      },
+      {
+        "stage": "extract",
+        "status": "complete",
+        "input_tokens": 51669,
+        "output_tokens": 3297,
+        "duration_ms": 63166
+      },
+      {
+        "stage": "integrate",
+        "status": "complete",
+        "input_tokens": 23059,
+        "output_tokens": 6165,
+        "duration_ms": 116068
+      },
+      {
+        "stage": "integrate",
+        "status": "complete",
+        "input_tokens": 30807,
+        "output_tokens": 7369,
+        "duration_ms": 142878
+      }
+    ],
+    "note": "The first extract call hit a validation error and was recovered within the per-unit repair budget. Recovery is a code path that the macOS self-analysis had not exercised."
+  },
+  "graph": {
+    "version": 1,
+    "analysis_status": "partial",
+    "events": 8,
+    "edges": 9,
+    "event_status_counts": {
+      "asked": 1,
+      "in_progress": 1,
+      "applied": 1,
+      "observed_failure": 2,
+      "observed_success": 2,
+      "reported_complete": 1
+    },
+    "active_relation_counts": {
+      "motivates": 3,
+      "produces": 3,
+      "answers": 1,
+      "follows": 1,
+      "revises": 1
+    },
+    "edge_basis_counts": {
+      "explicit": 5,
+      "structural": 4
+    },
+    "inferred_edges": 0,
+    "limitations": 2,
+    "evidence_items": 23,
+    "source_records": 5282
+  },
+  "read_only_check": {
+    "git_status_before": "13 lines",
+    "git_status_after": "13 lines, identical",
+    "head_before": "a8b59ab6a6337ceabb7bf5a8c305436e19f90ae2",
+    "head_after": "identical",
+    "files_created_in_worktree": 0,
+    "verdict": "pass"
+  },
+  "quality_sample": {
+    "method": "A human read the eight events against the cited source lines and judged whether the sequence described the session that had actually happened.",
+    "result": "The eight events formed a coherent debugging narrative that matched the underlying session, and the evidence quotes were verbatim.",
+    "sample_size": "1 work unit out of 171",
+    "caveat": "One work unit is not a quality measurement. It shows the pipeline produces a sensible, cited result on an unfamiliar project, not that it is reliable in general. The reproducibility gap recorded in README.md is unchanged by this run."
+  },
+  "limitations_observed": {
+    "log_read_deferred": 12,
+    "deferred_reason": "FlowError on read; these files also lack a native session id and fall back to filename identification",
+    "world_state_deferred": 4,
+    "claude_queue_operation_deferred": 2,
+    "claude_stop_hook_summary_deferred": 1,
+    "claude_unsupported_attachment_types": 14,
+    "claude_unsupported_attachment_detail": "agent_listing_delta, auto_mode, date, deferred_tools_delta, deferred_tools_record, environment, instructions, mcp_instructions_delta, model, prompt_snapshot, remote_session_change, session_context, skill_listing, total_tokens_reminder",
+    "git_diff_over_limit": 5,
+    "git_diff_read_failure": 2,
+    "subagent_scope_excluded": 1,
+    "note": "Every one of these is reported rather than dropped silently. The attachment list is the actionable one: `environment` and `instructions` plausibly carry decision-relevant context and are currently unread."
+  }
+}
