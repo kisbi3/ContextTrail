@@ -10,6 +10,7 @@ Studio의 상자와 화살표는 이 LangGraph의 실제 실행 단계다. LangS
 | --- | --- | --- |
 | `prepare_run` | 호스트 | 합성 fixture 생성 또는 서버 고정 프로젝트·평가 fixture와 실행 상한 확인 |
 | `scan_sources` | 호스트 | scope lock, 실제 로그·Git 수집, source ingest, run ledger 시작 |
+| `classify_steps` | 호스트 | 도구 호출을 코드로 edit/read/commit/test/vcs/run으로 분류한 개수만 상태에 기록(내용 없음, 모델 호출 없음) |
 | `plan_work_units` | 호스트 | 실제 `Engine._plan_units`; 기존 처리 단위 재사용·무효화 포함 |
 | `select_unit` | 호스트 | 처리할 단위의 source ID 선택 |
 | `prepare_extract_input` | 호스트 | 실제 `Harness.context`와 `build_task`로 첫 추출 요청을 구성. `request`·`response_schema`·새 원문/주변 문맥 목록과 기존 사건 선택 이유를 상태에 표시. 검증된 추출 재사용 시 요청 없음 |
