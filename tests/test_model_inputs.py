@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from projectflow.analysis import IdAliases, tool_steps
+from projectflow.analysis import IdAliases, classify_steps, command_kind, model_context, tool_steps
 from projectflow.demo import CASES, FixtureRunner
 from projectflow.model import SourceRecord
 from projectflow.schema import EvidenceValidator
@@ -81,6 +81,88 @@ def test_tool_steps_hint_edit_read_and_run():
     assert steps["c"]["hint"] == "run"  # starts like a read, but writes a file
     assert (steps["d"]["hint"], steps["d"]["target"]) == ("edit", "patch install.sh")
     assert steps["e"]["failed"] and steps["e"]["target"] == "tool.py"
+
+
+def test_command_kinds_commit_test_vcs_and_plain_runs():
+    cases = {
+        'git commit -m "x"': "commit", "git -C repo commit -m x": "commit",
+        'cd /a && git add -A && git commit -m "m > n"': "commit", "git add -A; git commit": "commit",
+        "git push origin main": "vcs", "git add x": "vcs", "git status": None,
+        "PYTHONPATH=src python -m pytest -q": "test", "/x/venv/bin/python -m pytest": "test",
+        ".venv/bin/pytest tests": "test", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 scripts/test.sh -q": "test",
+        "npm test": "test", "npm run build": "test", "uv run ruff check .": "test", "cargo test": "test",
+        'bash -lc "cd x && pytest -q"': "test", "make test": "test",
+        "npm install": None, "python scripts/x.py": None, "make": None, "echo git commit": None,
+        "grep pytest README.md": None, "cat > t.py <<EOF; pytest; EOF": None,
+        # read-only or dry-run git commands are not state changes
+        "git stash list": None, "git stash show -p": None, "git stash pop": "vcs", "git branch": None,
+        "git branch --list": None, "git branch -D old": "vcs", "git branch topic": "vcs", "git tag --list": None,
+        "git tag v1": "vcs", "git worktree list": None, "git worktree add ../w": "vcs", "git clean -n": None,
+        "git add --dry-run .": None, "git fetch --dry-run": None, "git revert --no-commit HEAD~1": "vcs",
+        "git commit-tree abc": None, "git checkout-index -a": None, "git merge-base HEAD main": None,
+        # wrappers and flags before the goal
+        "sh scripts/test.sh": "test", "python -m build": "test", "make -j4 test": "test", "mvn -q test": "test",
+        "timeout 60 pytest": "test", "xargs pytest": "test", "docker compose run app pytest": "test",
+        "node --test": "test", "bazel test //...": "test", "cargo +nightly test": "test",
+    }
+    assert {text: command_kind(text) for text in cases} == cases
+
+
+def test_tool_steps_refine_run_into_commit_test_and_vcs():
+    records = [
+        call("a", "Bash", {"command": "cd app && python -m pytest -q"}), result("a", "3 passed"),
+        call("b", "Bash", {"command": "git add -A\ngit commit -m 'fix'"}), result("b", "[main abc123] fix"),
+        call("c", "Bash", {"command": "git push origin main"}),
+        call("d", "Bash", {"command": "npm install"}),
+        call("e", "Read", {"file_path": "/work/app/README.md"}),
+    ]
+    steps = {step["call"]: step["hint"] for step in tool_steps(records)}
+    assert steps == {"a": "test", "b": "commit", "c": "vcs", "d": "run", "e": "read"}
+
+
+def test_codex_exec_wrapper_commands_are_read_with_or_without_quoted_keys():
+    wrapped = 'const r = await tools.exec_command({cmd: "cd app && python -m pytest -q", workdir: "/x"}); text(r)'
+    tight = 'text(await tools.exec_command({cmd:"git commit -m x"}))'
+    steps = {step["call"]: step["hint"] for step in tool_steps(
+        [call("a", "exec", wrapped), call("b", "exec", tight), call("c", "exec", 'tools.exec_command({"cmd": "ls"})')])}
+    assert steps == {"a": "test", "b": "commit", "c": "read"}
+
+
+def test_agent_coordination_polls_and_web_lookups_are_not_plain_runs():
+    records = [
+        call("a", "wait_agent", '{"timeout_ms":30000}'), call("b", "spawn_agent", {"prompt": "x"}),
+        call("c", "exec", "text(await tools.write_stdin({session_id: 3, chars: \"\"}))"),
+        call("d", "exec", 'text(await tools.web__run({search_query: [{q: "x"}]}))'),
+        call("e", "exec", 'await tools.write_stdin({session_id: 3}); await tools.exec_command({cmd: "python x.py"})'),
+        call("f", "Agent", {"prompt": "review"}),
+    ]
+    assert {s["call"]: s["hint"] for s in tool_steps(records)} == {
+        "a": "delegate", "b": "delegate", "c": "poll", "d": "read", "e": "run", "f": "delegate"}
+
+
+def test_classify_steps_counts_hints_and_the_share_of_unplaced_runs():
+    records = [
+        call("a", "Edit", {"file_path": "/work/app/x.py", "old_string": "1", "new_string": "2"}),
+        call("b", "Bash", {"command": "python -m pytest -q"}),
+        call("c", "Bash", {"command": "python scripts/x.py --secret-flag"}),
+        call("d", "Bash", {"command": "python scripts/x.py --secret-flag"}),
+        call("e", "Bash", {"command": "make deploy"}),
+        result("e", "ok"),
+    ]
+    summary = classify_steps(records)
+    assert summary["tool_calls"] == 5
+    assert summary["hints"] == {"edit": 1, "run": 3, "test": 1}
+    assert summary["ambiguous_run_commands"] == 2 and summary["ambiguous_run_share"] == 0.6
+    assert "secret" not in json.dumps(summary)
+    assert summary["run_by_tool"] == {"Bash": 3}
+    assert classify_steps([]) == {"tool_calls": 0, "hints": {}, "run_by_tool": {}, "ambiguous_run_commands": 0,
+                                  "ambiguous_run_share": 0.0}
+
+
+def test_context_selection_audit_stays_out_of_the_model_payload():
+    context = {"context_selection": {"policy": "x"}, "context_only": [], "manifest": {}}
+    assert model_context(context) == {"context_only": [], "manifest": {}}
+    assert "context_selection" in context
 
 
 def test_every_file_edit_must_back_an_extracted_event():

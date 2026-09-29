@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import difflib
 import os
 import re
 import threading
@@ -19,7 +20,8 @@ from .langsmith_trace import LangSmithTracer
 from .model import Snapshot, SourceRecord, is_user_prompt
 from .routing import ROUTING_VERSION, RunnerPool, TaskValidationError
 from .runners.cli_runner import EFFORTS
-from .schema import DELTA_SCHEMA, EXTRACT_SCHEMA, EvidenceValidator, record_evidence, validate_shape
+from .schema import (DELTA_SCHEMA, EXTRACT_SCHEMA, EvidenceValidator, delta_schema, merge_review_patch,
+                     record_evidence, review_patch_audit, review_patch_schema, validate_shape)
 from .sources import collect_logs
 from .store import Store
 from .util import Cancelled, FlowError, digest, dumps, ident, now
@@ -33,8 +35,9 @@ class AnalysisConfig:
     unit_chars: int = 60_000
     record_chars: int = 48_000
     task_chars: int = 240_000
-    unit_records: int = 80
+    unit_records: int = 200
     context_events: int = 24
+    context_mode: str = "lean"
     read_rounds: int = 2
     read_chars: int = 36_000
     runner_name: str | None = None
@@ -45,8 +48,12 @@ class AnalysisConfig:
     # medium throughout since 2026-09-27: high made integration and review calls take 2-3 minutes each.
     extract_effort: str = "medium"
     integrate_effort: str = "medium"
+    # reuse lets the integrator leave out quotes an input candidate already carries; the code cites those.
+    integrate_evidence: str = "full"
     escalation_effort: str = "medium"
     semantic_review: bool = True
+    # `patch`: the review answers only what it changes instead of rewriting the whole GraphDelta.
+    review_output: str = "patch"
     extract_workers: int = 1
     max_calls: int = 30
     # Work units for this run (never saved). Unset, the call cap alone bounds a run.
@@ -82,6 +89,12 @@ class AnalysisConfig:
             raise FlowError("LangSmith 프로젝트 이름이 비어 있거나 제어 문자를 포함합니다.")
         if min(self.history_limit, self.unit_chars, self.record_chars, self.task_chars, self.unit_records) <= 0:
             raise FlowError("입력 예산은 양수여야 합니다.")
+        if self.context_mode not in {"full", "lean"}:
+            raise FlowError("context_mode는 full 또는 lean이어야 합니다.")
+        if self.integrate_evidence not in {"full", "reuse"}:
+            raise FlowError("integrate_evidence는 full 또는 reuse이어야 합니다.")
+        if self.review_output not in {"full", "patch"}:
+            raise FlowError("review_output은 full 또는 patch이어야 합니다.")
         if self.record_chars > self.unit_chars or self.unit_chars >= self.task_chars:
             raise FlowError("record_chars ≤ unit_chars < task_chars 조건이 필요합니다.")
 
@@ -118,6 +131,13 @@ def detect_language(records: list[SourceRecord], locale: str | None = None) -> s
 
 def prompt(name: str) -> str:
     return files("projectflow").joinpath("prompts", name + ".md").read_text(encoding="utf-8")
+
+
+# Sent only in reuse mode, so the default integration request is the same bytes as before.
+EVIDENCE_POLICY_REUSE = (
+    "In events_to_add, edges_to_add, events_to_update, candidate_resolutions and change_attributions you may "
+    "leave evidence empty when the only support is evidence an input candidate already carries; the code then "
+    "cites that candidate's evidence. Quote only support the candidates do not already have.")
 
 
 def build_task(stage: str, data: dict, language: str | None = None) -> dict:
@@ -185,6 +205,12 @@ def _incomplete_input(issues: list[str]) -> bool:
 
 
 CONTEXT_POLICY_VERSION = "relevance_v2"
+# `lean`: earlier work reaches the model as graph (events, edges, quotes) and a few records, not as
+# whole records. Cut finely, a piece's neighbours are already in the graph.
+LEAN_CITED_LINES, LEAN_PREVIOUS_RECORDS, LEAN_CONTEXT_EVENTS = 5, 2, 12
+LEAN_INDEX_RECORDS, LEAN_INDEX_EVENTS, LEAN_INDEX_FILES = 100, 100, 50
+# Repair hints: a few provided lines per failed quote, ranked by how close they are to it.
+NEAREST_LINES, NEAREST_POOL, NEAREST_LINE_CHARS = 3, 12, 400
 # What the extraction input carries besides the records: short IDs, a tool-step outline
 # and the user's messages. Part of the cache signature, so older extractions are redone.
 EXTRACT_INPUT_VERSION = "aliases_steps_requests_read_heads_v2"
@@ -245,7 +271,12 @@ class IdAliases:
 
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
-READ_TOOLS = {"Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "web_search", "view_image"}
+READ_TOOLS = {"Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "web_search", "web__run", "view_image"}
+# Handing work to another agent and waiting for it: neither a run nor an outcome of its own.
+DELEGATE_TOOLS = {"spawn_agent", "wait_agent", "send_message", "followup_task", "list_agents", "close_agent",
+                  "resume_agent", "Agent", "Task", "SendMessage", "TaskStop"}
+# Codex's exec tool runs JavaScript that calls these; they only read or look things up.
+READ_INNER_TOOLS = {"web__run", "view_image", "clock__curr_time"}
 READ_COMMANDS = re.compile(r"^\s*(cat|sed -n|grep|rg|ls|head|tail|find|wc|pwd|git (status|diff|log|show))\b")
 # Anything in a command that can write, which makes it a run even if it starts by reading.
 WRITE_MARKERS = re.compile(r">|\bsed -i\b|\btee\b|write_text|apply_patch|\b(mv|cp|rm|touch|mkdir|chmod)\b")
@@ -263,35 +294,157 @@ def _tool_target(name: str, body: str, cwd: str | None) -> str:
         found = re.search(rf'"{key}":\s*"([^"]+)"', body)
         if found:
             return relative(found.group(1))
-    command = re.search(r'"command":\s*"((?:[^"\\]|\\.)*)"', body) or re.search(r'cmd:"((?:[^"\\]|\\.)*)"', body)
-    text = command.group(1).replace("\\n", " ").replace('\\"', '"') if command else body
-    return " ".join(text.split())[:140]
+    return _command_text(body)[:140]
+
+
+def _command_text(body: str, newline: str = " ") -> str:
+    """The whole command of a shell-like tool call on one line, or the body when there is none."""
+    command = re.search(r'"command":\s*"((?:[^"\\]|\\.)*)"', body) or re.search(r'\bcmd"?\s*:\s*"((?:[^"\\]|\\.)*)"', body)
+    text = command.group(1).replace("\\n", newline).replace('\\"', '"') if command else body
+    return " ".join(text.split())
+
+
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|\n]")
+_SHELL_C = re.compile(r"^(?:bash|sh|zsh)\s+-l?c\s+[\"']?")
+_SHELL_FILE = re.compile(r"^(?:bash|sh|zsh)\s+(?=[^-\s])")
+_HEREDOC = re.compile(r"<<-?\s*[\"']?\w+")
+_INTERPRETER = re.compile(r"^(?:\S*/)?python3?\s+-m\s+")
+_ENV_PREFIX = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+")
+_WRAPPERS = re.compile(
+    r"^(?:(?:uv|poetry|pipenv|pdm|hatch) run\s+|npx\s+|bunx\s+|pnpm exec\s+|time\s+|nohup\s+|sudo\s+|"
+    r"xargs(?:\s+-\S+)*\s+|timeout(?:\s+-\S+)*\s+\d\S*\s+|"
+    r"docker(?:\s+compose|-compose)?\s+(?:run|exec)(?:\s+-\S+)*\s+\S+\s+)")
+_GIT = r"git(?:\s+-C\s+\S+|\s+-c\s+\S+)*\s+"
+_GIT_CALL = re.compile(rf"^{_GIT}(?P<sub>[a-z][a-z-]*)(?P<rest>.*)$")
+_VCS_SUBCOMMANDS = {"push", "pull", "fetch", "checkout", "switch", "merge", "rebase", "stash", "reset",
+                    "cherry-pick", "tag", "branch", "restore", "clean", "add", "rm", "mv", "worktree", "revert"}
+TEST_COMMAND = re.compile(
+    r"^(?:pytest|py\.test|unittest|build|tox|nox|ruff|mypy|pyright|flake8|pylint|jest|vitest|tsc|eslint|playwright|"
+    r"rspec|phpunit|scripts/test\.sh|\./gradlew(?:\s+-\S+)*\s+(?:test|check|build)|"
+    r"gradle(?:\s+-\S+)*\s+(?:test|check|build)|mvn(?:\s+-\S+)*\s+(?:test|verify|package)|"
+    r"cargo\s+(?:\+\S+\s+)?(?:test|check|clippy|build)|go\s+(?:test|vet|build)|"
+    r"(?:swift|dotnet)\s+(?:test|build)|xcodebuild\b|make(?:\s+-\S+)*\s+(?:test|check|lint|build)|"
+    r"node\s+--test|deno\s+test|bazel\s+test|"
+    r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|lint|build|typecheck|check)|npm\s+t)(?![\w-])")
+
+
+def _vcs_mutates(sub: str, rest: str) -> bool:
+    """False for a listing or a dry run of a git command that otherwise changes state."""
+    words = rest.split()
+    flags = {word for word in words if word.startswith("-")}
+    if sub in {"add", "clean", "fetch", "rm", "mv", "push", "pull"} and flags & {"-n", "--dry-run"}:
+        return False
+    if sub in {"stash", "worktree"}:
+        return not (words and words[0] in {"list", "show"})
+    if sub in {"branch", "tag"}:
+        listing = {"-l", "--list", "-a", "--all", "-r", "--remotes", "--show-current", "-v", "-vv",
+                   "--contains", "--merged", "--no-merged", "--points-at"}
+        return not (flags & listing) and bool(words)
+    return True
+
+
+def _command_segments(text: str) -> list[str]:
+    """Each command of a compound line without env assignments, wrappers or interpreter prefix."""
+    segments = []
+    for raw in _SEGMENT_SPLIT.split(_HEREDOC.split(text)[0]):
+        segment = raw.strip().lstrip("(").strip()
+        for _ in range(4):
+            segment = _SHELL_FILE.sub("", _SHELL_C.sub("", segment))
+            segment = _ENV_PREFIX.sub("", segment)
+            segment = _WRAPPERS.sub("", segment)
+            segment = _INTERPRETER.sub("", segment)
+        # A path to the executable (.venv/bin/pytest) is the executable.
+        first, _, rest = segment.partition(" ")
+        if "/" in first and not first.startswith(("scripts/", "./gradlew")) and "bin/" in first:
+            segment = f"{first.rsplit('/', 1)[-1]} {rest}".strip()
+        if segment:
+            segments.append(segment)
+    return segments
+
+
+def command_kind(text: str) -> str | None:
+    """commit, test or vcs when a command in the line is one; commit outranks test outranks vcs."""
+    segments = _command_segments(text)
+    calls = [found for found in map(_GIT_CALL.match, segments) if found]
+    if any(call["sub"] == "commit" for call in calls):
+        return "commit"
+    if any(TEST_COMMAND.match(segment) for segment in segments):
+        return "test"
+    if any(call["sub"] in _VCS_SUBCOMMANDS and _vcs_mutates(call["sub"], call["rest"]) for call in calls):
+        return "vcs"
+    return None
+
+
+def step_hint(record: SourceRecord) -> tuple[str, str, str]:
+    """(tool name, target, hint) of one tool call: edit / read / commit / test / vcs / run."""
+    head, _, body = record.content.partition("\n")
+    name = head.removeprefix("Tool: ").strip() or "unknown"
+    target = _tool_target(name, body, record.cwd)
+    kind = command_kind(_command_text(body, "; ")) if name not in EDIT_TOOLS | READ_TOOLS else None
+    inner = set(re.findall(r"tools\.(\w+)", body)) if name == "exec" and "*** Begin Patch" not in body else set()
+    if name in EDIT_TOOLS or "*** Begin Patch" in body:
+        hint = "edit"
+    elif name in DELEGATE_TOOLS:
+        hint = "delegate"
+    elif inner == {"write_stdin"}:
+        hint = "poll"
+    elif inner and inner <= READ_INNER_TOOLS:
+        hint = "read"
+    elif kind:
+        hint = kind
+    elif name in READ_TOOLS or (READ_COMMANDS.match(target) and not WRITE_MARKERS.search(target)):
+        hint = "read"
+    else:
+        hint = "run"
+    return name, target, hint
+
+
+def classify_steps(records: list[SourceRecord]) -> dict:
+    """How the tool calls in these records were classified by code, counts only (no content).
+
+    `run` is what the code could not place; `ambiguous_run_commands` counts its distinct command
+    lines, the part a later model pass could resolve. The share tells whether that pass is worth it.
+    """
+    hints: dict[str, int] = {}
+    run_tools: dict[str, int] = {}
+    commands: set[str] = set()
+    for record in records:
+        if record.role != "tool_call":
+            continue
+        name, _, hint = step_hint(record)
+        hints[hint] = hints.get(hint, 0) + 1
+        if hint == "run":
+            run_tools[name] = run_tools.get(name, 0) + 1
+            commands.add(digest(_command_text(record.content.partition("\n")[2], "; ")))
+    calls = sum(hints.values())
+    top = sorted(run_tools.items(), key=lambda item: (-item[1], item[0]))[:8]
+    return {"tool_calls": calls, "hints": dict(sorted(hints.items())), "run_by_tool": dict(top),
+            "ambiguous_run_commands": len(commands),
+            "ambiguous_run_share": round(hints.get("run", 0) / calls, 3) if calls else 0.0}
+
+
+def _failed_result(text: str) -> tuple[str, bool]:
+    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    return first, first.startswith(("<tool_use_error>", "Error:", "error:"))
 
 
 def tool_steps(assigned: list[SourceRecord]) -> list[dict]:
-    """An outline of the unit's tool calls: what each did (edit / read / run) and its result.
+    """An outline of the unit's tool calls: what each did (edit / read / run / delegate / poll) and its result.
 
-    Hints come from the tool name and patch markers only; the records stay the evidence.
+    Hints come from the tool name, patch markers and the command line only; the records stay the
+    evidence. edit / read / run, and run is refined to commit, test (tests, lint, build) or vcs.
     """
     results = {r.tool_call_id: r for r in assigned if r.role == "tool_result" and r.tool_call_id}
     steps = []
     for record in assigned:
         if record.role != "tool_call":
             continue
-        head, _, body = record.content.partition("\n")
-        name = head.removeprefix("Tool: ").strip() or "unknown"
-        target = _tool_target(name, body, record.cwd)
-        if name in EDIT_TOOLS or "*** Begin Patch" in body:
-            hint = "edit"
-        elif name in READ_TOOLS or (READ_COMMANDS.match(target) and not WRITE_MARKERS.search(target)):
-            hint = "read"
-        else:
-            hint = "run"
+        name, target, hint = step_hint(record)
         result = results.get(record.tool_call_id) if record.tool_call_id else None
-        first = next((line.strip() for line in result.content.splitlines() if line.strip()), "") if result else ""
+        first, failed = _failed_result(result.content) if result else ("", False)
         steps.append({"call": record.source_id, "result": result.source_id if result else None,
                       "tool": name, "hint": hint, "target": target, "result_head": first[:120],
-                      "failed": first.startswith(("<tool_use_error>", "Error:", "error:"))})
+                      "failed": failed})
     return steps
 
 
@@ -347,6 +500,11 @@ def _shown(record: SourceRecord, harness: "Harness", *, read: bool = False) -> d
     return shown
 
 
+def model_context(context: dict) -> dict:
+    """The context the model receives: the selection audit stays with us (ledger, preview, digest)."""
+    return {key: value for key, value in context.items() if key != "context_selection"}
+
+
 def extract_request_data(unit: dict, snapshot_id: str, assigned: list[SourceRecord], harness: "Harness",
                          context: dict, issues: list[str]) -> tuple[dict, dict[str, tuple[str, str | None]]]:
     """The extraction input, and the file edits its answer has to cite. Shared with the preview."""
@@ -358,7 +516,7 @@ def extract_request_data(unit: dict, snapshot_id: str, assigned: list[SourceReco
     data = {"unit_id": unit["id"], "snapshot_id": snapshot_id, "new_records": records,
             "assigned_source_ids": unit["sources"], "user_requests": requests,
             "tool_steps": [{key: value for key, value in step.items() if key != "failed"} for step in steps],
-            "input_limitations": issues, **context}
+            "input_limitations": issues, **model_context(context)}
     return data, _required_edits(steps)
 
 
@@ -616,6 +774,25 @@ def _record_timestamp(value: str | None) -> float | None:
         return None
 
 
+# The model input is larger than the records a unit owns (line numbers, metadata, context). Until the
+# assembled payload is measured at plan time this is a proxy per context mode: full was calibrated on
+# one real unit (28.7k of records became a 270k payload), lean on zero-AI previews of the two eval
+# fixtures (payload ≈ 1.3 × records + 32k), with margin for the capped context a later unit carries.
+PAYLOAD_SHARE = 0.6
+PAYLOAD_CONSTANTS = {"full": (3.5, 500, 40_000), "lean": (1.5, 500, 30_000)}
+MIN_FILL = 0.4
+RESULT_CUT_HINTS = {"run", "test", "commit", "vcs"}
+
+
+def payload_budget(config: AnalysisConfig) -> int:
+    return int(config.task_chars * PAYLOAD_SHARE)
+
+
+def estimated_payload(record_chars: int, records: int, context_mode: str = "lean") -> int:
+    factor, overhead, fixed = PAYLOAD_CONSTANTS[context_mode]
+    return int(record_chars * factor) + records * overhead + fixed
+
+
 def _session_unit_chunks(records: list[SourceRecord], config: AnalysisConfig,
                          issues: list[str]) -> list[list[SourceRecord]]:
     """Keep sessions together and choose stable, human-readable cut points."""
@@ -633,7 +810,9 @@ def _session_unit_chunks(records: list[SourceRecord], config: AnalysisConfig,
                 if value:
                     last_link[(kind, str(value))] = index
 
-        safe, natural, turns = set(), set(), set()
+        call_hint = {r.tool_call_id: step_hint(r)[2] for r in ordered if r.role == "tool_call" and r.tool_call_id}
+        costs = [unit_cost(r) for r in ordered]
+        safe, natural, turns, results, commits = set(), set(), set(), set(), set()
         open_until = -1
         for index, record in enumerate(ordered):
             for kind, value in (("tool", record.tool_call_id),
@@ -656,12 +835,20 @@ def _session_unit_chunks(records: list[SourceRecord], config: AnalysisConfig,
                 natural.add(boundary)
             if is_user_prompt(following):
                 turns.add(boundary)
+            hint = call_hint.get(record.tool_call_id) if record.role == "tool_result" else None
+            if hint in RESULT_CUT_HINTS:
+                # After the result: edit, run and result stay together, so `verifies` need not cross pieces.
+                results.add(boundary)
+                if hint == "commit" and not _failed_result(record.content)[1]:
+                    commits.add(boundary)
 
         start = 0
         while start < len(ordered):
             count, chars, limit = 0, 0, start
-            while limit < len(ordered) and count < config.unit_records and chars + unit_cost(ordered[limit]) <= config.unit_chars:
-                chars += unit_cost(ordered[limit])
+            while (limit < len(ordered) and count < config.unit_records
+                   and chars + costs[limit] <= config.unit_chars
+                   and estimated_payload(chars + costs[limit], count + 1, config.context_mode) <= payload_budget(config)):
+                chars += costs[limit]
                 count += 1
                 limit += 1
             if limit == start:  # Caller already filters records above record_chars.
@@ -673,8 +860,16 @@ def _session_unit_chunks(records: list[SourceRecord], config: AnalysisConfig,
                 end = limit
             else:
                 candidates = [cut for cut in safe if start < cut <= limit]
-                turn_cuts = [cut for cut in candidates if cut in turns]
-                end = max(turn_cuts or candidates, default=limit)
+                floor = MIN_FILL * sum(costs[start:limit])
+                # Meaning first: after a commit, before a person's message, after a run result. A cut
+                # that would leave a sliver behind is not worth it; then the last safe cut is used.
+                for group in (commits, turns, results):
+                    picked = [cut for cut in candidates if cut in group and sum(costs[start:cut]) >= floor]
+                    if picked:
+                        end = max(picked)
+                        break
+                else:
+                    end = max(candidates, default=limit)
                 if end not in safe:
                     warning = "작업 단위 크기 한도 때문에 연결된 도구 호출·결과 또는 원문 조각을 나눴습니다."
                     if warning not in issues:
@@ -789,6 +984,32 @@ class Harness:
         result["lines"] = [{"line": n, "text": lines[n - 1]} for n in range(start, end + 1)]
         return result
 
+    def nearest_lines(self, source_id: str, quote: str, limit: int = NEAREST_LINES) -> list[dict]:
+        """Provided lines closest to a quote the model got wrong, as lines it can copy instead.
+
+        Only lines this record was shown are candidates, so the hint can name no text the
+        model has not seen. A long line is cut to a window around its best-matching position.
+        """
+        record = self.pool.get(source_id)
+        lines = record.content.splitlines() if record else []
+        numbers = sorted({n for lo, hi in self.provided.get(source_id, []) for n in range(lo, min(hi, len(lines)) + 1)})
+        # quick_ratio keeps a pass over a whole record cheap; the best few are ranked exactly.
+        coarse = sorted(numbers, key=lambda n: -difflib.SequenceMatcher(
+            None, quote, lines[n - 1], autojunk=False).quick_ratio())[:NEAREST_POOL]
+        ranked = sorted(coarse, key=lambda n: (-difflib.SequenceMatcher(
+            None, quote, lines[n - 1], autojunk=False).ratio(), n))[:limit]
+        results = []
+        for number in ranked:
+            line = lines[number - 1]
+            clipped = len(line) > NEAREST_LINE_CHARS
+            if clipped:
+                best = difflib.SequenceMatcher(None, quote, line, autojunk=False).find_longest_match(
+                    0, len(quote), 0, len(line)).b
+                begin = max(0, min(best - NEAREST_LINE_CHARS // 2, len(line) - NEAREST_LINE_CHARS))
+                line = line[begin:begin + NEAREST_LINE_CHARS]
+            results.append({"source_id": source_id, "line": number, "text": line, "clipped": clipped})
+        return results
+
     def context(self, assigned: list[SourceRecord], *, clues: str = "") -> dict:
         sessions = {r.session_id for r in assigned if r.session_id}
         trees = {r.worktree_id for r in assigned if r.worktree_id}
@@ -864,7 +1085,8 @@ class Harness:
             return all(visible_evidence(i) for i in event.get("evidence_ids", []))
         visible_events = [e for e in self.graph["events"] if visible_event(e)]
         ordered = sorted(visible_events, key=rank, reverse=True)
-        selected = ordered[:self.config.context_events]
+        lean = self.config.context_mode == "lean"
+        selected = ordered[:min(self.config.context_events, LEAN_CONTEXT_EVENTS) if lean else self.config.context_events]
         selected_ids = {e["id"] for e in selected}
         visible_ids_for_events = {e["id"] for e in visible_events}
         selected_event_ids = {e["id"] for e in selected}
@@ -915,7 +1137,8 @@ class Harness:
             cross = [record for _, _, record in sorted(candidates)[:4]]
         cross_ids = {r.source_id for r in cross}
         # Only four preceding records go directly into context; the rest are discoverable.
-        previous_turn_ids = set([r.source_id for r in nearby if positions[r.source_id] < anchor][:4])
+        previous_turn_ids = set([r.source_id for r in nearby if positions[r.source_id] < anchor][
+            :LEAN_PREVIOUS_RECORDS if lean else 4])
         related_ids = {i for event in selected for i in event["evidence_ids"]}
         related_evidence = {i: self.saved[i] for i in related_ids if i in self.saved}
         _rehydrate(self.pool, self.provided, related_evidence)
@@ -930,6 +1153,20 @@ class Harness:
                            for e in related_evidence.values())
             same_call = record.tool_call_id and (record.provider, record.session_id, record.tool_call_id) in call_keys
             if not is_cited and not same_call and record.source_id not in previous_turn_ids | cross_ids:
+                continue
+            if (lean and is_cited and not same_call and not record.locator.get("preserved_only")
+                    and record.source_id not in previous_turn_ids | cross_ids):
+                # Only the cited lines and a few around them; the rest is readable on request.
+                for lo, hi in self._cited_ranges(record, related_evidence):
+                    size = sum(len(line) + 1 for line in record.content.splitlines()[lo - 1:hi])
+                    if context_budget + size > self.config.read_chars:
+                        break
+                    try:
+                        previous.append({**self.provide(record.source_id, lo, hi), "context_only": True,
+                                         "context_reason": "cited_lines"})
+                        context_budget += size
+                    except FlowError:
+                        pass
                 continue
             if context_budget + len(record.content) > self.config.read_chars or len(record.content) > self.config.record_chars:
                 continue
@@ -1000,14 +1237,16 @@ class Harness:
                           e["from_event_id"] in selected_ids and
                           e["to_event_id"] in selected_ids and
                           all(visible_evidence(i) for i in e.get("evidence_ids", []))]
+        index_records = ordered_records[:LEAN_INDEX_RECORDS if lean else 250]
         manifest = {
-            "records": [{"id": r.source_id, "role": r.role, "provider": r.provider,
-                         "recorded_at": r.recorded_at,
-                         "lines": len(r.content.splitlines())} for r in ordered_records[:250]],
-            "events": [{"id": e["id"], "title": e["title"]} for e in ordered[:200]],
+            "records": [({"id": r.source_id, "role": r.role, "lines": len(r.content.splitlines())} if lean else
+                         {"id": r.source_id, "role": r.role, "provider": r.provider,
+                          "recorded_at": r.recorded_at, "lines": len(r.content.splitlines())})
+                        for r in index_records],
+            "events": [{"id": e["id"], "title": e["title"]} for e in ordered[:LEAN_INDEX_EVENTS if lean else 200]],
             "files_at_revision": [{"id": i, "revision": v[1], "path": v[2]}
                                   for i, v in list(self.file_manifest.items())
-                                  if i in self.allowed_file_ids][:100],
+                                  if i in self.allowed_file_ids][:LEAN_INDEX_FILES if lean else 100],
             "limits": "과거 사건 색인 200개, 원문 색인 250개, 고정 revision 파일 색인 100개. 무제한 전체 검색이 아닙니다."}
         delivered_parts = {"context_only": previous, "existing_events": selected,
                            "existing_evidence": _prompt_evidence(related_evidence, previous),
@@ -1022,6 +1261,20 @@ class Harness:
                 "existing_edges": existing_edges,
                 "existing_open_items": selected_open,
                 "manifest": manifest}
+
+    @staticmethod
+    def _cited_ranges(record: SourceRecord, evidence: dict[str, dict]) -> list[tuple[int, int]]:
+        total = len(record.content.splitlines())
+        spans = sorted((max(1, e["start_line"] - LEAN_CITED_LINES), min(total, e["end_line"] + LEAN_CITED_LINES))
+                       for e in evidence.values()
+                       if e["source_id"] == record.source_id and e["content_hash"] == record.content_hash)
+        merged: list[list[int]] = []
+        for lo, hi in spans:
+            if merged and lo <= merged[-1][1] + 1:
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi])
+        return [(lo, hi) for lo, hi in merged]
 
     def read(self, request: dict) -> list[dict]:
         required = {"kind", "ids", "start_line", "end_line", "query", "unit_id"}
@@ -1116,8 +1369,11 @@ class Harness:
             self.read_manifest.append(copy.deepcopy(entry))
 
     def task(self, stage: str, data: dict, checker: Callable[[dict], Any],
-             *, validator: EvidenceValidator | None = None) -> dict:
-        schema = EXTRACT_SCHEMA if stage == "extract" else DELTA_SCHEMA
+             *, validator: EvidenceValidator | None = None, schema: dict | None = None,
+             merge: Callable[[dict], dict] | None = None) -> dict:
+        """`merge` folds the model's answer (a review patch) into what `checker` sees; the call
+        record and the repair round keep the answer the model actually wrote."""
+        schema = schema or (EXTRACT_SCHEMA if stage == "extract" else delta_schema(self.config.integrate_evidence == "reuse"))
         task = _trace_operation(self.detailed_trace, f"build_{stage}_request",
                                 {"stage": stage, "data": data},
                                 lambda: build_task(stage, data, self.config.output_language))
@@ -1209,6 +1465,7 @@ class Harness:
             # lines). A repair must see what the model wrote, not those expanded lines.
             submitted = copy.deepcopy(output)
             output_chars = len(dumps(submitted))
+            quote_chars = output_quote_chars(submitted)
             usage = getattr(self.runner, "last_usage", None)
             # Requested IDs/aliases are not evidence of the provider's actual model.
             actual_model = getattr(self.runner, "last_model", None)
@@ -1258,6 +1515,9 @@ class Harness:
                     continue
                 if validator is not None:
                     validator.normalizations.clear()
+                    validator.mismatches.clear()
+                if merge is not None:
+                    output = merge(output)
                 def validate_claims() -> dict:
                     checker(output)
                     # What the trace shows for a passing check: how citations were matched.
@@ -1272,6 +1532,8 @@ class Harness:
                     "read_rounds_used": read_count, "repair_rounds_used": repair_count,
                     "citation_normalizations": len(validator.normalizations) if validator else 0,
                     "citation_normalization_audit": copy.deepcopy(validator.normalizations) if validator else [],
+                    "quote_mismatch_audit": validator.mismatch_audit() if validator else [],
+                    "output_quote_chars": quote_chars,
                 }, submitted)
                 return output
             except FlowError as exc:
@@ -1284,6 +1546,7 @@ class Harness:
                         "error": str(exc)[:300],
                         "citation_normalizations": len(validator.normalizations) if validator else 0,
                         "citation_normalization_audit": copy.deepcopy(validator.normalizations) if validator else [],
+                        "quote_mismatch_audit": validator.mismatch_audit() if validator else [],
                     }, submitted)
                 if repair_count >= 1:
                     raise TaskValidationError(str(exc), submitted) from exc
@@ -1300,11 +1563,29 @@ class Harness:
                             exact_lines.append(self.provide(source_id, start, end))
                     if exact_lines:
                         task["repair"]["exact_source_lines"] = exact_lines
+                    nearest = []
+                    for item in [m for m in (validator.mismatches if validator else [])
+                                 if m["matches"] == 0][:8]:
+                        nearest.extend(self.nearest_lines(item["source_id"], item["quote"]))
+                    if nearest:
+                        task["repair"]["nearest_lines"] = nearest
                     return task["repair"]
                 _trace_operation(self.detailed_trace, "prepare_repair_request",
                                  {"validation_error": str(exc)[:400], "previous_output": submitted},
                                  prepare_repair)
                 repair_count += 1
+
+
+def output_quote_chars(output: object) -> dict[str, int]:
+    """Characters of quoted text per top-level section of a model answer (sizes only)."""
+    def quoted(value: object) -> int:
+        if isinstance(value, dict):
+            return (len(value["quote"]) if isinstance(value.get("quote"), str) else 0) + sum(
+                quoted(v) for k, v in value.items() if k != "quote")
+        return sum(quoted(v) for v in value) if isinstance(value, list) else 0
+    if not isinstance(output, dict):
+        return {}
+    return {key: n for key, value in output.items() if (n := quoted(value))}
 
 
 def unlinked_observed_outcomes(delta: dict | None) -> list[dict]:
@@ -1350,6 +1631,20 @@ def review_signal_items(delta: dict | None) -> dict[str, list[dict]]:
              "unlinked_observed_outcome": unlinked_observed_outcomes(delta),
              "unlinked_revision": unlinked_revisions(delta)}
     return {signal: items for signal, items in found.items() if items}
+
+
+REVIEW_CHECKS = ("Compare the proposed GraphDelta with the supplied original evidence and relevant history. "
+                "Check duplicate versus genuine retry, state overstatement, and unsupported relation "
+                "invalidation. ")
+# The default: the review rewrites the delta, so the request and its schema are the integration ones.
+REVIEW_INSTRUCTION = REVIEW_CHECKS + ("Return the complete corrected GraphDelta and preserve one resolution "
+                                     "for every candidate.")
+# The opt-in: the review sends back only what it changes, and the code merges it into the proposal.
+REVIEW_PATCH_INSTRUCTION = REVIEW_CHECKS + (
+    "Return only what changes: patch holds the new or replaced items, never an unchanged one, and an item "
+    "whose id is a proposed item's id replaces that item. List proposed items to drop in remove. Give "
+    "candidate_resolutions only for candidates whose resolution changes, and change_attributions only for "
+    "added or replaced items. Still preserve one review resolution for every issue.")
 
 
 @dataclass
@@ -1413,11 +1708,12 @@ class Engine:
         return {**plan, "output_language": self.resolve_language(snapshot)}
 
     def _routing_signature(self) -> str:
+        # the default mode adds nothing, so changing the default does not resend finished units
         return digest([ROUTING_VERSION, "validation-failure-only-v3", CONTEXT_POLICY_VERSION, EXTRACT_INPUT_VERSION,
                        prompt("common"), prompt("extract"), EXTRACT_SCHEMA,
                        self.config.extract_model, self.config.escalation_model,
                        self.config.runner_name, self.config.base_model, self.config.extract_effort,
-                       self.config.output_language])
+                       self.config.output_language, *([self.config.context_mode] if self.config.context_mode != "lean" else [])])
 
     def _prepare_extraction(self, unit: dict, pool: dict[str, SourceRecord], graph: dict,
                             snapshot_id: str, run_id: str, runners: RunnerPool,
@@ -1581,7 +1877,9 @@ class Engine:
         if any(output[k] for k in ("event_candidates", "edge_candidates", "existing_event_matches", "open_items")):
             data = {"base_graph_version": graph["version"], "snapshot_id": snapshot_id,
                     "validated_candidates": output, "candidate_evidence": _prompt_evidence(extracted["evidence"]),
-                    "assigned_source_ids": unit["sources"], **context}
+                    "assigned_source_ids": unit["sources"], **model_context(context)}
+            if self.config.integrate_evidence == "reuse":
+                data["evidence_policy"] = EVIDENCE_POLICY_REUSE
         else:
             data = None
         return PreparedIntegration(h, validator, data, graph["version"])
@@ -1600,11 +1898,13 @@ class Engine:
         if data is not None:
             h.runner = runners.get("integrate")
             candidate_set = data["validated_candidates"]
+            reuse = self.config.integrate_evidence == "reuse"
             delta = h.task("integrate", data, lambda o: validator.apply_delta(
-                o, graph, snapshot_id, run_id, candidate_set),
+                o, graph, snapshot_id, run_id, candidate_set, evidence_reuse=reuse),
                            validator=validator)
             prepared.delta = delta
-            new_graph = validator.apply_delta(delta, graph, snapshot_id, run_id, candidate_set)
+            new_graph = validator.apply_delta(delta, graph, snapshot_id, run_id, candidate_set,
+                                             evidence_reuse=reuse)
             # What code dropped from the extraction is said whatever the integrator wrote.
             new_graph["limitations"] = list(dict.fromkeys(new_graph["limitations"] +
                                                          extracted["cached"].get("dropped_candidates", [])))
@@ -1627,13 +1927,20 @@ class Engine:
             harness, validator = prepared.harness, prepared.validator
             harness.runner, harness.routing_role, harness.routing_reasons = runners.get("escalation"), "integrate_review", reasons
             candidate_set = data["validated_candidates"]
+            proposal, patch_mode = delta, self.config.review_output == "patch"
             review_data = {**data, "review_trigger": reasons, "review_issues": issues,
-                "proposed_graph_delta": delta,
-                "review_instruction": "Compare the proposed GraphDelta with the supplied original evidence and relevant history. Check duplicate versus genuine retry, state overstatement, and unsupported relation invalidation. Return the complete corrected GraphDelta and preserve one resolution for every candidate."}
-            delta = harness.task("integrate", review_data,
-                lambda output: validator.apply_delta(output, graph, snapshot_id, run_id, candidate_set,
-                                                     expected_review_issues=issues),
-                validator=validator)
+                "proposed_graph_delta": proposal,
+                "review_instruction": REVIEW_PATCH_INSTRUCTION if patch_mode else REVIEW_INSTRUCTION}
+            def check_review(output: dict) -> None:
+                validator.apply_delta(output, graph, snapshot_id, run_id, candidate_set,
+                                      expected_review_issues=issues,
+                                      evidence_reuse=self.config.integrate_evidence == "reuse")
+            if patch_mode:
+                delta = harness.task("integrate", review_data, check_review, validator=validator,
+                                     schema=review_patch_schema(self.config.integrate_evidence == "reuse"),
+                                     merge=lambda answer: self._merge_review_patch(answer, proposal, validator))
+            else:
+                delta = harness.task("integrate", review_data, check_review, validator=validator)
             prepared.delta = delta
         resolutions = delta.get("review_resolutions", []) if executed else []
         if executed:
@@ -1646,13 +1953,21 @@ class Engine:
                       "skipped_disabled" if issues else "not_needed",
             "issues": issues, "resolutions": resolutions, "unresolved_issue_ids": unresolved_ids}
         result = (prepared.validator.apply_delta(prepared.delta, graph, snapshot_id, run_id,
-                   data["validated_candidates"], expected_review_issues=issues if executed else None)
+                   data["validated_candidates"], expected_review_issues=issues if executed else None,
+                   evidence_reuse=self.config.integrate_evidence == "reuse")
                   if data else copy.deepcopy(graph))
         result["semantic_review_audit"] = prepared.review_audit
         result["semantic_review_history"] = [*graph.get("semantic_review_history", []),
             {"unit_id": data["validated_candidates"]["unit_id"] if data else None,
              **prepared.review_audit}]
         return result
+
+    @staticmethod
+    def _merge_review_patch(answer: dict, proposal: dict, validator: EvidenceValidator) -> dict:
+        """What the checker sees in patch mode: the proposal with the review's changes folded in."""
+        merged = merge_review_patch(proposal, answer)
+        validator.normalizations.append({"mode": "review_patch_merged", **review_patch_audit(proposal, answer)})
+        return merged
 
     def _plan_units(self, snapshot: Snapshot, issues: list[str], *,
                     repair: bool = False) -> tuple[list[dict], set[str], list[str]]:
@@ -1667,7 +1982,7 @@ class Engine:
             issues.append(f"원본 {len(missing)}개가 현재 snapshot에 없습니다. 보존 근거는 유지하며 사실을 철회하지 않습니다.")
         pending = {i for i, row in source_rows.items()
                    if i in pool and row["processed_hash"] != pool[i].content_hash}
-        plans, scheduled, settled = [], set(), {}
+        plans, scheduled, settled, regrouped = [], set(), {}, {}
         for unit in self.store.units():
             if unit["status"] == "integrated":
                 if not all(i in pool for i in unit["sources"]):
@@ -1697,6 +2012,12 @@ class Engine:
                 continue
             if scheduled.intersection(ids):
                 continue
+            if (unit["status"] == "parsed" and unit["result"] is None and not deps_changed
+                    and all(i in pending for i in ids)):
+                # Nothing was paid for yet: cut it again under the current rule. A stored draft or
+                # extraction is never regrouped, that would discard a model answer.
+                regrouped[unit["id"]] = unit
+                continue
             if deps_changed or sources_changed:
                 unit["result"], unit["status"] = None, "invalidated"
             plans.append(unit)
@@ -1719,10 +2040,21 @@ class Engine:
             unit_id = ident("unit_", [(r.source_id, r.content_hash) for r in chunk])
             plans.append({"id": unit_id, "sources": [r.source_id for r in chunk],
                           "dependencies": {}, "status": "parsed", "result": None})
-        if self.config.session:
+        family = session_family(snapshot.records, self.config.session) if self.config.session else None
+
+        def in_scope(unit: dict) -> bool:
+            return family is None or all(pool[i].session_id in family for i in unit["sources"])
+
+        replaced = [unit for uid, unit in regrouped.items()
+                    if uid not in {p["id"] for p in plans} and in_scope(unit)]
+        if replaced:
+            issues.append(f"저장된 미처리 작업 단위 {len(replaced)}개를 현재 규칙으로 다시 묶었습니다.")
+            if repair:
+                for unit in replaced:
+                    self.store.save_unit(unit["id"], unit["sources"], unit["dependencies"], "superseded")
+        if family is not None:
             # Out of the oldest-first order on request: this session's units only, the rest wait.
-            family = session_family(snapshot.records, self.config.session)
-            plans = [unit for unit in plans if all(pool[i].session_id in family for i in unit["sources"])]
+            plans = [unit for unit in plans if in_scope(unit)]
         return plans, pending, missing
 
     def analyze(self, runner_factory: Callable[[], Any], *, cancel: threading.Event | None = None,

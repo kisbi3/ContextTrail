@@ -1,16 +1,21 @@
 import copy
 import json
+import shutil
 import sqlite3
 import threading
 from dataclasses import replace
 
 import pytest
 
+from projectflow.analysis import (AnalysisConfig, Engine, EVIDENCE_POLICY_REUSE, _session_unit_chunks,
+                                   build_task, prompt)
 from projectflow.demo import CASES, FixtureRunner
-from projectflow.analysis import _session_unit_chunks
 from projectflow.model import Snapshot
-from projectflow.schema import EvidenceValidator, EXTRACT_SCHEMA
-from projectflow.util import FlowError
+from projectflow.schema import (DELTA_ITEM_ARRAYS, DELTA_SCHEMA, PATCH_ARRAYS, REUSABLE_EVIDENCE_SECTIONS,
+                                REVIEW_PATCH_SCHEMA, EvidenceValidator, EXTRACT_SCHEMA, merge_review_patch,
+                                review_patch_audit)
+from projectflow.store import Store
+from projectflow.util import FlowError, dumps
 
 
 def test_no_data_never_constructs_runner(laboratory):
@@ -82,6 +87,128 @@ def test_unit_planner_keeps_tool_pair_and_fragments_at_budget_boundary(laborator
                replace(make("part two", key="e"), lineage={"fragment_of": "original"})]
     chunks = _session_unit_chunks(records, engine.config, [])
     assert [[r.source_id for r in chunk] for chunk in chunks] == [["a"], ["b", "c"], ["d", "e"]]
+
+
+def _step(make, key, hint_text, call_id, kind="Bash"):
+    call = replace(make(f"Tool: {kind}\n" + json.dumps({"command": hint_text}), key=f"{key}c", role="tool_call"),
+                   tool_call_id=call_id)
+    result = replace(make("ok", key=f"{key}r", role="tool_result"), tool_call_id=call_id)
+    return [call, result]
+
+
+def _ids(chunks):
+    return [[r.source_id for r in chunk] for chunk in chunks]
+
+
+def test_unit_planner_cuts_after_a_commit_before_a_person_message(laboratory):
+    _, _, engine, _, make = laboratory
+    engine.config.unit_records = 7
+    records = [make("fix it", key="a"), *_step(make, "e", "pytest -q", "1"),
+               *_step(make, "g", "git commit -m x", "2"),
+               make("done", key="n", role="assistant"), make("next task", key="u"),
+               make("ok", key="v", role="assistant")]
+    # The window ends after "next task" (a turn cut), but the commit result is the better cut.
+    assert _ids(_session_unit_chunks(records, engine.config, []))[0] == ["a", "ec", "er", "gc", "gr"]
+
+
+def test_unit_planner_cuts_after_a_run_result_when_nothing_better(laboratory):
+    _, _, engine, _, make = laboratory
+    engine.config.unit_records = 7
+    records = [make("go", key="a", role="assistant"), make("edit", key="b", role="assistant"),
+               *_step(make, "t", "pytest -q", "1"),
+               *[make(f"talk {i}", key=f"x{i}", role="assistant") for i in range(6)]]
+    # Edit, run and result stay together; the piece ends right after the result, not mid-chatter.
+    assert _ids(_session_unit_chunks(records, engine.config, []))[0] == ["a", "b", "tc", "tr"]
+
+
+def test_unit_planner_ignores_read_results_and_failed_commits_as_cut_points(laboratory):
+    _, _, engine, _, make = laboratory
+    engine.config.unit_records = 6
+    read = _step(make, "r", "cat README.md", "1")
+    records = [make("go", key="a", role="assistant"), *read,
+               *[make(f"talk {i}", key=f"x{i}", role="assistant") for i in range(6)]]
+    assert _ids(_session_unit_chunks(records, engine.config, []))[0] == ["a", "rc", "rr", "x0", "x1", "x2"]
+    commit = _step(make, "g", "git commit -m x", "2")
+    commit[1] = replace(commit[1], content="error: nothing to commit")
+    records = [make("go", key="a", role="assistant"), *commit,
+               *[make(f"talk {i}", key=f"x{i}", role="assistant") for i in range(6)]]
+    # Still a run result (a cut after it is fine) but never ranked as a commit.
+    assert _ids(_session_unit_chunks(records, engine.config, []))[0][:3] == ["a", "gc", "gr"]
+
+
+def test_unit_planner_does_not_leave_a_sliver_for_a_meaningful_cut(laboratory):
+    _, _, engine, _, make = laboratory
+    engine.config.unit_records = 10
+    records = [*_step(make, "g", "git commit -m x", "1"),
+               *[make(f"talk {i} " + "y" * 40, key=f"x{i}", role="assistant") for i in range(12)]]
+    assert len(_ids(_session_unit_chunks(records, engine.config, []))[0]) == 10
+
+
+def test_unit_planner_window_follows_the_estimated_payload(laboratory):
+    from projectflow.analysis import estimated_payload, payload_budget
+    _, _, engine, _, make = laboratory
+    engine.config.task_chars = 100_000
+    records = [make("x" * 1000, key=f"a{i}", role="assistant") for i in range(50)]
+    chunks = _session_unit_chunks(records, engine.config, [])
+    assert len(chunks) > 1
+    assert all(estimated_payload(sum(len(r.content) for r in c), len(c)) <= payload_budget(engine.config)
+               for c in chunks)
+    engine.config.context_mode = "full"
+    full = _session_unit_chunks(records, engine.config, [])
+    assert len(full) > len(chunks)
+    assert all(estimated_payload(sum(len(r.content) for r in c), len(c), "full") <= payload_budget(engine.config)
+               for c in full)
+
+
+def test_unit_planner_ids_do_not_depend_on_the_budget_only_on_the_records(laboratory):
+    from projectflow.util import ident
+    _, _, engine, _, make = laboratory
+    records = [make(f"m{i}", key=f"a{i}", role="assistant") for i in range(4)]
+    first = _ids(_session_unit_chunks(records, engine.config, []))
+    assert first == _ids(_session_unit_chunks(list(records), engine.config, []))
+    assert ident("unit_", [(r.source_id, r.content_hash) for r in records]) == ident(
+        "unit_", [(r.source_id, r.content_hash) for r in list(records)])
+
+
+def test_stored_unpaid_units_are_regrouped_and_paid_ones_are_kept(laboratory):
+    _, store, engine, records, make = laboratory
+    records += [make(f"m{i}", key=f"a{i}", role="assistant") for i in range(6)]
+    snapshot = engine.scan()
+    store.ingest(snapshot.records)
+    ids = [r.source_id for r in records]
+    store.save_unit("unit_old", ids[:4], {}, "parsed")
+    store.save_unit("unit_paid", ids[4:], {}, "draft", {"cached": True})
+    engine.config.unit_records = 2
+    issues = []
+    plans, _, _ = engine._plan_units(snapshot, issues, repair=True)
+    by_id = {u["id"]: u for u in plans}
+    assert "unit_paid" in by_id and by_id["unit_paid"]["status"] == "draft"
+    assert "unit_old" not in by_id
+    assert sorted(i for u in plans if u["id"] != "unit_paid" for i in u["sources"]) == ids[:4]
+    assert all(len(u["sources"]) <= 2 for u in plans if u["id"] != "unit_paid")
+    assert {u["id"]: u["status"] for u in store.units()}["unit_old"] == "superseded"
+    assert any("다시 묶었습니다" in i for i in issues)
+    # A preview never writes.
+    store.save_unit("unit_old", ids[:4], {}, "parsed")
+    engine._plan_units(snapshot, [])
+    assert {u["id"]: u["status"] for u in store.units()}["unit_old"] == "parsed"
+
+
+def test_session_filter_does_not_supersede_units_of_other_sessions(laboratory):
+    _, store, engine, records, make = laboratory
+    records += [make(f"a{i}", key=f"a{i}", session="a", role="assistant") for i in range(3)]
+    records += [make(f"b{i}", key=f"b{i}", session="b", role="assistant") for i in range(3)]
+    snapshot = engine.scan()
+    store.ingest(snapshot.records)
+    by_session = {s: [r.source_id for r in records if r.session_id == s] for s in ("a", "b")}
+    store.save_unit("unit_a", by_session["a"], {}, "parsed")
+    store.save_unit("unit_b", by_session["b"], {}, "parsed")
+    engine.config.unit_records = 2
+    engine.config.session = "a"
+    plans, _, _ = engine._plan_units(snapshot, [], repair=True)
+    assert all(pool_id in by_session["a"] for u in plans for pool_id in u["sources"])
+    statuses = {u["id"]: u["status"] for u in store.units()}
+    assert statuses["unit_a"] == "superseded" and statuses["unit_b"] == "parsed"
 
 
 def test_pipeline_and_noop(laboratory):
@@ -340,6 +467,41 @@ def test_unmatched_partial_quote_repair_receives_exact_source_lines(laboratory):
     assert repair["exact_source_lines"][0]["lines"][0]["text"] == CASES[0][0].splitlines()[0]
 
 
+def test_repair_receives_the_nearest_provided_lines_to_copy_from(laboratory):
+    _, _, engine, records, make = laboratory
+    records.append(make(CASES[0][0]))
+    class BadQuote(FixtureRunner):
+        def run(self, task, schema, cancel):
+            output = super().run(task, schema, cancel)
+            if task["stage"] == "extract" and "repair" not in task:
+                output["event_candidates"][0]["evidence"][0]["quote"] = "우선 JSON 파일로 저장하겠습니다"
+            return output
+    runner = BadQuote()
+    engine.analyze(lambda: runner)
+    assert runner.tasks[1]["repair"]["nearest_lines"] == [
+        {"source_id": "s1", "line": 1, "text": CASES[0][0], "clipped": False}]
+
+
+def test_ledger_names_the_failed_quote_category_without_its_text(laboratory):
+    _, store, engine, records, make = laboratory
+    records.append(make(CASES[0][0]))
+    class BadQuote(FixtureRunner):
+        def run(self, task, schema, cancel):
+            output = super().run(task, schema, cancel)
+            if task["stage"] == "extract" and "repair" not in task:
+                output["event_candidates"][0]["evidence"][0]["quote"] = "우선 JSON 파일로 저장하겠습니다"
+            return output
+    engine.analyze(lambda: BadQuote())
+    failed, repaired, integrated = store.llm_calls()
+    [mismatch] = failed["details"]["quote_mismatch_audit"]
+    assert (failed["status"], repaired["status"], integrated["status"]) == (
+        "validation_error", "complete", "complete")
+    assert mismatch == {"source_id": "s1", "lines": [1, 1], "category": "not_found",
+                        "quote_chars": len("우선 JSON 파일로 저장하겠습니다")}
+    assert "우선 JSON 파일로 저장하겠습니다" not in json.dumps(failed, ensure_ascii=False)
+    assert repaired["details"]["quote_mismatch_audit"] == []  # the audit counts one attempt only
+
+
 def test_repair_sees_the_quotes_the_model_wrote_not_expanded_lines(laboratory):
     _, _, engine, records, make = laboratory
     records.append(make(CASES[0][0]))
@@ -372,3 +534,284 @@ def test_a_run_shows_what_it_would_send_before_sending(laboratory):
     [plan] = plans
     assert (plan["units"], plan["units_this_run"], plan["max_calls"]) == (1, 1, 30)
     assert plan["input_tokens_this_run"] > 30_000
+
+
+def _capturing_analyze(engine):
+    """Run the pipeline and keep every request and response schema the runner was given."""
+    seen = []
+
+    class Watching(FixtureRunner):
+        def run(self, task, schema, cancel):
+            seen.append((copy.deepcopy(task), schema))
+            return super().run(task, schema, cancel)
+
+    return engine.analyze(Watching), seen
+
+
+def _rerun(scope, records, config):
+    """The same records in the same project, analysed again from an empty state directory."""
+    shutil.rmtree(scope.state_dir)
+    store = Store(scope.state_dir, scope.id)
+    engine = Engine(scope, store, config)
+    engine.scan = lambda: Snapshot(list(records))
+    return engine, store
+
+
+def _claims(store):
+    """What the graph says, with run-scoped IDs read as titles so two runs can be compared."""
+    graph = store.graph()
+    titles = {event["id"]: event["title"] for event in graph["events"]}
+    return ([(e["title"], e["kind"], e["status"], e["actor"], e["basis"], e["summary"], e["evidence_ids"])
+             for e in graph["events"]],
+            sorted((titles.get(e["from_event_id"], e["from_event_id"]),
+                    titles.get(e["to_event_id"], e["to_event_id"]), e["relation"], e["basis"], e["active"],
+                    tuple(e["evidence_ids"])) for e in graph["edges"]),
+            sorted(store.evidence_many({i for e in graph["events"] for i in e["evidence_ids"]})))
+
+
+def _integrate_quote_chars(store):
+    return [call["details"]["output_quote_chars"] for call in store.llm_calls() if call["stage"] == "integrate"]
+
+
+def test_default_evidence_policy_sends_no_evidence_instruction(laboratory):
+    _, _, engine, records, make = laboratory
+    records.append(make(CASES[0][0]))
+    result, seen = _capturing_analyze(engine)
+    assert result["status"] == "complete", result
+    [(integrate, schema)] = [item for item in seen if item[0]["stage"] == "integrate"]
+    assert all("evidence_policy" not in task["data"] for task, _ in seen)
+    assert (integrate["instructions"], integrate["wire_contract"], integrate["system"]) == (
+        prompt("integrate"), build_task("integrate", {})["wire_contract"], prompt("common"))
+    assert schema is DELTA_SCHEMA
+
+
+def test_reuse_policy_adds_only_the_evidence_line_to_the_integrate_request(laboratory):
+    scope, _, engine, records, make = laboratory
+    records.extend([make(CASES[0][0]), make(CASES[1][0], key="s2", role="assistant")])
+    result, seen = _capturing_analyze(engine)
+    assert result["status"] == "complete", result
+    full_task, full_schema = next((task, schema) for task, schema in seen if task["stage"] == "integrate")
+    full_extract = next(task for task, _ in seen if task["stage"] == "extract")
+
+    reuse_engine, _ = _rerun(scope, records, replace(engine.config, integrate_evidence="reuse"))
+    result, seen = _capturing_analyze(reuse_engine)
+    assert result["status"] == "complete", result
+    reuse_task, reuse_schema = next((task, schema) for task, schema in seen if task["stage"] == "integrate")
+    assert next(task for task, _ in seen if task["stage"] == "extract") == full_extract
+
+    # Apart from that one line, the request a runner sees is the same bytes as before.
+    assert reuse_task["data"].pop("evidence_policy") == EVIDENCE_POLICY_REUSE
+    assert dumps(reuse_task) == dumps(full_task)
+    assert reuse_schema is not DELTA_SCHEMA
+    assert {name: reuse_schema["properties"][name]["items"]["properties"]["evidence"]["minItems"]
+            for name in REUSABLE_EVIDENCE_SECTIONS} == dict.fromkeys(REUSABLE_EVIDENCE_SECTIONS, 0)
+    # Nothing else is relaxed: the sections no candidate can back still demand a quote.
+    assert reuse_schema["properties"]["open_items_to_upsert"]["items"]["properties"]["evidence"]["minItems"] == 1
+    assert reuse_schema["properties"]["edges_to_invalidate"]["items"]["properties"]["evidence"]["minItems"] == 1
+    assert reuse_schema["properties"]["review_issues"]["items"]["properties"]["evidence"]["minItems"] == 1
+
+
+def test_reuse_mode_publishes_the_same_graph_as_full_mode(laboratory):
+    scope, store, engine, records, make = laboratory
+    records.extend([make(CASES[0][0]), make(CASES[1][0], key="s2", role="assistant")])
+    full = engine.analyze(FixtureRunner)
+    assert full["status"] == "complete", full
+    full_claims, full_quotes = _claims(store), _integrate_quote_chars(store)
+    assert not [item for call in store.llm_calls() for item in call["details"]["citation_normalization_audit"]
+                if item["mode"] == "evidence_reused_from_candidates"]
+
+    reuse_engine, reuse_store = _rerun(scope, records, replace(engine.config, integrate_evidence="reuse"))
+    reuse = reuse_engine.analyze(FixtureRunner)
+    assert reuse["status"] == "complete", reuse
+    assert _claims(reuse_store) == full_claims
+    reused = [item for call in reuse_store.llm_calls() if call["stage"] == "integrate"
+              for item in call["details"]["citation_normalization_audit"]
+              if item["mode"] == "evidence_reused_from_candidates"]
+    assert [item["items"] for item in reused] == [7]  # every candidate-linked item, once
+    quoted = sum(sum(chars.values()) for chars in _integrate_quote_chars(reuse_store))
+    assert 0 < quoted < sum(sum(chars.values()) for chars in full_quotes)
+
+
+# The default review instruction, spelled out: changing it must be a deliberate change.
+FULL_REVIEW_INSTRUCTION = (
+    "Compare the proposed GraphDelta with the supplied original evidence and relevant history. Check "
+    "duplicate versus genuine retry, state overstatement, and unsupported relation invalidation. Return the "
+    "complete corrected GraphDelta and preserve one resolution for every candidate.")
+
+
+def _revision_review(laboratory):
+    """A decision and the revision that supersedes it: the revision's missing revises link sends it to review."""
+    scope, store, engine, records, make = laboratory
+    records.extend([make(CASES[0][0]), make(CASES[4][0], key="s2")])
+    return scope, store, engine
+
+
+def _review_calls(store):
+    return [call for call in store.llm_calls() if call["metadata"].get("routing_role") == "integrate_review"]
+
+
+def _review_chars(store):
+    return sum(call["details"]["output_chars"] for call in _review_calls(store))
+
+
+def _review_statuses(store):
+    return [(item["status"], [row["status"] for row in item["resolutions"]])
+            for item in store.graph()["semantic_review_history"]]
+
+
+def test_full_review_output_keeps_the_full_delta_request_bytes(laboratory):
+    _, store, engine = _revision_review(laboratory)
+    engine.config.review_output = "full"
+    result, seen = _capturing_analyze(engine)
+    assert result["status"] == "complete", result
+    (_, extract_schema), (integrate_task, integrate_schema), (review_task, review_schema) = seen
+    # The review is the integration request plus the four review keys: the same bytes, byte for byte.
+    added = {"review_trigger", "review_issues", "proposed_graph_delta", "review_instruction"}
+    assert set(review_task["data"]) - set(integrate_task["data"]) == added
+    assert {key: review_task["data"][key] for key in integrate_task["data"]} == integrate_task["data"]
+    assert review_task["data"]["review_instruction"] == FULL_REVIEW_INSTRUCTION
+    assert review_task["data"]["review_issues"] and review_task["data"]["proposed_graph_delta"]["events_to_add"]
+    assert {key: review_task[key] for key in ("system", "instructions", "wire_contract", "stage", "output_language")} == \
+        {key: integrate_task[key] for key in ("system", "instructions", "wire_contract", "stage", "output_language")}
+    assert review_schema is integrate_schema is DELTA_SCHEMA and extract_schema is EXTRACT_SCHEMA
+    assert "patch" not in review_schema["properties"] and "remove" not in review_task["data"]
+    assert _review_calls(store)[0]["details"]["output_chars"] > 0
+
+
+def test_review_output_is_patch_by_default_and_only_full_or_patch(laboratory):
+    _, _, engine = _revision_review(laboratory)
+    assert engine.config.review_output == "patch"
+    # It changes only the review request, so a finished extraction is never resent.
+    signature = engine._routing_signature()
+    engine.config.review_output = "full"
+    assert engine._routing_signature() == signature
+    with pytest.raises(FlowError, match="review_output"):
+        AnalysisConfig(review_output="diff").validate()
+
+
+def test_review_patch_publishes_the_same_graph_as_full_mode(laboratory):
+    scope, store, engine = _revision_review(laboratory)
+    engine.config.review_output = "full"
+    full = engine.analyze(FixtureRunner)
+    assert full["status"] == "complete", full
+    full_claims, full_statuses, full_chars = _claims(store), _review_statuses(store), _review_chars(store)
+
+    patch_engine, patch_store = _rerun(scope, [record for record in engine.scan().records],
+                                       replace(engine.config, review_output="patch"))
+    patch = patch_engine.analyze(FixtureRunner)
+    assert patch["status"] == "complete", patch
+    assert _claims(patch_store) == full_claims
+    assert _review_statuses(patch_store) == full_statuses == [("reviewed", ["resolved"])]
+    # The review answered one added relation instead of the whole delta again.
+    assert _review_chars(patch_store) < full_chars
+    merged = [item for call in _review_calls(patch_store)
+              for item in call["details"]["citation_normalization_audit"]
+              if item["mode"] == "review_patch_merged"]
+    assert merged == [{"mode": "review_patch_merged", "replaced": 0, "added": 2, "removed": 0}]
+
+
+def test_review_patch_asks_for_its_own_schema_and_instruction(laboratory):
+    _, _, engine = _revision_review(laboratory)
+    engine.config.review_output = "patch"
+    result, seen = _capturing_analyze(engine)
+    assert result["status"] == "complete", result
+    review_task, review_schema = seen[2]
+    integrate_task, integrate_schema = seen[1]
+    assert review_schema is REVIEW_PATCH_SCHEMA
+    assert not review_schema is DELTA_SCHEMA and "patch" in review_schema["properties"]
+    assert set(review_schema["properties"]["patch"]["properties"]) == set(PATCH_ARRAYS)
+    assert review_schema["properties"]["remove"]["items"]["properties"]["operation"]["enum"] == list(DELTA_ITEM_ARRAYS)
+    instruction = review_task["data"]["review_instruction"]
+    assert instruction != FULL_REVIEW_INSTRUCTION
+    for clause in ("Return only what changes", "replaces that item", "in remove",
+                   "candidate_resolutions only for candidates whose resolution changes",
+                   "change_attributions only for added or replaced items", "never an unchanged one"):
+        assert clause in instruction
+    # Everything else the review is sent is the integration request.
+    assert {key: review_task["data"][key] for key in integrate_task["data"]} == integrate_task["data"]
+
+
+def test_review_patch_rejects_removing_an_item_the_proposal_never_had(laboratory):
+    _, store, engine = _revision_review(laboratory)
+    engine.config.review_output = "patch"
+    review_tasks, review_schemas = [], []
+
+    class UnknownRemove(FixtureRunner):
+        def run(self, task, schema, cancel):
+            output = super().run(task, schema, cancel)
+            if "patch" in schema["properties"]:
+                review_tasks.append(copy.deepcopy(task))
+                review_schemas.append(schema)
+                output["remove"] = [{"operation": "events_to_add", "item_id": "tmp:invented"}]
+            return output
+
+    result = engine.analyze(UnknownRemove)
+    assert result["status"] == "failed"
+    assert "제안된 변경에 없는 항목은 제거할 수 없습니다" in result["error"]
+    assert [call["status"] for call in _review_calls(store)] == ["validation_error", "validation_error"]
+    assert store.graph()["version"] == 0
+    # The one repair round asks for the same patch and sees the patch the model wrote, not the merge.
+    [first, repair] = review_tasks
+    assert "repair" not in first and review_schemas[0] is review_schemas[1] is REVIEW_PATCH_SCHEMA
+    assert repair["repair"]["previous_output"]["remove"] == [{"operation": "events_to_add", "item_id": "tmp:invented"}]
+    assert "patch" in repair["repair"]["previous_output"] and "events_to_add" in repair["repair"]["previous_output"]["patch"]
+
+
+def test_review_patch_leaving_a_candidate_unresolved_is_rejected(laboratory):
+    _, store, engine = _revision_review(laboratory)
+    engine.config.review_output = "patch"
+
+    class UnresolvedCandidate(FixtureRunner):
+        def run(self, task, schema, cancel):
+            output = super().run(task, schema, cancel)
+            if "patch" in schema["properties"] and "repair" not in task:
+                output["patch"]["candidate_resolutions"] = [
+                    {**copy.deepcopy(item), "disposition": "excluded", "target_ids": []}
+                    for item in task["data"]["proposed_graph_delta"]["candidate_resolutions"]]
+            return output
+
+    result = engine.analyze(UnresolvedCandidate)
+    assert result["status"] == "complete", result  # the repair round put the candidate back
+    assert _review_statuses(store) == [("reviewed", ["resolved"])]
+    failures = [call["details"]["error"] for call in _review_calls(store) if call["status"] == "validation_error"]
+    assert ["change attribution 후보의 처리 대상이 귀속 GraphDelta 변경과 연결되지 않습니다." in error
+            for error in failures] == [True]
+    # The merged delta is what got published, so the event the review disowned is not there twice.
+    assert [event["title"] for event in store.graph()["events"]] == ["JSON 저장 채택", "SQLite로 전환 결정"]
+
+
+def test_merge_review_patch_replaces_adds_and_removes_items():
+    proposed = {"status": "complete", "read_requests": [], "snapshot_id": "snap", "base_graph_version": 3,
+        "events_to_add": [{"id": "tmp:a", "title": "old"}, {"id": "tmp:b", "title": "b"}],
+        "events_to_update": [], "edges_to_add": [{"id": "tmp:e"}], "edges_to_invalidate": [],
+        "open_items_to_upsert": [], "open_items_to_resolve": [],
+        "candidate_resolutions": [{"candidate_id": "tmp:a", "candidate_kind": "event"},
+                                  {"candidate_id": "tmp:b", "candidate_kind": "event"}],
+        "change_attributions": [{"operation": "events_to_add", "item_id": "tmp:a"},
+                                {"operation": "events_to_add", "item_id": "tmp:b"},
+                                {"operation": "edges_to_add", "item_id": "tmp:e"}],
+        "review_issues": [], "review_resolutions": [], "limitations": ["kept"]}
+    answer = {"status": "complete", "read_requests": [], "snapshot_id": "snap", "base_graph_version": 3,
+        "patch": {"events_to_add": [{"id": "tmp:b", "title": "new"}, {"id": "tmp:c"}],
+                  "events_to_update": [], "edges_to_add": [], "edges_to_invalidate": [],
+                  "open_items_to_upsert": [], "open_items_to_resolve": [],
+                  "candidate_resolutions": [{"candidate_id": "tmp:b", "candidate_kind": "event", "reason": "고침"}],
+                  "change_attributions": [], "review_issues": []},
+        "remove": [{"operation": "events_to_add", "item_id": "tmp:a"}],
+        "review_resolutions": [{"issue_id": "r1", "status": "modified"}], "limitations": ["added"]}
+
+    merged = merge_review_patch(proposed, answer)
+    assert [item["id"] for item in merged["events_to_add"]] == ["tmp:b", "tmp:c"]
+    assert merged["events_to_add"][0]["title"] == "new"      # the replaced item keeps its place
+    assert merged["edges_to_add"] == proposed["edges_to_add"]  # untouched sections stay the proposal's
+    assert [item["item_id"] for item in merged["change_attributions"]] == ["tmp:b", "tmp:e"]
+    assert [item["reason"] for item in merged["candidate_resolutions"] if item["candidate_id"] == "tmp:b"] == ["고침"]
+    assert merged["review_resolutions"] == answer["review_resolutions"]
+    assert merged["limitations"] == ["kept", "added"]
+    assert proposed["events_to_add"][0]["title"] == "old"  # the proposal itself is never edited
+    assert review_patch_audit(proposed, answer) == {"replaced": 2, "added": 1, "removed": 1}
+    with pytest.raises(FlowError, match="제안된 변경에 없는 항목은 제거할 수 없습니다"):
+        merge_review_patch(proposed, {**answer, "remove": [{"operation": "edges_to_add", "item_id": "tmp:none"}]})
+    with pytest.raises(FlowError, match="다른 종류의 제안 항목"):
+        merge_review_patch(proposed, {**answer, "patch": {**answer["patch"],
+                                                           "edges_to_add": [{"id": "tmp:a"}]}})

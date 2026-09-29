@@ -5,7 +5,7 @@ import copy
 import json
 from pathlib import Path
 
-from .schema import EVENT_FIELDS
+from .schema import EVENT_FIELDS, PATCH_ARRAYS, patch_key
 from .util import FlowError, dumps
 
 
@@ -18,6 +18,19 @@ CASES = [
     ("SQLite로 변경했고 테스트도 통과했습니다.", "outcome", "SQLite 변경 완료 보고", "reported_complete", "assistant", "explicit_statement"),
     ("SQLite 동시 쓰기 테스트: 4 passed", "outcome", "SQLite 동시 쓰기 확인", "observed_success", "tool", "tool_record"),
 ]
+
+
+def review_patch_answer(proposed: dict, answer: dict) -> dict:
+    """The fixture's own review answer as a patch over the proposal: only what it adds or changes."""
+    patch = {}
+    for array in PATCH_ARRAYS:
+        before = {patch_key(array, item): item for item in proposed[array]}
+        patch[array] = [copy.deepcopy(item) for item in answer[array]
+                        if before.get(patch_key(array, item)) != item]
+    return {"status": answer["status"], "read_requests": [], "snapshot_id": answer["snapshot_id"],
+            "base_graph_version": answer["base_graph_version"],
+            "review_resolutions": copy.deepcopy(answer["review_resolutions"]),
+            "limitations": copy.deepcopy(answer["limitations"]), "patch": patch, "remove": []}
 
 
 class FixtureRunner:
@@ -116,6 +129,18 @@ class FixtureRunner:
                 output["change_attributions"].append({"operation": operation, "item_id": item["id"],
                     "candidate_ids": [matching or candidate_ids[0]],
                     "reason": "합성 fixture의 고정 통합 규칙", "evidence": item.get("evidence") or candidates[0]["evidence"]})
+        if data.get("evidence_policy"):
+            # A mock that follows the reuse policy: only evidence a candidate carries is left out.
+            # Edges the fixture invents have no candidate behind them, so they keep their quote.
+            targets = {target for item in output["candidate_resolutions"] for target in item["target_ids"]}
+            for item in output["candidate_resolutions"] + output["change_attributions"]:
+                item["evidence"] = []
+            for item in [*output["events_to_add"], *output["events_to_update"]]:
+                if item["id"] in targets:
+                    item["evidence"] = []
+        # A review that was asked for a patch answers only the items it changes.
+        if "patch" in schema["properties"]:
+            return review_patch_answer(data["proposed_graph_delta"], output)
         return output
 
 

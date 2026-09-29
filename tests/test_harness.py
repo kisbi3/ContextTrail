@@ -132,6 +132,149 @@ def test_quote_normalization_rejects_ambiguous_or_partial_text(laboratory):
     assert validator.evidence[kept]['quote'] == 'other'
 
 
+def test_whitespace_the_model_reflowed_is_read_back_as_the_source_line(laboratory):
+    _, _, _, _, make = laboratory
+    record = make("header line here\nthe exact cited phrase   is here; trailing detail\ntail line here")
+    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 3)]})
+    [evidence_id] = validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 2,
+        "quote": "the exact cited phrase is here; trailing detail"}])
+    saved = validator.evidence[evidence_id]
+    assert (saved["start_line"], saved["end_line"]) == (2, 2)
+    assert saved["quote"] == "the exact cited phrase   is here; trailing detail"
+    start, end = saved["focus"][0]
+    assert saved["quote"][start:end] == saved["quote"]  # the span is raw source text
+    assert validator.normalizations[0]["mode"] == "whitespace_normalized"
+
+
+def test_whitespace_that_two_lines_share_is_not_read_back(laboratory):
+    _, _, _, _, make = laboratory
+    record = make("one aa  bb cc line here\ntwo aa  bb cc line here")
+    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 2)]})
+    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):
+        validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 2, "quote": "aa bb cc"}])
+
+
+def test_ellipsis_joined_quote_expands_to_the_lines_its_pieces_came_from(laboratory):
+    _, _, _, _, make = laboratory
+    record = make("first line of the request\nsecond line of the request\nthird line of the request")
+    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 3)]})
+    [evidence_id] = validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 3,
+        "quote": "first line of the request ... third line of the request"}])
+    saved = validator.evidence[evidence_id]
+    assert (saved["start_line"], saved["end_line"]) == (1, 3)  # the line between is stored whole
+    assert [saved["quote"][a:b] for a, b in saved["focus"]] == ["first line of the request",
+                                                                "third line of the request"]
+    assert validator.normalizations[0]["mode"] == "ellipsis_pieces"
+
+
+def test_ellipsis_pieces_out_of_order_or_under_eight_chars_are_not_read_back(laboratory):
+    _, _, _, _, make = laboratory
+    record = make("aaa second line here now\nbbb first line here now\nccc third line here now")
+    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 3)]})
+    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):
+        validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 3,
+                              "quote": "first line here now ... second line here now"}])
+    shorter = make("first line of the request\nsecond line\nthird line of the request", key="short")
+    strict = EvidenceValidator({shorter.source_id: shorter}, {shorter.source_id: [(1, 3)]})
+    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):
+        strict.citations([{"source_id": shorter.source_id, "start_line": 1, "end_line": 3,
+                           "quote": "first line of the request ... second"}])
+
+
+def test_quote_that_ran_past_the_line_end_keeps_the_line_it_copied(laboratory):
+    _, _, _, _, make = laboratory
+    record = make("intro line\nthe distinctive result line is here\ntail line")
+    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 3)]})
+    [evidence_id] = validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 2,
+        "quote": "the distinctive result line is here and"}])
+    saved = validator.evidence[evidence_id]
+    assert (saved["start_line"], saved["end_line"]) == (2, 2)
+    assert [saved["quote"][a:b] for a, b in saved["focus"]] == ["the distinctive result line is here"]
+    assert validator.normalizations[0]["mode"] == "tail_past_line_end"
+
+
+def test_quote_past_the_line_end_is_rejected_under_eighty_percent_or_inside_a_line(laboratory):
+    _, _, _, _, make = laboratory
+    record = make("intro line\nthe distinctive result line is here\ntail line")
+    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 3)]})
+    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):  # too much past the line end
+        validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 2,
+                              "quote": "the distinctive result line is here and the model kept going"}])
+    longer = make("intro line\nthe distinctive result line is here and then some more text here", key="mid")
+    strict = EvidenceValidator({longer.source_id: longer}, {longer.source_id: [(1, 2)]})
+    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):  # the copy stops inside the line
+        strict.citations([{"source_id": longer.source_id, "start_line": 1, "end_line": 2,
+                           "quote": "the distinctive result line is here more text here"}])
+
+
+def test_a_translated_quote_and_a_short_fragment_are_never_read_back(laboratory):
+    _, _, _, _, make = laboratory
+    record = make("header line\nthe user decided to keep the sqlite file in the state directory", key="ko")
+    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 2)]})
+    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):
+        validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 2,
+                              "quote": "사용자는 상태 디렉터리에 sqlite 파일을 두기로 결정했다"}])
+    tabbed = make("same\twords here now", key="tab")
+    strict = EvidenceValidator({tabbed.source_id: tabbed}, {tabbed.source_id: [(1, 1)]})
+    with pytest.raises(FlowError, match="고정 원문과 다릅니다"):  # a fragment under 8 chars stays strict
+        strict.citations([{"source_id": tabbed.source_id, "start_line": 1, "end_line": 1, "quote": "same w"}])
+
+
+@pytest.mark.parametrize('text,start,end,quote,category', [
+    ("intro line here\nrepeat phrase lives here\nrepeat phrase lives here", 1, 1, "repeat phrase lives here",
+     "other_provided_lines_multiple"),
+    ("same words here now\nsame words here now", 1, 2, "same words here now", "multiple_in_cited_lines"),
+    ("same\twords here now", 1, 1, "same w", "whitespace_only"),
+    ("same words here now", 1, 1, "sane wd", "short_fragment"),
+    ("same words here now", 1, 1, "nothing like this here", "not_found")])
+def test_a_failed_quote_is_classified_by_where_it_went(laboratory, text, start, end, quote, category):
+    _, _, _, _, make = laboratory
+    record = make(text)
+    last = len(text.splitlines())
+    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, last)]})
+    with pytest.raises(FlowError, match="인용문"):
+        validator.citations([{"source_id": record.source_id, "start_line": start, "end_line": end, "quote": quote}])
+    [item] = validator.mismatch_audit()
+    assert item == {"source_id": record.source_id, "lines": [start, end], "category": category,
+                    "quote_chars": len(quote)}
+    assert validator.mismatches[0]["quote"] == quote  # kept in memory for the repair round only
+
+
+def test_a_short_quote_found_twice_is_counted_as_two_matches(laboratory):
+    _, _, _, _, make = laboratory
+    record = make("ab cd ab cd here")
+    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 1)]})
+    with pytest.raises(FlowError, match="고정 원문과 다릅니다"):
+        validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 1, "quote": "ab cd"}])
+    assert validator.mismatches[0]["matches"] == 2
+
+
+def test_a_quote_written_for_another_record_is_classified_as_such(laboratory):
+    _, _, _, _, make = laboratory
+    here, other = make("intro line here", key="here"), make("an invented phrase that is long enough", key="other")
+    validator = EvidenceValidator({r.source_id: r for r in (here, other)},
+                                  {here.source_id: [(1, 1)], other.source_id: [(1, 1)]})
+    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):
+        validator.citations([{"source_id": here.source_id, "start_line": 1, "end_line": 1,
+                              "quote": "an invented phrase that is long"}])
+    assert [item["category"] for item in validator.mismatch_audit()] == ["other_record"]
+
+
+def test_nearest_lines_come_from_provided_lines_only_and_clip_a_long_one(laboratory):
+    _, store, _, records, make = laboratory
+    records.extend([make("filler line one\nfiller line two\na distinctive marker lives here"),
+                    make("context " * 80 + "a distinctive marker lives here" + " trailing" * 40, key="long")])
+    h = Harness(FixtureRunner(), {r.source_id: r for r in records}, store.graph(), store, AnalysisConfig(),
+                threading.Event())
+    h.provided = {r.source_id: [(1, 1)] for r in records}
+    assert [item["line"] for item in h.nearest_lines("s1", "a distinctive marker lives here")] == [1]
+    assert h.nearest_lines("s1", "a distinctive marker lives here") == [
+        {"source_id": "s1", "line": 1, "text": "filler line one", "clipped": False}]
+    [clipped] = h.nearest_lines("long", "a distinctive marker lives here")
+    assert clipped["clipped"] is True and len(clipped["text"]) == 400
+    assert "a distinctive marker lives here" in clipped["text"]
+
+
 def test_validation_lists_multiple_bad_citations(laboratory):
     _, _, _, _, make = laboratory
     record = make("first\nsecond")
@@ -500,3 +643,149 @@ def test_cited_focus_survives_canonicalization_and_publish(laboratory):
     store.publish(store.graph(), [], {}, {evidence_id: item}, expected_version=0)
     store.publish(store.graph(), [], {}, {evidence_id: {**item, "focus": [[0, 6]]}}, expected_version=1)
     assert store.evidence(evidence_id)["focus"] == [[0, 6], [8, 35]]
+
+
+def _lean_fixture(laboratory):
+    _, store, _, _, make = laboratory
+    earlier = [replace(make("\n".join(f"line {n} of record {i} " + "x" * 50 for n in range(1, 41)), key=f"old{i}"),
+                       recorded_at="2026-09-22T09:00:00Z") for i in range(12)]
+    assigned = replace(make("next step", key="now"), recorded_at="2026-09-22T12:00:00Z")
+    events, evidence = [], {}
+    for i, record in enumerate(earlier):
+        evidence[f"ev{i}"] = dict(id=f"ev{i}", source_id=record.source_id, content_hash=record.content_hash,
+                                  start_line=20, end_line=20, quote=record.content.splitlines()[19],
+                                  source=record.metadata())
+        events.append(dict(id=f"event{i}", title=f"step {i}", summary="did", session_ids=[record.session_id],
+                           worktree_ids=[record.worktree_id], evidence_ids=[f"ev{i}"], recorded_at=record.recorded_at))
+    graph = store.graph()
+    graph["events"] = events
+    store.publish(graph, [], {}, evidence, expected_version=0)
+    return store, [*earlier, assigned], assigned
+
+
+def test_lean_context_sends_cited_lines_not_whole_records(laboratory):
+    store, records, assigned = _lean_fixture(laboratory)
+    def build(mode):
+        h = Harness(FixtureRunner(), {r.source_id: r for r in records}, store.graph(), store,
+                    AnalysisConfig(context_mode=mode), threading.Event())
+        return h, h.context([assigned])
+    full_h, full = build("full")
+    lean_h, lean = build("lean")
+    assert lean_h.selection_audit["delivered_chars"]["total"] < full_h.selection_audit["delivered_chars"]["total"] * 0.6
+    cited = [item for item in lean["context_only"] if item.get("context_reason") == "cited_lines"]
+    assert cited and all(item["lines"][0]["line"] == 15 and item["lines"][-1]["line"] == 25 for item in cited)
+    assert not any(len(item["lines"]) == 40 for item in lean["context_only"]
+                   if item["source_id"] not in {"old10", "old11"})  # the two preceding records stay whole
+    assert all(item.get("quote_in_context_only") or "quote" in item for item in lean["existing_evidence"].values())
+    assert len(lean["existing_events"]) <= 12
+
+
+def test_lean_context_is_the_default_and_full_changes_the_routing_signature(laboratory):
+    _, store, engine, _, _ = laboratory
+    assert engine.config.context_mode == "lean"
+    lean = engine._routing_signature()
+    engine.config.context_mode = "full"
+    assert engine._routing_signature() != lean
+    with pytest.raises(FlowError, match="context_mode"):
+        AnalysisConfig(context_mode="tiny").validate()
+
+
+def test_integrate_evidence_is_full_by_default_and_only_full_or_reuse(laboratory):
+    _, _, engine, _, _ = laboratory
+    assert engine.config.integrate_evidence == "full"
+    # It changes only the integration request, so a finished extraction is never resent.
+    signature = engine._routing_signature()
+    engine.config.integrate_evidence = "reuse"
+    assert engine._routing_signature() == signature
+    with pytest.raises(FlowError, match="integrate_evidence"):
+        AnalysisConfig(integrate_evidence="partial").validate()
+
+
+def _reuse_case(laboratory):
+    """One event candidate and the GraphDelta a reuse-mode model returns with no quotes at all."""
+    _, store, _, records, make = laboratory
+    record = make("동시 쓰기 때문에 SQLite로 바꾸기로 했습니다.")
+    records.append(record)
+    citation = {"source_id": record.source_id, "start_line": 1, "end_line": 1, "quote": record.content}
+    candidate = {"id": "tmp:sqlite", "kind": "revision", "title": "SQLite로 전환", "summary": "동시 쓰기 실패 때문",
+                 "actor": "user", "status": "adopted", "basis": "explicit_statement",
+                 "session_ids": [record.session_id], "worktree_ids": [], "recorded_at": None,
+                 "occurred_at": None, "evidence": [citation]}
+    candidates = {"unit_id": "unit", "event_candidates": [candidate], "edge_candidates": [],
+                  "existing_event_matches": [], "open_items": [], "limitations": [], "unprocessed_record_ids": []}
+    delta = {"status": "complete", "read_requests": [], "snapshot_id": "snap", "base_graph_version": 0,
+             "events_to_add": [{**{k: v for k, v in candidate.items() if k != "id"},
+                                "id": "tmp:switch", "evidence": []}],
+             "events_to_update": [], "edges_to_add": [], "edges_to_invalidate": [],
+             "open_items_to_upsert": [], "open_items_to_resolve": [],
+             "candidate_resolutions": [{"candidate_id": "tmp:sqlite", "candidate_kind": "event",
+                 "disposition": "added", "target_ids": ["tmp:switch"], "reason": "결정을 뒤집었습니다.",
+                 "evidence": []}],
+             "change_attributions": [{"operation": "events_to_add", "item_id": "tmp:switch",
+                 "candidate_ids": ["tmp:sqlite"], "reason": "결정을 뒤집었습니다.", "evidence": []}],
+             "review_issues": [], "review_resolutions": [], "limitations": []}
+    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 1)]})
+    return validator, delta, candidates, store.graph(), citation
+
+
+def test_reuse_fills_the_same_citation_dicts_the_candidate_already_carried(laboratory):
+    validator, delta, candidates, graph, citation = _reuse_case(laboratory)
+    result = validator.apply_delta(delta, graph, "snap", "run", candidates, evidence_reuse=True)
+    assert delta["events_to_add"][0]["evidence"] == [citation]
+    assert delta["candidate_resolutions"][0]["evidence"] == [citation]
+    assert delta["change_attributions"][0]["evidence"] == [citation]
+    assert [item for item in validator.normalizations
+            if item["mode"] == "evidence_reused_from_candidates"] == [
+        {"mode": "evidence_reused_from_candidates", "items": 3}]
+    [event] = result["events"]
+    assert event["evidence_ids"] == validator.citations([citation])
+    # A second apply of the same delta fills nothing and records nothing more.
+    validator.normalizations.clear()
+    validator.apply_delta(delta, graph, "snap", "run", candidates, evidence_reuse=True)
+    assert not [item for item in validator.normalizations
+                if item["mode"] == "evidence_reused_from_candidates"]
+
+
+def test_reuse_rejects_an_item_no_candidate_supports(laboratory):
+    validator, delta, candidates, graph, _ = _reuse_case(laboratory)
+    delta["candidate_resolutions"][0].update(disposition="excluded", target_ids=[])
+    with pytest.raises(FlowError, match="events_to_add tmp:switch"):
+        validator.apply_delta(delta, graph, "snap", "run", candidates, evidence_reuse=True)
+
+
+def test_reuse_still_verifies_the_quote_the_model_did_write(laboratory):
+    validator, delta, candidates, graph, _ = _reuse_case(laboratory)
+    delta["events_to_add"][0]["evidence"] = [{"source_id": "s1", "start_line": 1, "end_line": 1,
+                                              "quote": "원문에 없는 다른 문장입니다"}]
+    with pytest.raises(FlowError, match="인용문"):
+        validator.apply_delta(delta, graph, "snap", "run", candidates, evidence_reuse=True)
+
+
+def _tool_restore_case(make, candidate_cites_result=True):
+    said = make("I ran the unit tests and they all passed now", key="said", role="assistant")
+    ran = make("3 passed in 0.12s", key="ran", role="tool_result")
+    cite = lambda record: {"source_id": record.source_id, "start_line": 1, "end_line": 1, "quote": record.content}
+    validator = EvidenceValidator({r.source_id: r for r in (said, ran)}, {said.source_id: [(1, 1)], ran.source_id: [(1, 1)]})
+    candidates = {"event_candidates": [{"id": "tmp:c1", "evidence": [cite(said), *([cite(ran)] if candidate_cites_result else [])]}],
+                  "edge_candidates": [], "open_items": []}
+    event = {"id": "tmp:e1", "basis": "tool_record", "status": "observed_success", "evidence": [cite(said)]}
+    output = {"candidate_resolutions": [{"candidate_id": "tmp:c1", "candidate_kind": "event", "target_ids": ["tmp:e1"]}],
+              "events_to_add": [event]}
+    return validator, candidates, output, event, ran
+
+
+def test_integration_restores_the_tool_citation_its_candidate_carried(laboratory):
+    _, _, _, _, make = laboratory
+    validator, candidates, output, event, ran = _tool_restore_case(make)
+    assert validator.restore_tool_evidence(output, candidates) == 1
+    assert [c["source_id"] for c in event["evidence"]] == ["said", ran.source_id]
+    assert validator.normalizations == [{"mode": "tool_evidence_restored_from_candidates", "events": 1}]
+
+
+def test_integration_does_not_invent_a_tool_citation_the_candidate_lacked(laboratory):
+    _, _, _, _, make = laboratory
+    validator, candidates, output, event, _ = _tool_restore_case(make, candidate_cites_result=False)
+    assert validator.restore_tool_evidence(output, candidates) == 0
+    assert [c["source_id"] for c in event["evidence"]] == ["said"]
+    output["candidate_resolutions"][0]["target_ids"] = ["tmp:other"]
+    assert validator.restore_tool_evidence(output, _tool_restore_case(make)[1]) == 0

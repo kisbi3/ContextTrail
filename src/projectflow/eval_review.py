@@ -113,13 +113,15 @@ def _all_citations(value: Any):
 
 
 def _candidate_groups(response: dict) -> list[tuple[str, list[dict]]]:
+    # A review answer in patch mode carries the same sections one level down, under `patch`.
+    body = {**response, **response["patch"]} if isinstance(response.get("patch"), dict) else response
     names = (("event_candidates", "사건 후보"), ("edge_candidates", "관계 후보"),
              ("existing_event_matches", "기존 사건 연결"), ("open_items", "미해결 항목"),
              ("events_to_add", "추가 사건"), ("events_to_update", "수정 사건"),
              ("edges_to_add", "추가 관계"), ("edges_to_invalidate", "무효화 관계"),
              ("candidate_resolutions", "후보 처리"), ("change_attributions", "변경 근거"),
              ("review_issues", "검토 쟁점"), ("review_resolutions", "검토 결론"))
-    return [(title, response[key]) for key, title in names if isinstance(response.get(key), list) and response[key]]
+    return [(title, body[key]) for key, title in names if isinstance(body.get(key), list) and body[key]]
 
 
 def _candidate(item: dict, records: dict[str, dict]) -> str:

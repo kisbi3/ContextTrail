@@ -221,6 +221,43 @@ def test_ops_reports_unknown_usage_and_no_fabricated_cost(laboratory):
     report = summarize_calls(store.llm_calls())
     assert report['usage_missing_calls'] == 2 and report['provider_usage_sums'] is None
     assert report['billed_cost'] is None
+    assert sum(group['calls'] for group in report['by_role'].values()) == report['host_calls']
+    assert all({'calls', 'duration_ms', 'output_chars', 'input_tokens', 'output_tokens'} <= set(group)
+               for group in report['by_role'].values())
+    integrate = report['by_role']['integrate']['quote_chars']
+    assert integrate['candidate_resolutions'] > 0 and integrate['change_attributions'] > 0
+
+
+def test_output_quote_chars_counts_sizes_per_section():
+    from projectflow.analysis import output_quote_chars
+    output = {'events_to_add': [{'evidence': [{'quote': 'abcd'}, {'quote': 'ef'}]}],
+              'change_attributions': [{'evidence': [{'quote': 'xyz'}]}], 'limitations': ['not a quote']}
+    assert output_quote_chars(output) == {'events_to_add': 6, 'change_attributions': 3}
+
+
+def test_review_summary_counts_statuses_without_issue_text():
+    from projectflow.evaluation import review_summary
+    graph = {'semantic_review_history': [
+        {'status': 'not_needed', 'issues': [], 'resolutions': []},
+        {'status': 'reviewed', 'issues': [{'signal': 'unlinked_revision', 'question': 'secret'}],
+         'resolutions': [{'status': 'modified', 'reason': 'secret'}]}]}
+    summary = review_summary(graph)
+    assert summary == {'units': 2, 'statuses': {'not_needed': 1, 'reviewed': 1},
+                       'resolutions': {'modified': 1}, 'signals': {'unlinked_revision': 1}}
+    assert 'secret' not in str(summary)
+
+
+def test_ops_count_why_the_quotes_did_not_match(laboratory):
+    _, store, engine, records, make = laboratory
+    records.append(make(CASES[0][0]))
+    class BadQuote(FixtureRunner):
+        def run(self, task, schema, cancel):
+            output = super().run(task, schema, cancel)
+            if task["stage"] == "extract" and "repair" not in task:
+                output["event_candidates"][0]["evidence"][0]["quote"] = "우선 JSON 파일로 저장하겠습니다"
+            return output
+    engine.analyze(lambda: BadQuote())
+    assert summarize_calls(store.llm_calls())["quote_mismatch_categories"] == {"not_found": 1}
 
 
 def test_ops_timeline_excludes_raw_inputs_outputs_and_errors():
@@ -248,6 +285,53 @@ def test_eval_frozen_fixture_and_independent_ab_states(tmp_path):
     assert (tmp_path/'A/state/state.sqlite').is_file() and (tmp_path/'B/state/state.sqlite').is_file()
     for path in (tmp_path/'A').glob('*.json'):
         assert path.stat().st_mode & 0o077 == 0
+
+
+def test_reuse_evidence_shrinks_the_integrate_quotes_and_keeps_the_graph(tmp_path):
+    full = run_eval('demo', tmp_path/'full', 'mock', AnalysisConfig())
+    reuse = run_eval('demo', tmp_path/'reuse', 'mock', AnalysisConfig(integrate_evidence='reuse'))
+    assert full['first_run']['status'] == reuse['first_run']['status'] == 'complete'
+    assert (reuse['expectations']['passed'], reuse['expectations']['failed']) == (
+        full['expectations']['passed'], 0)
+    quoted = lambda report, role: sum(report['ops']['by_role'][role].get('quote_chars', {}).values())
+    for role in ('integrate', 'integrate_review'):
+        assert quoted(reuse, role) < quoted(full, role)
+    assert not {'events_to_add', 'candidate_resolutions', 'change_attributions'} & set(
+        reuse['ops']['by_role']['integrate'].get('quote_chars', {}))
+    # The same graph and the same citations, whatever the integrator had to write.
+    def claims(name):
+        data = json.loads((tmp_path/name/'flow.json').read_text())
+        graph, evidence = data['graph'], data['evidence']
+        titles = {event['id']: event['title'] for event in graph['events']}
+        return ([(e['title'], e['kind'], e['status'], e['evidence_ids']) for e in graph['events']],
+                sorted((titles.get(e['from_event_id'], e['from_event_id']),
+                        titles.get(e['to_event_id'], e['to_event_id']), e['relation'], e['active'],
+                        tuple(e['evidence_ids'])) for e in graph['edges']),
+                sorted((item['source_id'], item['start_line'], item['end_line'], item['quote'])
+                       for item in evidence.values()))
+    assert claims('reuse') == claims('full')
+
+
+def test_review_patch_shrinks_the_review_answer_and_keeps_the_graph(tmp_path):
+    full = run_eval('demo', tmp_path/'full', 'mock', AnalysisConfig(review_output='full'))
+    patch = run_eval('demo', tmp_path/'patch', 'mock', AnalysisConfig())
+    assert full['first_run']['status'] == patch['first_run']['status'] == 'complete'
+    assert (patch['expectations']['passed'], patch['expectations']['failed']) == (
+        full['expectations']['passed'], 0)
+    chars = lambda report: report['ops']['by_role']['integrate_review']['output_chars']
+    assert 0 < chars(patch) < chars(full)
+    assert full['semantic_review']['statuses'] == patch['semantic_review']['statuses']
+    def claims(name):
+        data = json.loads((tmp_path/name/'flow.json').read_text())
+        graph, evidence = data['graph'], data['evidence']
+        titles = {event['id']: event['title'] for event in graph['events']}
+        return ([(e['title'], e['kind'], e['status'], e['evidence_ids']) for e in graph['events']],
+                sorted((titles.get(e['from_event_id'], e['from_event_id']),
+                        titles.get(e['to_event_id'], e['to_event_id']), e['relation'], e['active'],
+                        tuple(e['evidence_ids'])) for e in graph['edges']),
+                sorted((item['source_id'], item['start_line'], item['end_line'], item['quote'])
+                       for item in evidence.values()))
+    assert claims('patch') == claims('full')
 
 
 def test_eval_requires_explicit_live_consent(tmp_path):
@@ -412,3 +496,17 @@ def test_event_expectation_can_accept_any_of_several_sources(monkeypatch, tmp_pa
     monkeypatch.setattr('projectflow.evaluation.load_fixture', lambda _: data)
     report = run_eval('demo', tmp_path / 'eval', 'mock', AnalysisConfig())
     assert [c['passed'] for c in report['expectations']['checks']] == [True, False]
+
+
+def test_validation_error_kinds_keep_only_the_code_written_prefix():
+    from projectflow.evaluation import error_kinds
+    message = ("인용문이 제공된 원문 범위에서 유일하게 일치하지 않습니다: src_1:2-2 (일치 0건); "
+               "JSON schema 오류: events_to_add/0/title: '모델이 쓴 제목' is too long; "
+               "근거를 비워 둔 항목에 대신 쓸 후보 근거가 없습니다: edges_to_add tmp:e1")
+    assert error_kinds(message) == {"인용문이 제공된 원문 범위에서 유일하게 일치하지 않습니다", "JSON schema 오류",
+                                    "근거를 비워 둔 항목에 대신 쓸 후보 근거가 없습니다"}
+    assert error_kinds("'모델이 쓴 제목' is too long") == set()
+    call = {'stage': 'integrate', 'status': 'validation_error', 'metadata': {'routing_role': 'integrate'},
+            'details': {'error': 'tool_record basis에 실행 기록이 없습니다.'}}
+    report = summarize_calls([call])
+    assert report['by_role']['integrate']['validation_error_kinds'] == {'tool_record basis에 실행 기록이 없습니다.': 1}

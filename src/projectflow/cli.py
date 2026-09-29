@@ -13,7 +13,7 @@ from pathlib import Path
 from . import __version__
 from .agent_commands import install_agent_commands
 from .agent_view import find, find_text, show, show_text
-from .analysis import AnalysisConfig, Engine, _evidence_ids, plan_choices_text, plan_text
+from .analysis import AnalysisConfig, Engine, _evidence_ids, classify_steps, plan_choices_text, plan_text
 from .demo import FixtureRunner, create_demo
 from .diagram import flow_diagram
 from .evaluation import call_timeline, run_eval, summarize_calls
@@ -27,6 +27,10 @@ from .store import Store
 from .ui import GraphApp, TerminalApp, legend, token_usage_label
 from .util import FlowError, dumps, safe_text, within
 from .webview import LocalViewer
+
+
+def _progress_line(message: str) -> None:
+    print(f"[{time.strftime('%H:%M:%S')}] {message}", file=sys.stderr, flush=True)
 
 
 def route_options(sub) -> None:
@@ -74,6 +78,9 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--timeout", type=float, help="모델 호출 하나의 제한 시간(초); 기본 600")
         sub.add_argument("--record-chars", type=int)
         sub.add_argument("--unit-chars", type=int)
+        sub.add_argument("--context-mode", choices=["full", "lean"], help=argparse.SUPPRESS)
+        sub.add_argument("--integrate-evidence", choices=["full", "reuse"], help=argparse.SUPPRESS)
+        sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
         sub.add_argument("--no-tui", action="store_true")
         sub.add_argument("--no-mouse", action="store_true", help="터미널 화면에서 마우스를 쓰지 않음(터미널의 글자 선택 사용)")
         sub.add_argument("--ascii", action="store_true")
@@ -96,6 +103,9 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--timeout", type=float, default=600, help="모델 호출 하나의 제한 시간(초); 기본 600")
     sub.add_argument("--yes", action="store_true")
     sub.add_argument("--preview", action="store_true", help="AI 호출 없이 WorkUnit·실제 추출 입력 HTML 작성")
+    sub.add_argument("--context-mode", choices=["full", "lean"], help=argparse.SUPPRESS)
+    sub.add_argument("--integrate-evidence", choices=["full", "reuse"], help=argparse.SUPPRESS)
+    sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
     langsmith_options(sub)
     route_options(sub)
     sub = commands.add_parser("review", help="저장된 eval의 모델 후보·인용·검증 결과를 HTML로 열람. AI 호출 없음")
@@ -212,7 +222,8 @@ def _options(args, store: Store) -> AnalysisConfig:
     options = store.get_meta("options", {})
     for key in ("runner", "model", "codex_home", "claude_home", "history_limit", "timeout", "record_chars", "unit_chars",
                 "extract_model", "integrate_model", "escalation_model", "extract_effort", "integrate_effort",
-                "escalation_effort", "extract_workers", "output_language"):
+                "escalation_effort", "extract_workers", "output_language", "context_mode", "integrate_evidence",
+                "review_output"):
         value = getattr(args, key, None)
         if value is not None:
             options[key] = str(value.expanduser().resolve()) if isinstance(value, Path) else value
@@ -386,7 +397,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(dumps(result, pretty=True))
                 return 0
             report = run_eval(args.fixture, args.output, args.runner, AnalysisConfig(**options),
-                              yes=args.yes, model=args.model, timeout=args.timeout)
+                              yes=args.yes, model=args.model, timeout=args.timeout,
+                              progress=None if args.runner == "mock" else _progress_line)
             print(dumps({"report": str(args.output / "report.json"), "mode": report["mode"],
                          "review": str(args.output / "review.html"),
                          "status": report["first_run"]["status"], "ops": report["ops"],
@@ -515,7 +527,8 @@ def main(argv: list[str] | None = None) -> int:
             counts = {provider: sum(r.provider == provider for r in snapshot.records) for provider in ("codex", "claude", "git")}
             print(dumps({"scope": str(scope.folder), "worktrees": [str(p) for p in scope.roots],
                          "state_dir": str(scope.state_dir), "snapshot_id": snapshot.id,
-                         "records": counts, "limitations": snapshot.limitations, "runner_calls": 0,
+                         "records": counts, "steps": classify_steps(snapshot.records),
+                         "limitations": snapshot.limitations, "runner_calls": 0,
                          "plan": plan, "plan_text": plan_text(plan) if plan else plan_error,
                          "plan_choices": plan_choices_text(plan) if plan else None,
                          "codex_selection": {

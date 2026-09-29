@@ -6,7 +6,7 @@ import json
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .analysis import AnalysisConfig, Engine, _evidence_ids, tool_steps
 from .demo import CASES, FixtureRunner
@@ -18,6 +18,16 @@ from .runners import CLIRunner
 from .schema import KINDS, RELATIONS, STATUSES
 from .store import Store
 from .util import FlowError, digest, dumps, ident, private_dir
+
+
+def error_kinds(message: str) -> set[str]:
+    """The code-written part of a validation error: the Korean text before each ':' (never model text)."""
+    kinds = set()
+    for part in message.split("; "):
+        head = part.split(":", 1)[0].strip()
+        if head and len(head) <= 80 and re.search("[가-힣]", head) and not re.search(r"[{}\"'`]", head):
+            kinds.add(head)
+    return kinds
 
 
 def summarize_calls(calls: list[dict]) -> dict:
@@ -47,7 +57,23 @@ def summarize_calls(calls: list[dict]) -> dict:
             for name, value in usage.items():
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     tokens[name] = tokens.get(name, 0) + value
+    by_role: dict[str, dict] = {}
+    for call in calls:
+        group = by_role.setdefault(call['metadata'].get('routing_role', call['stage']),
+                                   {'calls': 0, 'duration_ms': 0, 'output_chars': 0, 'input_tokens': 0, 'output_tokens': 0})
+        group['calls'] += 1
+        group['duration_ms'] += call['details'].get('duration_ms', 0)
+        group['output_chars'] += call['details'].get('output_chars', 0) or 0
+        usage = call['details'].get('usage') if isinstance(call['details'].get('usage'), dict) else {}
+        group['input_tokens'] += usage.get('input_tokens', 0) or 0
+        group['output_tokens'] += usage.get('output_tokens', 0) or 0
+        if call['status'] == 'validation_error':
+            for kind in error_kinds(call['details'].get('error', '')):
+                group.setdefault('validation_error_kinds', {})[kind] = group.get('validation_error_kinds', {}).get(kind, 0) + 1
+        for section, chars in (call['details'].get('output_quote_chars') or {}).items():
+            group.setdefault('quote_chars', {})[section] = group.get('quote_chars', {}).get(section, 0) + chars
     return {'host_calls': len(calls), 'calls_by_role': dict(roles), 'call_statuses': dict(statuses),
+            'by_role': by_role,
             'by_requested_model': by_model, 'usage_available_calls': usage_known,
             'usage_missing_calls': len(calls) - usage_known,
             'provider_usage_sums': tokens or None, 'billed_cost': None,
@@ -58,10 +84,24 @@ def summarize_calls(calls: list[dict]) -> dict:
             'repair_calls': sum(c['metadata'].get('repair_round', 0) > 0 for c in calls),
             'evidence_request_calls': statuses.get('needs_evidence', 0),
             'citation_normalizations': sum(c['details'].get('citation_normalizations', 0) for c in calls),
+            'validation_error_kinds': dict(Counter(kind for c in calls if c['status'] == 'validation_error'
+                                                   for kind in error_kinds(c['details'].get('error', '')))),
+            'quote_mismatch_categories': dict(Counter(
+                item['category'] for c in calls
+                for item in (c['details'].get('quote_mismatch_audit') or []) if 'category' in item)),
             'notes': ['host_calls는 CLI task invocation 수이며 provider 내부 model turn 수나 실제 과금액이 아닙니다.',
                       'model은 요청값/alias입니다. actual_models_reported가 비었으면 실제 모델을 확인하지 못했습니다'
                       ' (Codex는 응답에 사용한 모델을 보고하지 않습니다).',
                       'call 비율을 원문/토큰 절감 비율로 해석하지 마세요. 의미 품질은 별도 평가가 필요합니다.']}
+
+
+def review_summary(graph: dict) -> dict:
+    """How often delta review ran and what it did, without issue text."""
+    history = graph.get("semantic_review_history", [])
+    return {"units": len(history),
+            "statuses": dict(Counter(item.get("status") for item in history)),
+            "resolutions": dict(Counter(r.get("status") for item in history for r in item.get("resolutions", []))),
+            "signals": dict(Counter(i.get("signal") for item in history for i in item.get("issues", [])))}
 
 
 def call_timeline(calls: list[dict]) -> list[dict]:
@@ -314,7 +354,8 @@ def style_checks(graph: dict, evidence: dict[str, dict], records: list) -> dict:
 
 
 def run_eval(fixture: str, output: Path, runner_name: str, config: AnalysisConfig, *,
-             yes: bool = False, model: str | None = None, timeout: float = 600) -> dict:
+             yes: bool = False, model: str | None = None, timeout: float = 600,
+             progress: Callable[[str], None] | None = None) -> dict:
     data = load_fixture(fixture)
     if runner_name != 'mock' and not yes:
         raise FlowError('실제 CLI 평가는 개인 계정 사용량과 자료 전송을 수반합니다. --yes로 명시적으로 동의하세요.')
@@ -339,7 +380,7 @@ def run_eval(fixture: str, output: Path, runner_name: str, config: AnalysisConfi
     engine.scan = lambda: snapshot
     engine.review_capture = EvalCallRecorder(output)
     factory = FixtureRunner if runner_name == 'mock' else lambda: CLIRunner(runner_name, model=model, timeout=timeout)
-    first = engine.analyze(factory)
+    first = engine.analyze(factory, update=progress)
     calls = store.llm_calls(first['run_id'])
     # A failed live trial must not silently be re-run and consume another budget.
     second = None
@@ -355,7 +396,7 @@ def run_eval(fixture: str, output: Path, runner_name: str, config: AnalysisConfi
               'config': {k: str(v) if isinstance(v, Path) else v for k, v in dataclasses.asdict(config).items()},
               'first_run': {k: v for k, v in first.items() if k != 'graph'},
               'noop_check': {'status': second['status'], 'runner_calls': second['runner_calls']} if second else None,
-              'ops': summarize_calls(calls), 'expectations': check_expectations(graph, evidence, data.get('expectations')),
+              'ops': summarize_calls(calls), 'semantic_review': review_summary(graph), 'expectations': check_expectations(graph, evidence, data.get('expectations')),
               'style': {**style_checks(graph, evidence, snapshot.records), 'output_language': config.output_language},
               'fixture_integrity': integrity,
               'limitations': ['유효한 JSON/인용/기대 사건 검사만으로 의미적 정답을 보장하지 않습니다.',

@@ -37,6 +37,40 @@ def test_stage_effort_is_saved_but_skipping_review_is_per_run(tmp_path):
     assert again.extract_effort == 'medium'
 
 
+def test_integrate_evidence_option_is_saved_for_later_runs_and_stays_hidden(tmp_path, capsys):
+    from projectflow.cli import _options, parser
+    store = Store(tmp_path / 'state', 'scope')
+    assert _options(parser().parse_args(['analyze', '.']), store).integrate_evidence == 'full'
+    chosen = _options(parser().parse_args(['analyze', '.', '--integrate-evidence', 'reuse']), store)
+    assert chosen.integrate_evidence == 'reuse'
+    assert _options(parser().parse_args(['analyze', '.']), store).integrate_evidence == 'reuse'
+    assert _options(parser().parse_args(['scan', '.', '--integrate-evidence', 'full']),
+                    store).integrate_evidence == 'full'
+    assert parser().parse_args(['eval', '--output', 'out', '--integrate-evidence', 'reuse']).integrate_evidence == 'reuse'
+    with pytest.raises(SystemExit):
+        parser().parse_args(['analyze', '--integrate-evidence', 'partial'])
+    with pytest.raises(SystemExit):
+        parser().parse_args(['analyze', '--help'])
+    assert 'integrate-evidence' not in capsys.readouterr().out
+
+
+def test_review_output_option_is_saved_for_later_runs_and_stays_hidden(tmp_path, capsys):
+    from projectflow.cli import _options, parser
+    store = Store(tmp_path / 'state', 'scope')
+    assert _options(parser().parse_args(['analyze', '.']), store).review_output == 'patch'
+    assert _options(parser().parse_args(['analyze', '.', '--review-output', 'full']),
+                    store).review_output == 'full'
+    assert _options(parser().parse_args(['analyze', '.']), store).review_output == 'full'
+    assert _options(parser().parse_args(['scan', '.', '--review-output', 'patch']),
+                    store).review_output == 'patch'
+    assert parser().parse_args(['eval', '--output', 'out', '--review-output', 'patch']).review_output == 'patch'
+    with pytest.raises(SystemExit):
+        parser().parse_args(['analyze', '--review-output', 'diff'])
+    with pytest.raises(SystemExit):
+        parser().parse_args(['analyze', '--help'])
+    assert 'review-output' not in capsys.readouterr().out
+
+
 def test_developer_tracing_flags_work_but_are_not_advertised(capsys):
     from projectflow.cli import parser
     assert parser().parse_args(['analyze', '.', '--langsmith']).langsmith_enabled
@@ -59,6 +93,17 @@ def test_demo_cli_noop_export_without_cli(tmp_path,capsys):
             data=json.loads(output.read_text());assert 'graph' in data
     assert main(['view',str(folder),'--no-tui','--ascii'])==0
     assert main(['scan',str(folder)])==0
+
+
+def test_scan_reports_step_classes_without_a_model(tmp_path, capsys):
+    directory=tmp_path/'demo'
+    assert main(['demo','--path',str(directory),'--no-tui'])==0
+    capsys.readouterr()
+    assert main(['scan',str(directory/'sample-project')])==0
+    report=json.loads(capsys.readouterr().out)
+    steps=report['steps']
+    assert set(steps)=={'tool_calls','hints','run_by_tool','ambiguous_run_commands','ambiguous_run_share'}
+    assert report['runner_calls']==0
 
 
 def test_graph_command_shows_project_and_eval_in_terminal(tmp_path, capsys):

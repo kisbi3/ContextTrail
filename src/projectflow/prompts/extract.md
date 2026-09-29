@@ -8,13 +8,18 @@ evidence is always a quote from the records.
 - user_requests: this unit's user messages. Make one actor=user event per message.
 - tool_steps: tool calls in order, with call (the call record), result (the result record),
   tool, hint, target (file or command) and result_head (first line of the result).
-  hint comes only from the tool name and patch markers: edit changed a file, read only read,
-  run is any other execution.
+  hint comes only from the tool name, patch markers and the command line: edit changed a file,
+  read only read, and any other execution is run, or one of its kinds: commit (a git commit),
+  test (a test, lint, type check or build command), vcs (another git command that changes
+  branches, index or history). Two more: delegate hands work to another agent or waits for one
+  (an agent's own work shows up as its own records, so a delegate is normally not an event), and
+  poll only reads more output of a command started earlier, so its result may be that command's
+  outcome.
   - Every edit call must appear in some event's evidence (a quote from its call or result);
     code checks this. Several edits may form one change event, but split them when different
     runs checked them.
-  - A run's result is the evidence for a result (outcome) event. Do not miss test, install or
-    script results.
+  - A run's result, including a test result, is the evidence for a result (outcome) event. Do not
+    miss test, install or script results. A commit result may back the change event it records.
   - A read is normally not an event. Its result is sent as a short head only; read the rest with
     read_records if a claim needs it.
 - Long tool results, injected instructions and summary records arrive as head and tail only. The

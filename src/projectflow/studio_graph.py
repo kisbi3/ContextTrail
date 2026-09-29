@@ -24,6 +24,7 @@ from projectflow.analysis import (AnalysisConfig, Engine, IdAliases, PreparedExt
                                   build_task, review_signal_items, REVIEW_SIGNALS)
 from projectflow.analysis import link_request_turns as analysis_link_request_turns
 from projectflow.analysis import calibration, call_cap, plan_summary
+from projectflow.analysis import classify_steps as classify_records
 from projectflow.demo import FixtureRunner, create_demo
 from projectflow.evaluation import fixture_records, load_fixture
 from projectflow.git_context import Scope
@@ -31,7 +32,7 @@ from projectflow.model import Snapshot
 from projectflow.render import graph_summary
 from projectflow.runners.cli_runner import CLIRunner
 from projectflow.routing import RunnerPool
-from projectflow.schema import DELTA_SCHEMA, EXTRACT_SCHEMA, EvidenceValidator
+from projectflow.schema import EXTRACT_SCHEMA, EvidenceValidator, delta_schema
 from projectflow.store import Store
 from projectflow.util import Cancelled, FlowError, ident, private_dir
 
@@ -144,6 +145,7 @@ class StudioState(TypedDict, total=False):
     snapshot_id: str
     selected_records: int
     limitations: list[str]
+    step_classes: dict
     planned_units: list[dict]
     total_planned_units: int
     records_waiting: int
@@ -317,6 +319,14 @@ def scan_sources(state: StudioState) -> StudioState:
     store.start_run(run_id, {"scope_id": engine.scope.id, "mode": "studio_synthetic"})
     return {"run_id": run_id, "snapshot_id": snapshot.id,
             "selected_records": len(snapshot.records), "limitations": snapshot.limitations}
+
+
+def classify_steps(state: StudioState) -> StudioState:
+    """Code-only pass over the tool calls (edit/read/commit/test/vcs/run) ahead of planning.
+
+    The cut rules and the extract input read the same hints; this makes them visible per run."""
+    _, _, snapshot = _context(state)
+    return {"step_classes": classify_records(snapshot.records)}
 
 
 def plan_work_units(state: StudioState) -> StudioState:
@@ -567,7 +577,7 @@ def prepare_integrate_input(state: StudioState) -> StudioState:
         "base_graph_version": prepared.graph_version,
         "validated_candidate_count": len(prepared.data["validated_candidates"]["event_candidates"]),
         "request": IdAliases().wire(build_task("integrate", prepared.data, engine.config.output_language)),
-        "response_schema": DELTA_SCHEMA}}
+        "response_schema": delta_schema(engine.config.integrate_evidence == "reuse")}}
 
 
 def integrate_model_and_validate(state: StudioState) -> StudioState:
@@ -843,7 +853,7 @@ def _guard(node):
 
 workflow = StateGraph(StudioState)
 for name, node in (("prepare_run", prepare_run), ("scan_sources", scan_sources),
-                   ("plan_work_units", plan_work_units), ("select_unit", select_unit),
+                   ("classify_steps", classify_steps), ("plan_work_units", plan_work_units), ("select_unit", select_unit),
                    ("prepare_extract_input", prepare_extract_input),
                    ("extract_model_and_validate", extract_model_and_validate),
                    ("validate_candidates", validate_candidates),
@@ -858,7 +868,8 @@ for name, node in (("prepare_run", prepare_run), ("scan_sources", scan_sources),
     workflow.add_node(name, _guard(node))
 workflow.add_edge(START, "prepare_run")
 workflow.add_edge("prepare_run", "scan_sources")
-workflow.add_edge("scan_sources", "plan_work_units")
+workflow.add_edge("scan_sources", "classify_steps")
+workflow.add_edge("classify_steps", "plan_work_units")
 workflow.add_conditional_edges("plan_work_units", initial_route)
 workflow.add_edge("select_unit", "prepare_extract_input")
 workflow.add_edge("prepare_extract_input", "extract_model_and_validate")

@@ -56,6 +56,7 @@ def test_studio_graph_rejects_external_scope(tmp_path):
 def test_studio_graph_exposes_actual_model_call_boundaries():
     nodes = [name for update in graph.stream({}, stream_mode="updates")
              for name in update]
+    assert nodes.index("scan_sources") + 1 == nodes.index("classify_steps") == nodes.index("plan_work_units") - 1
     assert nodes.count("extract_model_and_validate") == 2
     assert nodes.count("integrate_model_and_validate") == 2
     assert nodes.count("route_semantic_review") == 2
@@ -235,6 +236,30 @@ def test_delta_rejects_missing_or_mislinked_candidate_contract():
     for variant in variants:
         with pytest.raises(FlowError):
             prepared.validator.apply_delta(variant, base, state["snapshot_id"], state["run_id"], candidates)
+
+
+def test_delta_attributes_a_change_to_the_candidate_that_resolves_to_it():
+    state = graph.invoke({})
+    prepared = state["prepared_integration"]
+    candidates = prepared.data["validated_candidates"]
+    delta = copy.deepcopy(state["model_delta"])
+    resolutions = delta["candidate_resolutions"]
+    swapped = None
+    for item in delta["change_attributions"]:
+        owners = [row["candidate_id"] for row in resolutions if item["item_id"] in row["target_ids"]]
+        others = [row["candidate_id"] for row in resolutions
+                  if row["candidate_id"] not in owners and item["item_id"] not in row["target_ids"]
+                  and row["disposition"] != "excluded"]
+        if item["operation"] == "events_to_add" and owners and others:
+            item["candidate_ids"] = others[:1]
+            swapped = (item, owners)
+            break
+    if swapped is None:
+        pytest.skip("the fixture has no attribution to swap")
+    validator = prepared.validator
+    validator.apply_delta(delta, prepared.harness.graph, state["snapshot_id"], state["run_id"], candidates)
+    assert swapped[0]["candidate_ids"] == sorted(swapped[1])
+    assert any(n["mode"] == "attribution_candidates_from_resolutions" for n in validator.normalizations)
 
 
 def test_semantic_review_unresolved_issue_is_preserved(monkeypatch):

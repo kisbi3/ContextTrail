@@ -36,7 +36,7 @@ add new events that no candidate leads to.
 
 `change_attributions` records every addition, update, invalidation and resolution in the
 GraphDelta exactly once. operation and item_id point at the GraphDelta array item, candidate_ids
-are input candidate IDs, reason is why, and evidence is an exact quote supporting the change. Do
+are the input candidate IDs whose candidate_resolutions target that same item, reason is why, and evidence is an exact quote supporting the change. Do
 not return a change of meaning that cannot be tied to a candidate.
 
 `review_issues` optionally records ambiguity or conflict you noticed. Each has a unique ID,

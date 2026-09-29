@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import bisect
 import copy
+import re
 from typing import Any
 
 from jsonschema import Draft202012Validator
@@ -90,8 +91,100 @@ DELTA_SCHEMA = obj({**ENVELOPE, "base_graph_version": {"type": "integer", "minim
                         "item_id": STR, "candidate_ids": arr(STR, 1),
                         "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
                         "evidence": CITATIONS})),
-                    "review_issues": arr(REVIEW_ISSUE), "review_resolutions": arr(REVIEW_RESOLUTION),
-                    "limitations": STRS})
+                     "review_issues": arr(REVIEW_ISSUE), "review_resolutions": arr(REVIEW_RESOLUTION),
+                     "limitations": STRS})
+# The delta sections whose evidence an input candidate already carries, in reuse mode.
+REUSABLE_EVIDENCE_SECTIONS = ("events_to_add", "events_to_update", "edges_to_add",
+                              "candidate_resolutions", "change_attributions")
+# A review that answers only its own changes patches these sections of the proposed delta.
+DELTA_ITEM_ARRAYS = ("events_to_add", "events_to_update", "edges_to_add", "edges_to_invalidate",
+                     "open_items_to_upsert", "open_items_to_resolve")
+PATCH_ARRAYS = (*DELTA_ITEM_ARRAYS, "candidate_resolutions", "change_attributions", "review_issues")
+
+
+def delta_schema(evidence_reuse: bool = False) -> dict:
+    """The GraphDelta contract; in reuse mode only these five sections may carry no evidence at all."""
+    if not evidence_reuse:
+        return DELTA_SCHEMA
+    schema = copy.deepcopy(DELTA_SCHEMA)
+    for name in REUSABLE_EVIDENCE_SECTIONS:
+        schema["properties"][name]["items"]["properties"]["evidence"] = arr(CITATION)
+    return schema
+
+
+# The review-patch contract: a review that changes 2 of 30 items answers 2 items, not 30.
+REVIEW_PATCH_SCHEMA = obj({**ENVELOPE, "base_graph_version": {"type": "integer", "minimum": 0},
+    "review_resolutions": arr(REVIEW_RESOLUTION), "limitations": STRS,
+    "patch": obj({name: arr(DELTA_SCHEMA["properties"][name]["items"]) for name in PATCH_ARRAYS}),
+    "remove": arr(obj({"operation": enum(list(DELTA_ITEM_ARRAYS)), "item_id": STR}))})
+
+
+def review_patch_schema(evidence_reuse: bool = False) -> dict:
+    """The review-patch contract; in reuse mode the patchable sections may carry no evidence either."""
+    if not evidence_reuse:
+        return REVIEW_PATCH_SCHEMA
+    schema = copy.deepcopy(REVIEW_PATCH_SCHEMA)
+    for name in REUSABLE_EVIDENCE_SECTIONS:
+        schema["properties"]["patch"]["properties"][name]["items"]["properties"]["evidence"] = arr(CITATION)
+    return schema
+
+
+def patch_key(array: str, item: dict) -> tuple:
+    """How a delta item is matched against the proposal: its id, or the pair that names it."""
+    if array == "candidate_resolutions":
+        return (item["candidate_id"], item["candidate_kind"])
+    if array == "change_attributions":
+        return (item["operation"], item["item_id"])
+    return (item["id"],)
+
+
+def merge_review_patch(proposed: dict, answer: dict) -> dict:
+    """The reviewed GraphDelta: the proposal with the review's own changes folded in.
+
+    A patch item whose key is a proposed item's key replaces it where it stands, anything else
+    is appended, and `remove` drops a proposed item with the change attribution naming it. The
+    rest is the proposal's, so the same apply_delta checks, audit and publication run either way.
+    """
+    merged = copy.deepcopy(proposed)
+    proposed_keys = {(array, patch_key(array, item)) for array in PATCH_ARRAYS for item in proposed[array]}
+    kinds: dict[tuple, set[str]] = {}
+    for array in PATCH_ARRAYS:
+        for item in proposed[array]:
+            kinds.setdefault(patch_key(array, item), set()).add(array)
+    drops: dict[str, set[tuple]] = {}
+    for request in answer["remove"]:
+        operation, item_id = request["operation"], request["item_id"]
+        if (operation, (item_id,)) not in proposed_keys:
+            raise FlowError(f"제안된 변경에 없는 항목은 제거할 수 없습니다: {operation} {item_id}")
+        drops.setdefault(operation, set()).add((item_id,))
+        # A dropped item takes the change attribution that names it.
+        drops.setdefault("change_attributions", set()).add((operation, item_id))
+    for array in PATCH_ARRAYS:
+        kept = [item for item in merged[array] if patch_key(array, item) not in drops.get(array, set())]
+        position = {patch_key(array, item): n for n, item in enumerate(kept)}
+        for item in answer["patch"][array]:
+            key = patch_key(array, item)
+            if key in position:
+                kept[position[key]] = copy.deepcopy(item)
+            elif key in kinds and array not in kinds[key]:
+                # One id must name one kind of item, or a replace says nothing about what it replaces.
+                raise FlowError(f"같은 ID가 다른 종류의 제안 항목에도 있습니다: {array} {' '.join(key)}")
+            else:
+                kept.append(copy.deepcopy(item))  # new, or the one `remove` had dropped
+        merged[array] = kept
+    merged["review_resolutions"] = copy.deepcopy(answer["review_resolutions"])
+    merged["limitations"] = list(dict.fromkeys([*merged["limitations"], *answer["limitations"]]))
+    return merged
+
+
+def review_patch_audit(proposed: dict, answer: dict) -> dict:
+    """How many items a review patch added, replaced and removed, for the call ledger."""
+    proposed_keys = {(array, patch_key(array, item)) for array in PATCH_ARRAYS for item in proposed[array]}
+    sent = [(array, patch_key(array, item)) for array in PATCH_ARRAYS for item in answer["patch"][array]]
+    return {"replaced": sum(key in proposed_keys for key in sent),
+            "added": sum(key not in proposed_keys for key in sent),
+            "removed": sum(any(item["id"] == request["item_id"] for item in proposed[request["operation"]])
+                           for request in answer["remove"])}
 
 
 # Escapes that appear verbatim when a tool call embeds code in a string literal
@@ -183,6 +276,112 @@ def resolve_quote(region: str, quote: str) -> tuple[list[tuple[int, int]], int, 
     return spans, first, last, mode
 
 
+# A quote can miss the cited lines by exactly one slip and still say one thing: whitespace the
+# model reflowed, `...` it added to skip lines, or a run past the end of a line. Each is read
+# back only where the source still leaves a single reading, and only inside the cited lines.
+ELLIPSIS = re.compile(r"\.\.\.|…")
+TAIL_MIN_CHARS = 20
+TAIL_MAX_CHARS = 2000
+SLIP_CATEGORIES = {"whitespace_normalized": "whitespace_only", "ellipsis_pieces": "ellipsis_join",
+                   "tail_past_line_end": "tail_past_line_end"}
+
+
+def line_offsets(region: str) -> list[int]:
+    offsets = [0]
+    for line in region.split("\n"):
+        offsets.append(offsets[-1] + len(line) + 1)
+    return offsets
+
+
+def span_lines(offsets: list[int], spans: list[tuple[int, int]]) -> tuple[int, int]:
+    bounds = [(bisect.bisect_right(offsets, s) - 1, bisect.bisect_right(offsets, e - 1) - 1) for s, e in spans]
+    return min(b[0] for b in bounds), max(b[1] for b in bounds)
+
+
+def collapse_whitespace(text: str) -> tuple[str, list[int], list[int]]:
+    """One view of `text` with every whitespace run a single space, mapped back to raw offsets."""
+    chars, starts, ends = [], [], []
+    index = 0
+    while index < len(text):
+        end = index
+        while end < len(text) and text[end].isspace():
+            end += 1
+        if end == index:  # a non-space character is a run of one
+            end = index + 1
+        chars.append(" " if text[index].isspace() else text[index])
+        starts.append(index)
+        ends.append(end)
+        index = end
+    return "".join(chars), starts, ends
+
+
+def whitespace_span(region: str, quote: str) -> list[tuple[int, int]] | None:
+    """The one raw span the quote names once both sides have their whitespace runs collapsed."""
+    squeezed, starts, ends = collapse_whitespace(region)
+    needle, _, _ = collapse_whitespace(quote)
+    if not needle.strip():
+        return None
+    found = occurrences(squeezed, needle)
+    if len(found) != 1:
+        return None
+    return [(starts[found[0]], ends[found[0] + len(needle) - 1])]
+
+
+def ellipsis_spans(region: str, quote: str) -> list[tuple[int, int]] | None:
+    """The spans of ellipsis pieces that each occur once in the region and read in order."""
+    pieces = [piece.strip() for piece in ELLIPSIS.split(quote)]
+    if len(pieces) < 2 or any(len(piece) < SHORT_QUOTE_CHARS for piece in pieces):
+        return None
+    spans, position = [], 0
+    for piece in pieces:
+        hits = occurrences(region, piece)
+        if len(hits) != 1 or hits[0] < position:
+            return None
+        position = hits[0] + len(piece)
+        spans.append((hits[0], position))
+    return spans
+
+
+def tail_span(region: str, quote: str) -> tuple[int, int] | None:
+    """The longest quote prefix the region holds once, when it stops where a line of it stops.
+
+    Only lengths that can still satisfy the 80% rule are looked at, largest first, so the
+    first hit is the longest prefix the region has.
+    """
+    found, best = None, 0
+    floor = max(TAIL_MIN_CHARS, -(-len(quote) * 4 // 5))
+    for length in range(min(len(quote), len(region), TAIL_MAX_CHARS), floor - 1, -1):
+        hits = occurrences(region, quote[:length])
+        if hits:
+            found, best = hits, length
+            break
+    if best == 0 or len(found) != 1:
+        return None
+    start = found[0]
+    if found[0] + best == len(region) or region[found[0] + best] == "\n":
+        return start, start + best
+    return None
+
+
+def resolve_quote_slips(region: str, quote: str) -> tuple[list[tuple[int, int]], int, int, str] | None:
+    """Read a quote that missed the cited lines by one slip, or None when it still says more.
+
+    Same contract as `resolve_quote`: the spans are raw offsets in `region`, so the stored
+    quote stays exact source text and only the focus inside it is narrowed.
+    """
+    offsets = line_offsets(region)
+    spans = whitespace_span(region, quote)
+    if spans is not None:
+        return (spans, *span_lines(offsets, spans), "whitespace_normalized")
+    pieces = ellipsis_spans(region, quote)
+    if pieces is not None:
+        return (pieces, *span_lines(offsets, pieces), "ellipsis_pieces")
+    tail = tail_span(region, quote)
+    if tail is not None:
+        return [tail], *span_lines(offsets, [tail]), "tail_past_line_end"
+    return None
+
+
 def record_evidence(record: SourceRecord, max_chars: int = 2000) -> dict:
     """Evidence the code itself cites: the record's opening whole lines, at least the first."""
     lines = record.content.splitlines() or [""]
@@ -268,6 +467,8 @@ class EvidenceValidator:
         # some extracted event, through the call or its result. Checked at extraction only.
         self.required_citations = required_citations or {}
         self.normalizations: list[dict] = []
+        # Quotes that did not match, with why: the audit copy of these carries no quote text.
+        self.mismatches: list[dict] = []
         # Partial quotes are canonicalized to whole lines before later checks re-read
         # them, so the span the model actually pointed at is remembered per evidence ID.
         self.focus: dict[str, list[list[int]]] = {}
@@ -311,6 +512,7 @@ class EvidenceValidator:
         except FlowError as error:
             record = self.records.get(citation["source_id"])
             if not record or len(citation["quote"]) < SHORT_QUOTE_CHARS:
+                self._note_mismatch(citation, error)
                 raise
             # A locator slip: the exact quote is in lines the model was shown, only not at the
             # lines it named. Accept it when those lines hold it in exactly one place.
@@ -323,11 +525,12 @@ class EvidenceValidator:
                     continue
                 try:
                     start, end, quote, focus = self._citation_span_at(
-                        {**citation, "start_line": lo, "end_line": hi}, track=False)
+                        {**citation, "start_line": lo, "end_line": hi}, track=False, corrections=False)
                 except FlowError:
                     continue
                 found.setdefault((start, end, quote), focus)
             if len(found) != 1:
+                self._note_mismatch(citation, error)
                 raise error
             (start, end, quote), focus = found.popitem()
             if track:
@@ -336,7 +539,8 @@ class EvidenceValidator:
                     "requested_quote_chars": len(citation["quote"])})
             return start, end, quote, focus
 
-    def _citation_span_at(self, citation: dict, *, track: bool) -> tuple[int, int, str, list[list[int]] | None]:
+    def _citation_span_at(self, citation: dict, *, track: bool,
+                          corrections: bool = True) -> tuple[int, int, str, list[list[int]] | None]:
         source_id, start, end = citation["source_id"], citation["start_line"], citation["end_line"]
         record = self.records.get(source_id)
         if not record:
@@ -374,6 +578,12 @@ class EvidenceValidator:
                                     "쓸 수 있습니다. 그 조각을 포함한 더 긴 부분을 원문 그대로 인용하세요)")
                 if len(requested_quote) < SHORT_QUOTE_CHARS:
                     resolved = (*resolved[:3], "short_unique_substring_expanded_to_lines")
+                # One reading of one slip left: the exact and escape views found nothing, and
+                # these are only read inside the lines the model named.
+                if resolved[0] is None and corrections:
+                    slip = resolve_quote_slips(region, requested_quote)
+                    if slip is not None:
+                        resolved = slip
                 if resolved[0] is None:
                     count = resolved[1]
                     raise FlowError(f"인용문이 제공된 원문 범위에서 유일하게 일치하지 않습니다: "
@@ -394,6 +604,55 @@ class EvidenceValidator:
                         "requested_quote_chars": len(requested_quote), "canonical_quote_chars": len(quote)})
                 start, end = corrected_start, corrected_end
         return start, end, quote, focus
+
+    def _provided_text(self, source_id: str) -> str:
+        """The lines of one record the model was shown, as one text."""
+        record = self.records.get(source_id)
+        if not record:
+            return ""
+        lines = record.content.splitlines()
+        numbers = {n for lo, hi in self.provided.get(source_id, []) for n in range(lo, min(hi, len(lines)) + 1)}
+        return "\n".join(lines[n - 1] for n in sorted(numbers))
+
+    def _classify_mismatch(self, citation: dict, region: str, matches: int) -> str:
+        """Where a failed quote went, in one category. Whitespace and word order stay unstated."""
+        quote, source_id = citation["quote"], citation["source_id"]
+        if matches > 1:  # it says one thing, but the cited lines hold it in several places
+            return "multiple_in_cited_lines"
+        if len(occurrences(self._provided_text(source_id), quote)) > 1:
+            return "other_provided_lines_multiple"
+        if any(occurrences(self._provided_text(other), quote) for other in self.provided if other != source_id):
+            return "other_record"
+        slip = resolve_quote_slips(region, quote)
+        if slip is not None:
+            return SLIP_CATEGORIES[slip[3]]
+        if len(quote) < SHORT_QUOTE_CHARS:
+            return "short_fragment"
+        return "not_found"
+
+    def _note_mismatch(self, citation: dict, error: FlowError) -> None:
+        """Why this quote did not match, kept in memory: the audit copy holds no quote text."""
+        record = self.records.get(citation["source_id"])
+        source_id, quote = citation["source_id"], citation["quote"]
+        start, end = citation["start_line"], citation["end_line"]
+        if not str(error).startswith("인용문이") or not record:
+            return
+        if not 1 <= start <= end <= len(record.content.splitlines()):
+            return
+        if any(item["source_id"] == source_id and item["lines"] == [start, end] and item["quote"] == quote
+               for item in self.mismatches):
+            return
+        region = "\n".join(record.content.splitlines()[start - 1:end])
+        resolved = resolve_quote(region, quote)
+        matches = len(resolved[0]) if resolved[0] is not None else resolved[1]
+        self.mismatches.append({"source_id": source_id, "lines": [start, end], "quote": quote,
+            "quote_chars": len(quote), "matches": matches,
+            "category": self._classify_mismatch(citation, region, matches)})
+
+    def mismatch_audit(self) -> list[dict]:
+        """The mismatch list as it is written to the ledger: category and size, never the quote."""
+        return [{key: item[key] for key in ("source_id", "lines", "category", "quote_chars")}
+                for item in self.mismatches]
 
     def _check_all_citations(self, value: dict) -> None:
         errors: list[str] = []
@@ -595,14 +854,109 @@ class EvidenceValidator:
                                     "edges": dropped_edges, "waived_edit_calls": len(waived)})
         return output, waived, notes
 
+    def reuse_candidate_evidence(self, output: dict, candidates: dict | None) -> int:
+        """Fill evidence the model left out with what the resolved input candidate already cites.
+
+        Only in reuse mode, and only for the sections a candidate resolution links: the same
+        citation dicts the extraction validated, not new text. An item no candidate supports
+        stays empty and fails, so the repair round sees it.
+        """
+        if candidates is None:
+            return 0
+        rows = (("event", "event_candidates"), ("edge", "edge_candidates"), ("open_item", "open_items"))
+        by_id = {candidate["id"]: candidate for _, key in rows for candidate in candidates[key]}
+        by_key = {(candidate["id"], kind): candidate for kind, key in rows for candidate in candidates[key]}
+        targets = {(item["candidate_id"], item["candidate_kind"]): item["target_ids"]
+                   for item in output["candidate_resolutions"]}
+        # A delta item is supported by the candidates whose resolution targets it, in candidate order.
+        supported: dict[str, list[dict]] = {}
+        for (candidate_id, kind), candidate in by_key.items():
+            for target in targets.get((candidate_id, kind), []):
+                supported.setdefault(target, []).extend(candidate["evidence"])
+        def unique(citations: list[dict]) -> list[dict]:
+            keys, result = set(), []
+            for citation in citations:
+                key = (citation["source_id"], citation["start_line"], citation["end_line"], citation["quote"])
+                if key not in keys:
+                    keys.add(key)
+                    result.append(dict(citation))
+            return result
+        filled = 0
+        def fill(section: str, item: dict, label: str, citations: list[dict]) -> None:
+            nonlocal filled
+            if item["evidence"]:
+                return
+            if not citations:
+                raise FlowError(f"근거를 비워 둔 항목에 대신 쓸 후보 근거가 없습니다: {label}. 입력 후보가 이미 "
+                                f"인용한 원문을 그대로 인용하거나, 근거를 직접 써 주세요 ({section}).")
+            item["evidence"] = citations
+            filled += 1
+        for section in REUSABLE_EVIDENCE_SECTIONS:
+            for item in output[section]:
+                if section == "candidate_resolutions":
+                    key = (item["candidate_id"], item["candidate_kind"])
+                    fill(section, item, f"candidate_resolutions {item['candidate_id']}",
+                         unique(by_key.get(key, {}).get("evidence", [])))
+                elif section == "change_attributions":
+                    fill(section, item, f"change_attributions {item['operation']} {item['item_id']}",
+                         unique([c for cid in item["candidate_ids"] for c in by_id.get(cid, {}).get("evidence", [])]))
+                else:
+                    fill(section, item, f"{section} {item['id']}", unique(supported.get(item["id"], [])))
+        if filled:
+            self.normalizations.append({"mode": "evidence_reused_from_candidates", "items": filled})
+        return filled
+
+    def restore_tool_evidence(self, output: dict, candidates: dict | None) -> int:
+        """Give back the tool or Git citation an integrated event's basis or status rests on.
+
+        Only when the event's own candidate (a resolution targets it) carried that citation,
+        validated at extraction: the integrator dropped it while copying. Otherwise the event
+        still fails its check below.
+        """
+        if candidates is None:
+            return 0
+        by_id = {candidate["id"]: candidate for candidate in candidates["event_candidates"]}
+        origin: dict[str, list[dict]] = {}
+        for row in output["candidate_resolutions"]:
+            if row["candidate_kind"] == "event" and row["candidate_id"] in by_id:
+                for target in row["target_ids"]:
+                    origin.setdefault(target, []).append(by_id[row["candidate_id"]])
+        def source(citation: dict) -> dict:
+            record = self.records.get(citation["source_id"])
+            return {"role": record.role, "derivation": record.derivation, "provider": record.provider} if record else {}
+        tests = {"tool_record": lambda s: s.get("role") in {"tool_call", "tool_result"},
+                 "observed": lambda s: s.get("role") == "tool_result" and s.get("derivation") == "original",
+                 "git_artifact": lambda s: s.get("provider") == "git"}
+        restored = 0
+        for event in output["events_to_add"]:
+            needs = [name for name, wanted in (("tool_record", event["basis"] == "tool_record"),
+                                               ("observed", event["status"] in OBSERVED),
+                                               ("git_artifact", event["basis"] == "git_artifact")) if wanted]
+            for name in needs:
+                if any(tests[name](source(c)) for c in event["evidence"]):
+                    continue
+                have = {(c["source_id"], c["start_line"], c["end_line"], c["quote"]) for c in event["evidence"]}
+                found = [dict(c) for candidate in origin.get(event["id"], []) for c in candidate["evidence"]
+                         if tests[name](source(c)) and (c["source_id"], c["start_line"], c["end_line"], c["quote"]) not in have]
+                if found:
+                    event["evidence"].extend(found)
+                    restored += 1
+        if restored:
+            self.normalizations.append({"mode": "tool_evidence_restored_from_candidates", "events": restored})
+        return restored
+
     def apply_delta(self, output: dict, graph: dict, snapshot_id: str, run_id: str,
                     candidates: dict | None = None,
-                    expected_review_issues: list[dict] | None = None) -> dict:
+                    expected_review_issues: list[dict] | None = None, *,
+                    evidence_reuse: bool = False) -> dict:
+        if evidence_reuse:
+            self.reuse_candidate_evidence(output, candidates)
         validate_shape(output, DELTA_SCHEMA)
         if output["status"] != "complete" or output["read_requests"]:
             raise FlowError("완료되지 않은 GraphDelta입니다.")
         if output["base_graph_version"] != graph["version"] or output["snapshot_id"] != snapshot_id:
             raise FlowError("GraphDelta의 기준 graph version 또는 snapshot이 다릅니다.")
+        self.restore_tool_evidence(output, candidates)
         self._check_all_citations(output)
         review_issues = output["review_issues"]
         issue_ids = [item["id"] for item in review_issues]
@@ -683,33 +1037,36 @@ class EvidenceValidator:
             valid_candidate_ids = {cid for cid, _ in expected}
             if len(actual_ops) != len(set(actual_ops)) or set(actual_ops) != expected_ops:
                 raise FlowError("change_attributions가 모든 GraphDelta 변경을 정확히 한 번 귀속해야 합니다.")
+            resolution_by_id = {row["candidate_id"]: row for row in resolutions}
+
+            def attribution_linked(item: dict) -> bool:
+                attributed = [resolution_by_id[cid] for cid in item["candidate_ids"]]
+                if any(item["item_id"] in row["target_ids"] for row in attributed):
+                    return True
+                if item["operation"] == "edges_to_add":
+                    edge = next(x for x in output["edges_to_add"] if x["id"] == item["item_id"])
+                    ends = {edge["from_event_id"], edge["to_event_id"]}
+                elif item["operation"] == "edges_to_invalidate":
+                    edge = next(x for x in graph["edges"] if x["id"] == item["item_id"])
+                    ends = {edge["from_event_id"], edge["to_event_id"]}
+                elif item["operation"] == "open_items_to_upsert":
+                    ends = set(next(x for x in output["open_items_to_upsert"] if x["id"] == item["item_id"])["related_event_ids"])
+                elif item["operation"] == "open_items_to_resolve":
+                    ends = set(next(x for x in graph["open_items"] if x["id"] == item["item_id"]).get("related_event_ids", []))
+                else:
+                    return False
+                return any(row["candidate_kind"] == "event" and set(row["target_ids"]) & ends for row in attributed)
+
             for item in attributions:
                 if not item["candidate_ids"] or not set(item["candidate_ids"]) <= valid_candidate_ids:
                     raise FlowError("변경 귀속이 추출 후보에 없는 ID를 참조합니다.")
-                resolution_by_id = {row["candidate_id"]: row for row in resolutions}
-                attributed = [resolution_by_id[cid] for cid in item["candidate_ids"]]
-                linked = any(item["item_id"] in row["target_ids"] for row in attributed)
-                if item["operation"] == "edges_to_add" and not linked:
-                    edge = next(x for x in output["edges_to_add"] if x["id"] == item["item_id"])
-                    linked = any(row["candidate_kind"] == "event" and
-                                 set(row["target_ids"]) & {edge["from_event_id"], edge["to_event_id"]}
-                                 for row in attributed)
-                if item["operation"] == "edges_to_invalidate" and not linked:
-                    edge = next(x for x in graph["edges"] if x["id"] == item["item_id"])
-                    linked = any(row["candidate_kind"] == "event" and
-                                 set(row["target_ids"]) & {edge["from_event_id"], edge["to_event_id"]}
-                                 for row in attributed)
-                if item["operation"] == "open_items_to_upsert" and not linked:
-                    open_item = next(x for x in output["open_items_to_upsert"] if x["id"] == item["item_id"])
-                    linked = any(row["candidate_kind"] == "event" and
-                                 set(row["target_ids"]) & set(open_item["related_event_ids"])
-                                 for row in attributed)
-                if item["operation"] == "open_items_to_resolve" and not linked:
-                    open_item = next(x for x in graph["open_items"] if x["id"] == item["item_id"])
-                    linked = any(row["candidate_kind"] == "event" and
-                                 set(row["target_ids"]) & set(open_item.get("related_event_ids", []))
-                                 for row in attributed)
-                if not linked:
+                if not attribution_linked(item):
+                    direct = sorted(row["candidate_id"] for row in resolutions if item["item_id"] in row["target_ids"])
+                    if direct:
+                        item["candidate_ids"] = direct
+                        self.normalizations.append({"mode": "attribution_candidates_from_resolutions",
+                                                    "operation": item["operation"], "item_id": item["item_id"]})
+                if not attribution_linked(item):
                     raise FlowError("change attribution 후보의 처리 대상이 귀속 GraphDelta 변경과 연결되지 않습니다.")
                 if item["operation"] == "events_to_add" and self.assigned_source_ids is not None and not any(
                         quote["source_id"] in self.assigned_source_ids for quote in item["evidence"]):

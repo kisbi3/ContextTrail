@@ -2,7 +2,7 @@ The submitted result has these validation errors.
 {validation_errors}
 
 Fix only the items with problems. Do not needlessly change valid items or existing IDs.
-For a quote mismatch, compare character by character with exact_source_lines when given. Copy
+For a quote mismatch, do not edit the old quote: pick a new distinctive stretch from one line of exact_source_lines (or the record shown in the input) and copy it character by character, with that line's number. nearest_lines are further candidate lines to copy from, given with their line numbers, when exact_source_lines does not cover the source you need. Copy
 escapes visible in the source (\" \n and so on) as they are; do not unescape them. Keep the part that supports the claim; do not swap it for a weak short fragment just to pass.
 Do not invent sources. Remove relations without evidence or leave them unconfirmed.
 Do not re-analyse the whole project.

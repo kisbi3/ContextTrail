@@ -51,3 +51,9 @@ def test_rejected_model_response_is_visible_and_old_eval_can_be_reviewed(tmp_pat
     assert main(["review", str(output)]) == 0
     assert "평가 검토 HTML:" in capsys.readouterr().out
     assert "모델 응답 원문을 저장하지 않았습니다" in (output / "review.html").read_text()
+
+
+def test_eval_reports_progress_messages_while_it_runs(tmp_path):
+    messages = []
+    run_eval("demo", tmp_path / "eval", "mock", AnalysisConfig(), progress=messages.append)
+    assert any("단위 완료" in message for message in messages)
