@@ -1,0 +1,83 @@
+{
+  "note": "Basis for docs/plans/UNIT_BUDGET_AND_SPLIT.md. Counts and sizes only: no transcript text, no identifiers, no target-project content. Measured by assembling real extract tasks with a fixture runner, so no model was called.",
+  "captured_at": "2026-09-29",
+  "caveats": [
+    "Payload size depends on the current graph state, because existing_events, existing_evidence and context_only grow as analysis proceeds. A single measurement is therefore not stable; treat these as orders of magnitude, not exact figures.",
+    "unit_cost is a content-only estimate. Comparing it to the assembled payload is the whole point."
+  ],
+  "config": {
+    "record_chars": 48000,
+    "unit_chars": 60000,
+    "task_chars": 240000,
+    "read_chars": 36000,
+    "history_limit": 50,
+    "context_events": 24
+  },
+  "population": {
+    "pending_units": 167,
+    "units_over_task_chars": 76,
+    "fraction_over": 0.455,
+    "max_payload_chars": 304429,
+    "top10_payload_chars": [
+      304429,
+      299726,
+      299189,
+      295905,
+      293799,
+      290905,
+      290786,
+      284908,
+      284555,
+      282496
+    ]
+  },
+  "failed_unit": {
+    "records": 79,
+    "role_counts": {
+      "tool_call": 34,
+      "tool_result": 34,
+      "assistant": 10,
+      "metadata": 1
+    },
+    "tool_call_id_pairs": 34,
+    "raw_chars": 36891,
+    "unit_cost_sum": 28700,
+    "truncation_exempt_records": 77,
+    "payload_total_chars": 270166,
+    "payload_by_section": {
+      "data": 257289,
+      "system": 8067,
+      "instructions": 4033,
+      "wire_contract": 680,
+      "stage": 9,
+      "output_language": 8
+    },
+    "data_by_key": {
+      "new_records": 101226,
+      "context_only": 78525,
+      "manifest": 34439,
+      "existing_evidence": 20917,
+      "existing_events": 14896,
+      "tool_steps": 9228,
+      "context_selection": 6701,
+      "existing_edges": 5953,
+      "assigned_source_ids": 2450,
+      "existing_open_items": 922,
+      "unit_id": 31,
+      "snapshot_id": 31,
+      "user_requests": 2,
+      "input_limitations": 2
+    },
+    "split_analysis": {
+      "total_boundaries": 78,
+      "safe_boundaries": 37,
+      "blocked_boundaries": 41,
+      "max_pieces": 38,
+      "note": "A boundary is safe only when no tool_call_id pair or lineage.fragment_of chain straddles it. Blocked boundaries are pair interiors."
+    },
+    "chunker_behaviour": {
+      "as_configured_pieces": 1,
+      "at_unit_chars_20000_pieces": 2
+    }
+  }
+}
