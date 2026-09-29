@@ -4,7 +4,7 @@
 
 | | Measured | Not yet done |
 | --- | --- | --- |
-| Real model calls | **Codex CLI 12 calls** (`gpt-6-sol`): 8 on this repository's own logs, 4 on the Linux external project; **20 calls** across the 6 scored fixture runs ([Linux](docs/reports/artifacts/linux-live-eval-2026-09-28.json) · [table](docs/plans/NEXT_STEPS.md)) | **Claude Runner: 0 calls.** Used only as a log source; the Linux host has no Claude CLI |
+| Real model calls | **Codex CLI 12 analysis calls** (8 on this repository's own logs, 4 on the Linux external project, both `gpt-6-sol`) plus 2 `doctor --smoke` round-trips; **20 calls** across the 6 scored fixture runs ([Linux](docs/reports/artifacts/linux-live-eval-2026-09-28.json) · [table](docs/plans/NEXT_STEPS.md)) | **Claude Runner: 0 calls.** Used only as a log source; the Linux host has no Claude CLI |
 | Real analysis scale | Linux: 5,282 in-scope records → 8 events / 9 edges, 4 runner calls, read-only check passed. macOS self-analysis: 4,199 records → 17 events / 15 edges ([Linux](docs/reports/artifacts/linux-live-eval-2026-09-28.json) · [macOS](docs/reports/artifacts/self-analysis-a4.json)) | — |
 | Archive parse audit | **156 files** (Claude 40, Codex 116), **31,748 records** selected, `limitations: 0` as of the a4 parser ([audit](docs/reports/artifacts/archive-audit-a4.json) · [report](docs/reports/PRELIVE_AUDIT.md)) | **Stale for this parser.** The record-type split in `sources/local.py` now reports types that audit did not. Re-run needed |
 | Semantic quality | **79/111 expectations met (71%)** across 6 runs of 2 fixtures | **2** human-checked WorkUnits total (14 records on macOS, 1 unit on Linux). Not a rate |

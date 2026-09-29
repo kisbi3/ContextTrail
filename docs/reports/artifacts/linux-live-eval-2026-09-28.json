@@ -3,7 +3,6 @@
   "purpose": "Close the 'Linux 0 live runs' gap recorded in README.md, and produce a second human-checked quality sample on a non-self project.",
   "host": {
     "os": "Ubuntu 24.04.4 LTS",
-    "kernel": "Linux 7.0.0-31-generic x86_64",
     "python": "3.12.3",
     "bubblewrap": "/usr/bin/bwrap",
     "unprivileged_userns_clone": 1,
@@ -121,10 +120,11 @@
   "read_only_check": {
     "git_status_before": "13 lines",
     "git_status_after": "13 lines, identical",
-    "head_before": "a8b59ab6a6337ceabb7bf5a8c305436e19f90ae2",
-    "head_after": "identical",
+    "head_before": "<unchanged>",
+    "head_after": "<unchanged>",
     "files_created_in_worktree": 0,
-    "verdict": "pass"
+    "verdict": "pass",
+    "head_unchanged": true
   },
   "quality_sample": {
     "method": "A human read the eight events against the cited source lines and judged whether the sequence described the session that had actually happened.",

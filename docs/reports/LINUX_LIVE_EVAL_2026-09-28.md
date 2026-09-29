@@ -67,7 +67,7 @@ Ubuntu 24.04에는 `python3-venv`가 기본 설치되어 있지 않다. `install
 { "auth": "model_call_succeeded", "live_model_test": "passed_for_this_invocation" }
 ```
 
-README §2가 말하는 그대로다 — "자격증명 파일이 있다는 것이 인증 성공을 보장하지 않는다." macOS에서는 이 `auth` 값이 `not_authenticated_tested`에서 넘어가지 못한 채였다.
+README §2가 말하는 그대로다 — "자격증명 파일이 있다는 것이 인증 성공을 보장하지 않는다." 기본 `doctor`는 여전히 `not_authenticated_tested`를 반환하고, `--smoke`를 명시적으로 돌려야 `model_call_succeeded`가 나온다. macOS에서도 같은 두 단계가 필요했다. 이 실행의 새 값은 **이 경로가 bubblewrap 위에서도 동작한다**는 것이다.
 
 ---
 
@@ -113,7 +113,7 @@ project analyze . --runner codex --units 1 --yes --no-tui
 ## 7. 만들어진 그래프
 
 ```
-v1 · partial · 사건 8 · 관계 9
+v1 · partial · 사건 8 · 관계 9 (그림에는 7개만 보이며 나머지 2개는 본문 밖 연결)
 
 [01] 요청  CUDA 커널 이미지 오류 문의              ✓ 요청 · 답변됨
   └ 동기 → [02] 변경  오류 위치와 CUDA 환경 조사   · 진행 중
@@ -125,18 +125,20 @@ v1 · partial · 사건 8 · 관계 9
   └ 답변 → [08] 결과  CUDA 오류 원인과 대응책 설명   ! 완료 보고·미검증
 ```
 
+`motivates` 3 + `produces` 3 + `answers` 1 + `follows` 1 + `revises` 1 = 9. ASCII 흐름은 각주 연결을 생략하고 본문 열(vertical chain)만 그리기 때문에 7개만 보인다. `revises` 1개와 `follows` 1개는 본문 밖 연결이다.
+
 **관계 근거 분포: `explicit` 5, `structural` 4, `inferred` 0.**
 
-`inferred`가 0건이라는 점이 중요하다. 추정이 아니라 근거로만 연결됐다는 뜻이고, 이건 스키마가 강제한 결과다(`schema.py`의 `basis` 규칙). 사소해 보이지만 "왜 이걸 연결했나"를 물었을 때 답이 없는 그래프와는 다르다.
+`inferred` 0건은 이 실행의 결과이지 스키마의 보장이 아니다. 스키마는 `inferred`를 허용한다(`verifies` 관계만 예외). 즉 모델이 추정을 표시하지 않은 것이고, 이 9개 관계가 전부 근거를 찾았다는 뜻이다. 사소해 보이지만 "왜 이걸 연결했나"를 물었을 때 답이 없는 그래프와는 다르다. 다음 실행에서 `inferred`가 늘면 그건 나쁜 변화다.
 
 ### 사람이 읽어본 결과
 
 사람이 8개 사건을 인용된 원문 줄과 대조했다. 순서는 실제로 일어난 디버깅 세션과 맞았고, 인용은 원문 그대로였다. 예를 들어 [01]의 인용:
 
 > 다음의 문제를 알려줘:
-> 2026-04-14 12:04:34.475 | ERROR | deep_lyapunov.trajectory.generator:226 >> Failed to process prompt 0: CUDA error: no kernel image is available for execution on the device
+> <날짜> | ERROR | <모듈 경로> >> Failed to process prompt 0: CUDA error: no kernel image is available for execution on the device
 
-사람이 알던 프로젝트, 사람이 알던 오류, 사람이 알던 세션이었다.
+사람이 알던 프로젝트, 사람이 알던 오류, 사람이 알던 세션이었다. (원문은 여기서 인용하지 않는다 — 대상 저장소 경로와 로그가 공개되기 때문. 원문은 대상 머신의 `project show <event-id>` 로 확인한다.)
 
 **단, 이것은 171개 중 1개다.** 파이프라인이 낯선 프로젝트에서도 그럴듯한 인용된 결과를 낸다는 뜻이지, 일반적으로 신뢰할 수 있다는 뜻은 아니다. README의 재현성 공백은 이 실행으로 그대로 남는다.
 
@@ -146,7 +148,7 @@ v1 · partial · 사건 8 · 관계 9
 
 ```
 git status  사전 13줄  →  사후 13줄, 완전 동일
-git HEAD    a8b59ab... →  동일
+git HEAD    (커밋 해시 비공개) →  동일
 작업 트리 내 생성 파일  0
 ```
 
