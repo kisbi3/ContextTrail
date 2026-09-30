@@ -70,6 +70,10 @@ def summarize_calls(calls: list[dict]) -> dict:
         if call['status'] == 'validation_error':
             for kind in error_kinds(call['details'].get('error', '')):
                 group.setdefault('validation_error_kinds', {})[kind] = group.get('validation_error_kinds', {}).get(kind, 0) + 1
+        for item in call['details'].get('citation_normalization_audit') or []:
+            if isinstance(item, dict) and isinstance(item.get('mode'), str):
+                modes = group.setdefault('normalization_modes', {})
+                modes[item['mode']] = modes.get(item['mode'], 0) + 1
         for section, chars in (call['details'].get('output_quote_chars') or {}).items():
             group.setdefault('quote_chars', {})[section] = group.get('quote_chars', {}).get(section, 0) + chars
     return {'host_calls': len(calls), 'calls_by_role': dict(roles), 'call_statuses': dict(statuses),

@@ -510,3 +510,9 @@ def test_validation_error_kinds_keep_only_the_code_written_prefix():
             'details': {'error': 'tool_record basis에 실행 기록이 없습니다.'}}
     report = summarize_calls([call])
     assert report['by_role']['integrate']['validation_error_kinds'] == {'tool_record basis에 실행 기록이 없습니다.': 1}
+    call = {'stage': 'integrate', 'status': 'complete', 'metadata': {'routing_role': 'integrate'},
+            'details': {'citation_normalization_audit': [
+                {'mode': 'tool_evidence_restored_from_candidates', 'events': 1},
+                {'mode': 'whitespace_normalized', 'source_id': 's1'}, {'mode': 'whitespace_normalized'}]}}
+    assert summarize_calls([call])['by_role']['integrate']['normalization_modes'] == {
+        'tool_evidence_restored_from_candidates': 1, 'whitespace_normalized': 2}
