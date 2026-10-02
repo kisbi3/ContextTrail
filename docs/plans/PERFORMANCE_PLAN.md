@@ -187,3 +187,6 @@ lean으로 조각당 입력이 줄었는데 예산 상수(`PAYLOAD_RECORD_FACTOR
   - 보안 문서 수정이 LangSmith 필터 수정에 합쳐짐 3회 → #8·#17. 합쳐지면 `doc_verifies_dropped`는 걸리지 않는다(5회 0번).
   - `repair_fix → verifies → engine_tests/live6` 5회 모두 없음(#11·#14). 추출 검증 오류 `verifies…inferred`가 4회: 관계 `basis`의 뜻이 프롬프트에 없어 Sonnet이 맞는 연결도 inferred로 적고, 수리가 그 연결을 지운 것으로 본다(2회차 그래프에서 "수리 호출이 18k자 원본 입력으로 진행" 결과가 수정에 이어지지 않음).
 - 조치: `common.md`에 관계 `basis`의 뜻(explicit/structural/inferred)과 "verifies는 실행이 그 변경을 다뤘다는 인용과 함께 explicit/structural로"를, `repair.md`에 "inferred로 거절된 verifies는 근거 인용을 찾아 explicit로, 없으면 삭제"를 넣었다. 모델 입력이 바뀌므로 소유자 평가로 확인한다.
+- **basis 규칙 뒤 repairfix-v2 ×5 (`cl-basis-1..5`):** 1~4회 15·10·14·13(평균 13.0/18), 평균 2.7분, 호출 4번(추출 수리 1회는 그대로; 원인은 인용 불일치·편집 인용 누락). 5회차는 통합 호출에서 Claude 세션 한도(`You've hit your session limit`)로 실패해 제외한다.
+  - `verifies…inferred` 오류 4회 → 0회, live5 실패가 둘로 나뉜 실행 4회 → 0회(#1·#15 통과). 금지 관계는 이번에도 실제로 0개.
+  - #11·#14(`repair_fix → verifies → engine_tests/live6`)와 #10(`live5_failed → motivates → repair_fix`)은 4회 모두 실패. 거절되던 inferred 연결이 사라졌지만 모델이 처음부터 그 연결을 만들지 않는다. 테스트 파일 실행이 그 테스트가 부르는 수정 코드까지 검증한다는 두 단계 판단이 필요해, fixture에 맞춘 프롬프트 조정은 보류한다.
