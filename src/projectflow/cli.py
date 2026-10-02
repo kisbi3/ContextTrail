@@ -81,6 +81,7 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--context-mode", choices=["full", "lean"], help=argparse.SUPPRESS)
         sub.add_argument("--integrate-evidence", choices=["full", "reuse"], help=argparse.SUPPRESS)
         sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
+        sub.add_argument("--integrate-output", choices=["full", "patch", "draft"], help=argparse.SUPPRESS)
         sub.add_argument("--no-tui", action="store_true")
         sub.add_argument("--no-mouse", action="store_true", help="터미널 화면에서 마우스를 쓰지 않음(터미널의 글자 선택 사용)")
         sub.add_argument("--ascii", action="store_true")
@@ -106,6 +107,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--context-mode", choices=["full", "lean"], help=argparse.SUPPRESS)
     sub.add_argument("--integrate-evidence", choices=["full", "reuse"], help=argparse.SUPPRESS)
     sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
+    sub.add_argument("--integrate-output", choices=["full", "patch", "draft"], help=argparse.SUPPRESS)
     langsmith_options(sub)
     route_options(sub)
     sub = commands.add_parser("review", help="저장된 eval의 모델 후보·인용·검증 결과를 HTML로 열람. AI 호출 없음")
@@ -223,7 +225,7 @@ def _options(args, store: Store) -> AnalysisConfig:
     for key in ("runner", "model", "codex_home", "claude_home", "history_limit", "timeout", "record_chars", "unit_chars",
                 "extract_model", "integrate_model", "escalation_model", "extract_effort", "integrate_effort",
                 "escalation_effort", "extract_workers", "output_language", "context_mode", "integrate_evidence",
-                "review_output"):
+                "review_output", "integrate_output"):
         value = getattr(args, key, None)
         if value is not None:
             options[key] = str(value.expanduser().resolve()) if isinstance(value, Path) else value

@@ -224,6 +224,56 @@ def review_patch_audit(proposed: dict, answer: dict) -> dict:
                            for request in answer["remove"])}
 
 
+DRAFT_ADDED_REASON = "추출 후보를 그대로 추가했습니다"
+DRAFT_DUPLICATE_REASON = "추출 단계가 이 후보를 기존 사건과 같다고 대응시켰습니다"
+DRAFT_SELF_EDGE_REASON = "기존 사건 대응 뒤 양 끝이 같은 사건이 되었습니다"
+
+
+def draft_delta(candidates: dict, graph_version: int, snapshot_id: str) -> dict:
+    """The GraphDelta that takes the validated candidates as extracted, built in code.
+
+    Every candidate is added under its own tmp id; a candidate the extraction matched to exactly
+    one existing event is a duplicate of it, and relations and open items follow it there. The
+    integrator then answers only what it changes (`merge_review_patch`).
+    """
+    matches: dict[str, set[str]] = {}
+    for match in candidates["existing_event_matches"]:
+        matches.setdefault(match["candidate_id"], set()).add(match["existing_event_id"])
+    same = {cid: next(iter(ids)) for cid, ids in matches.items() if len(ids) == 1}
+    delta = {"status": "complete", "read_requests": [], "snapshot_id": snapshot_id,
+             "base_graph_version": graph_version, "events_to_add": [], "events_to_update": [],
+             "edges_to_add": [], "edges_to_invalidate": [], "open_items_to_upsert": [],
+             "open_items_to_resolve": [], "candidate_resolutions": [], "change_attributions": [],
+             "review_issues": [], "review_resolutions": [], "limitations": list(candidates["limitations"])}
+    def settle(kind: str, item: dict, operation: str | None, target: str | None, reason: str) -> None:
+        disposition = "excluded" if target is None else "added" if operation else "duplicate"
+        delta["candidate_resolutions"].append({"candidate_id": item["id"], "candidate_kind": kind,
+            "disposition": disposition, "target_ids": [target] if target else [], "reason": reason,
+            "evidence": copy.deepcopy(item["evidence"])})
+        if operation:
+            delta["change_attributions"].append({"operation": operation, "item_id": target,
+                "candidate_ids": [item["id"]], "reason": reason, "evidence": copy.deepcopy(item["evidence"])})
+    for item in candidates["event_candidates"]:
+        if item["id"] in same:
+            settle("event", item, None, same[item["id"]], DRAFT_DUPLICATE_REASON)
+        else:
+            delta["events_to_add"].append(copy.deepcopy(item))
+            settle("event", item, "events_to_add", item["id"], DRAFT_ADDED_REASON)
+    for item in candidates["edge_candidates"]:
+        edge = {**copy.deepcopy(item), "from_event_id": same.get(item["from_event_id"], item["from_event_id"]),
+                "to_event_id": same.get(item["to_event_id"], item["to_event_id"])}
+        if edge["from_event_id"] == edge["to_event_id"]:
+            settle("edge", item, None, None, DRAFT_SELF_EDGE_REASON)
+            continue
+        delta["edges_to_add"].append(edge)
+        settle("edge", item, "edges_to_add", item["id"], DRAFT_ADDED_REASON)
+    for item in candidates["open_items"]:
+        delta["open_items_to_upsert"].append({**copy.deepcopy(item), "related_event_ids": list(dict.fromkeys(
+            same.get(i, i) for i in item["related_event_ids"]))})
+        settle("open_item", item, "open_items_to_upsert", item["id"], DRAFT_ADDED_REASON)
+    return delta
+
+
 # Escapes that appear verbatim when a tool call embeds code in a string literal
 # (e.g. Codex `apply_patch("...\"$x\"...")`). Models often quote the decoded text.
 _ESCAPES = {'"': '"', "'": "'", "\\": "\\", "n": "\n", "t": "\t", "r": "\r", "/": "/"}

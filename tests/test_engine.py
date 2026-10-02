@@ -843,3 +843,86 @@ def test_review_patch_bookkeeping_with_one_reading_is_settled_in_code():
               "candidate_resolutions": [], "change_attributions": []}
     assert reconcile_review_patch(orphan, {**empty, "events_to_add": [], "edges_to_add": []}, None)["added_attributions"] == 0
     assert orphan["change_attributions"] == []  # no candidate points at it: left for the checks to reject
+
+
+def _integrate_calls(store):
+    return [call for call in store.llm_calls() if call["metadata"].get("routing_role") == "integrate"]
+
+
+def test_default_integrate_output_sends_no_draft(laboratory):
+    _, _, engine, records, make = laboratory
+    records.append(make(CASES[0][0]))
+    assert engine.config.integrate_output == "full"
+    result, seen = _capturing_analyze(engine)
+    assert result["status"] == "complete", result
+    [(integrate, schema)] = [item for item in seen if item[0]["stage"] == "integrate"]
+    assert "draft_graph_delta" not in integrate["data"] and "integrate_instruction" not in integrate["data"]
+    assert schema is DELTA_SCHEMA
+    with pytest.raises(FlowError, match="integrate_output"):
+        AnalysisConfig(integrate_output="skip").validate()
+
+
+def test_integrate_patch_publishes_the_same_graph_as_full_mode(laboratory):
+    scope, store, engine, records, make = laboratory
+    records.extend([make(CASES[0][0]), make(CASES[1][0], key="s2", role="assistant")])
+    full = engine.analyze(FixtureRunner)
+    assert full["status"] == "complete", full
+    full_claims = _claims(store)
+    full_chars = sum(call["details"]["output_chars"] for call in _integrate_calls(store))
+
+    patch_engine, patch_store = _rerun(scope, records, replace(engine.config, integrate_output="patch"))
+    result, seen = _capturing_analyze(patch_engine)
+    assert result["status"] == "complete", result
+    assert _claims(patch_store) == full_claims
+    [(task, schema)] = [item for item in seen if item[0]["stage"] == "integrate"]
+    assert schema is REVIEW_PATCH_SCHEMA
+    assert "return only what changes" in task["data"]["integrate_instruction"]
+    assert task["data"]["draft_graph_delta"]["events_to_add"]
+    # The integrator wrote what the draft lacked, not the whole delta again.
+    assert sum(call["details"]["output_chars"] for call in _integrate_calls(patch_store)) < full_chars
+    assert [item["mode"] for call in _integrate_calls(patch_store)
+            for item in call["details"]["citation_normalization_audit"]
+            if item["mode"].endswith("_merged")] == ["integrate_patch_merged"]
+
+
+def test_integrate_draft_needs_no_call_while_the_graph_is_empty(laboratory):
+    scope, store, engine, records, make = laboratory
+    records.extend([make(CASES[0][0]), make(CASES[1][0], key="s2", role="assistant")])
+    draft_engine, draft_store = _rerun(scope, records, replace(engine.config, integrate_output="draft"))
+    result, seen = _capturing_analyze(draft_engine)
+    assert result["status"] == "complete", result
+    assert not [task for task, _ in seen if task["stage"] == "integrate" and "review_issues" not in task["data"]]
+    assert not _integrate_calls(draft_store)
+    graph = draft_store.graph()
+    extracted = [task for task, _ in seen if task["stage"] == "extract"]
+    assert graph["version"] == 1 and graph["events"] and extracted
+
+
+def test_draft_delta_follows_one_existing_match_and_drops_a_link_it_folds_onto_itself():
+    from projectflow.schema import draft_delta
+    quote = [{"source_id": "s", "start_line": 1, "end_line": 1, "quote": "q"}]
+    event = lambda i: {"id": i, "kind": "action", "title": i, "summary": "", "actor": "assistant",
+                       "status": "applied", "basis": "tool_record", "session_ids": [], "worktree_ids": [],
+                       "recorded_at": None, "occurred_at": None, "evidence": quote}
+    edge = lambda i, a, b: {"id": i, "from_event_id": a, "to_event_id": b, "relation": "motivates",
+                            "basis": "explicit", "evidence": quote, "rationale": "", "active": True}
+    candidates = {"event_candidates": [event("tmp:a"), event("tmp:b"), event("tmp:c")],
+                  "edge_candidates": [edge("tmp:e1", "tmp:a", "tmp:b"), edge("tmp:e2", "tmp:a", "ev_old")],
+                  "existing_event_matches": [{"candidate_id": "tmp:a", "existing_event_id": "ev_old",
+                                              "reason": "", "evidence": quote},
+                                             {"candidate_id": "tmp:c", "existing_event_id": "ev_x", "reason": "", "evidence": quote},
+                                             {"candidate_id": "tmp:c", "existing_event_id": "ev_y", "reason": "", "evidence": quote}],
+                  "open_items": [{"id": "tmp:o", "text": "t", "status": "open", "related_event_ids": ["tmp:a"],
+                                  "evidence": quote}], "limitations": ["L"]}
+    delta = draft_delta(candidates, 3, "snap")
+    assert [e["id"] for e in delta["events_to_add"]] == ["tmp:b", "tmp:c"]  # two matches: no single reading
+    assert [(e["id"], e["from_event_id"], e["to_event_id"]) for e in delta["edges_to_add"]] == [
+        ("tmp:e1", "ev_old", "tmp:b")]
+    assert delta["open_items_to_upsert"][0]["related_event_ids"] == ["ev_old"]
+    assert {(r["candidate_id"], r["disposition"], tuple(r["target_ids"])) for r in delta["candidate_resolutions"]} == {
+        ("tmp:a", "duplicate", ("ev_old",)), ("tmp:b", "added", ("tmp:b",)), ("tmp:c", "added", ("tmp:c",)),
+        ("tmp:e1", "added", ("tmp:e1",)), ("tmp:e2", "excluded", ()), ("tmp:o", "added", ("tmp:o",))}
+    assert sorted((a["operation"], a["item_id"]) for a in delta["change_attributions"]) == [
+        ("edges_to_add", "tmp:e1"), ("events_to_add", "tmp:b"), ("events_to_add", "tmp:c"),
+        ("open_items_to_upsert", "tmp:o")]
+    assert (delta["base_graph_version"], delta["limitations"]) == (3, ["L"])

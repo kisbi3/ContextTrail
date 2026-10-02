@@ -21,7 +21,7 @@ from .model import Snapshot, SourceRecord, is_user_prompt
 from .routing import ROUTING_VERSION, RunnerPool, TaskValidationError
 from .runners.cli_runner import EFFORTS
 from .schema import (DELTA_SCHEMA, EDIT_TOOL_NAMES, EXTRACT_SCHEMA, EvidenceValidator, delta_schema, docs_only,
-                     edited_files, merge_review_patch, reconcile_review_patch,
+                     draft_delta, edited_files, merge_review_patch, reconcile_review_patch,
                      record_evidence, review_patch_audit, review_patch_schema, validate_shape)
 from .sources import collect_logs
 from .store import Store
@@ -55,6 +55,9 @@ class AnalysisConfig:
     semantic_review: bool = True
     # `patch`: the review answers only what it changes instead of rewriting the whole GraphDelta.
     review_output: str = "patch"
+    # `patch`: code adds every candidate as extracted and the integrator answers only its changes;
+    # `draft`: the same, with no integrate call while the graph is still empty.
+    integrate_output: str = "full"
     extract_workers: int = 1
     max_calls: int = 30
     # Work units for this run (never saved). Unset, the call cap alone bounds a run.
@@ -96,6 +99,8 @@ class AnalysisConfig:
             raise FlowError("integrate_evidence는 full 또는 reuse이어야 합니다.")
         if self.review_output not in {"full", "patch"}:
             raise FlowError("review_output은 full 또는 patch이어야 합니다.")
+        if self.integrate_output not in {"full", "patch", "draft"}:
+            raise FlowError("integrate_output은 full, patch 또는 draft이어야 합니다.")
         if self.record_chars > self.unit_chars or self.unit_chars >= self.task_chars:
             raise FlowError("record_chars ≤ unit_chars < task_chars 조건이 필요합니다.")
 
@@ -1649,6 +1654,15 @@ REVIEW_PATCH_INSTRUCTION = REVIEW_CHECKS + (
     "candidate_resolutions only for candidates whose resolution changes, and change_attributions only for "
     "added or replaced items. Still preserve one review resolution for every issue.")
 
+INTEGRATE_PATCH_INSTRUCTION = (
+    "draft_graph_delta is the GraphDelta code built from the validated candidates: every candidate added "
+    "as extracted, and a candidate matched to one existing event recorded as its duplicate. Do the "
+    "integration task on it and return only what changes: patch holds the new or replaced items, never "
+    "an unchanged one, and an item whose id is a draft item's id replaces that item. List draft items to "
+    "drop in remove. Give candidate_resolutions only for candidates whose resolution changes, and "
+    "change_attributions only for added or replaced items. review_resolutions stays empty. An empty patch "
+    "and remove mean the draft stands as it is.")
+
 
 @dataclass
 class PreparedExtraction:
@@ -1899,12 +1913,34 @@ class Engine:
             raise FlowError("준비된 통합 입력의 snapshot 또는 graph 기준이 달라졌습니다.")
         h, validator, data = prepared.harness, prepared.validator, prepared.data
         if data is not None:
-            h.runner = runners.get("integrate")
             candidate_set = data["validated_candidates"]
             reuse = self.config.integrate_evidence == "reuse"
-            delta = h.task("integrate", data, lambda o: validator.apply_delta(
-                o, graph, snapshot_id, run_id, candidate_set, evidence_reuse=reuse),
-                           validator=validator)
+            check = lambda o: validator.apply_delta(o, graph, snapshot_id, run_id, candidate_set,
+                                                    evidence_reuse=reuse)
+            mode = self.config.integrate_output
+            draft = draft_delta(candidate_set, graph["version"], snapshot_id) if mode != "full" else None
+            published = False
+            if mode == "draft" and not graph["events"]:
+                # Nothing to join yet: the draft is the delta, under the same checks.
+                try:
+                    check(copy.deepcopy(draft))
+                    delta, published = draft, True
+                    validator.normalizations.append({"mode": "integrate_draft_published",
+                                                     "items": len(draft["change_attributions"])})
+                except FlowError:
+                    pass  # the integrator gets the draft to patch instead
+            if published:
+                pass
+            elif draft is not None:
+                h.runner = runners.get("integrate")
+                delta = h.task("integrate", {**data, "draft_graph_delta": draft,
+                                             "integrate_instruction": INTEGRATE_PATCH_INSTRUCTION},
+                               check, validator=validator, schema=review_patch_schema(reuse),
+                               merge=lambda answer: self._merge_review_patch(
+                                   answer, draft, validator, candidate_set, mode="integrate_patch_merged"))
+            else:
+                h.runner = runners.get("integrate")
+                delta = h.task("integrate", data, check, validator=validator)
             prepared.delta = delta
             new_graph = validator.apply_delta(delta, graph, snapshot_id, run_id, candidate_set,
                                              evidence_reuse=reuse)
@@ -1967,11 +2003,11 @@ class Engine:
 
     @staticmethod
     def _merge_review_patch(answer: dict, proposal: dict, validator: EvidenceValidator,
-                            candidates: dict | None = None) -> dict:
+                            candidates: dict | None = None, mode: str = "review_patch_merged") -> dict:
         """What the checker sees in patch mode: the proposal with the review's changes folded in."""
         merged = merge_review_patch(proposal, answer)
         settled = reconcile_review_patch(merged, proposal, candidates)
-        validator.normalizations.append({"mode": "review_patch_merged", **review_patch_audit(proposal, answer),
+        validator.normalizations.append({"mode": mode, **review_patch_audit(proposal, answer),
                                          **{k: v for k, v in settled.items() if v}})
         return merged
 

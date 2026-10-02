@@ -64,6 +64,10 @@ def test_review_output_option_is_saved_for_later_runs_and_stays_hidden(tmp_path,
     assert _options(parser().parse_args(['scan', '.', '--review-output', 'patch']),
                     store).review_output == 'patch'
     assert parser().parse_args(['eval', '--output', 'out', '--review-output', 'patch']).review_output == 'patch'
+    assert _options(parser().parse_args(['analyze', '.', '--integrate-output', 'draft']),
+                    store).integrate_output == 'draft'
+    assert _options(parser().parse_args(['analyze', '.']), store).integrate_output == 'draft'
+    assert parser().parse_args(['eval', '--output', 'out', '--integrate-output', 'patch']).integrate_output == 'patch'
     with pytest.raises(SystemExit):
         parser().parse_args(['analyze', '--review-output', 'diff'])
     with pytest.raises(SystemExit):

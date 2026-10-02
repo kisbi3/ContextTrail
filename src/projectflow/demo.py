@@ -5,7 +5,7 @@ import copy
 import json
 from pathlib import Path
 
-from .schema import EVENT_FIELDS, PATCH_ARRAYS, patch_key
+from .schema import DELTA_ITEM_ARRAYS, EVENT_FIELDS, PATCH_ARRAYS, patch_key
 from .util import FlowError, dumps
 
 
@@ -21,7 +21,7 @@ CASES = [
 
 
 def review_patch_answer(proposed: dict, answer: dict) -> dict:
-    """The fixture's own review answer as a patch over the proposal: only what it adds or changes."""
+    """The fixture's own answer as a patch over the proposal: only what it adds, changes or drops."""
     patch = {}
     for array in PATCH_ARRAYS:
         before = {patch_key(array, item): item for item in proposed[array]}
@@ -30,7 +30,9 @@ def review_patch_answer(proposed: dict, answer: dict) -> dict:
     return {"status": answer["status"], "read_requests": [], "snapshot_id": answer["snapshot_id"],
             "base_graph_version": answer["base_graph_version"],
             "review_resolutions": copy.deepcopy(answer["review_resolutions"]),
-            "limitations": copy.deepcopy(answer["limitations"]), "patch": patch, "remove": []}
+            "limitations": copy.deepcopy(answer["limitations"]), "patch": patch,
+            "remove": [{"operation": array, "item_id": item["id"]} for array in DELTA_ITEM_ARRAYS
+                       for item in proposed[array] if item["id"] not in {x["id"] for x in answer[array]}]}
 
 
 class FixtureRunner:
@@ -140,7 +142,7 @@ class FixtureRunner:
                     item["evidence"] = []
         # A review that was asked for a patch answers only the items it changes.
         if "patch" in schema["properties"]:
-            return review_patch_answer(data["proposed_graph_delta"], output)
+            return review_patch_answer(data.get("proposed_graph_delta") or data["draft_graph_delta"], output)
         return output
 
 

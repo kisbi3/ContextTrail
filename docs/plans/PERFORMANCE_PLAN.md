@@ -208,3 +208,10 @@ lean으로 조각당 입력이 줄었는데 예산 상수(`PAYLOAD_RECORD_FACTOR
   - 금지 관계는 양 끝이 맞은 경우 100% 통과. 총점의 흔들림은 거의 사건 매칭(회당 `split` 0~2, `merged` 0~1)에서 오고, 끝점이 안 맞은 관계·금지 관계가 회당 0~6개 확인 불가가 된다.
   - 양 끝이 맞은 기대 관계의 통과는 약 절반(예: 2/5, 1/5, 2/4). 판단 품질 과제는 사건 단위(나눔·합침)와 관계 재현율이다.
   - 토큰(`cl-shape-*`): 회당 캐시 쓰기 입력 14~26만, 캐시 읽기 0.5~17만, 출력 2.2~2.8만. 입력 쪽 비중이 커서 통합을 patch로 바꾸면 출력 약 1.8만 토큰이 줄고, 이을 데가 없어 호출을 건너뛰면 그 호출의 입력까지 준다.
+
+## 12. 통합을 변경분만 답하기 (2026-10-02, 숨은 옵션)
+
+- `--integrate-output full|patch|draft`(기본 `full`, 저장되는 옵션). `patch`: 코드가 검증된 후보로 GraphDelta 초안을 만든다(`schema.draft_delta`; 모든 후보를 그대로 추가, 기존 사건 하나에만 대응된 후보는 그 사건의 duplicate로 두고 관계·열린 항목도 그쪽으로 옮김, 그러다 양 끝이 같아진 관계는 제외). 통합 모델은 `draft_graph_delta`와 `integrate_instruction`을 받아 리뷰 patch와 같은 스키마로 바뀐 것만 답하고, `merge_review_patch` + `reconcile_review_patch` 뒤 기존 `apply_delta`가 그대로 검사한다(감사 `integrate_patch_merged`). `draft`: 그래프가 비어 이을 것이 없으면 통합 호출 없이 초안을 게시하고(검사 실패 시 `patch`로), 아니면 `patch`.
+- `full`의 통합 요청은 바이트 그대로다(`test_default_integrate_output_sends_no_draft`). fixture runner로 `patch`가 `full`과 같은 그래프를 게시함을 확인(`test_integrate_patch_publishes_the_same_graph_as_full_mode`).
+- mock eval(demo, 출력 글자): full 통합 2호출 10,143 / 리뷰 1호출 1,161; patch 통합 7,533 / 리뷰 1,161; draft 통합 1호출 3,794 / 리뷰 2호출 5,117. draft는 첫 단위의 통합이 없어지는 대신, 통합이 잇던 관계가 없어 코드 신호로 리뷰가 한 번 더 돈다.
+- repairfix·installer는 단위 하나에 그래프가 비어 있어 `draft`면 통합 호출이 없다. 평가로 볼 것: 점수(`breakdown`), 시간, 토큰, 리뷰 횟수.
