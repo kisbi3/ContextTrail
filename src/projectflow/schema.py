@@ -1075,6 +1075,21 @@ class EvidenceValidator:
         self.normalizations.append({"mode": "doc_verifies_dropped", "edges": len(dropped)})
         return len(dropped)
 
+    def settle_in_delta_duplicates(self, output: dict) -> int:
+        """A candidate called a duplicate or update of an item this same delta adds is folded into
+        that new item, which is what `added` with that target says; only when every target is one."""
+        added = {"event": {e["id"] for e in output["events_to_add"]}, "edge": {e["id"] for e in output["edges_to_add"]},
+                 "open_item": {i["id"] for i in output["open_items_to_upsert"] if i["id"].startswith("tmp:")}}
+        settled = 0
+        for row in output["candidate_resolutions"]:
+            if (row["disposition"] in {"duplicate", "updated"} and row["target_ids"]
+                    and set(row["target_ids"]) <= added[row["candidate_kind"]]):
+                row["disposition"] = "added"
+                settled += 1
+        if settled:
+            self.normalizations.append({"mode": "in_delta_duplicate_as_added", "items": settled})
+        return settled
+
     def restore_tool_evidence(self, output: dict, candidates: dict | None) -> int:
         """Give back the tool or Git citation an integrated event's basis or status rests on.
 
@@ -1125,6 +1140,7 @@ class EvidenceValidator:
             raise FlowError("완료되지 않은 GraphDelta입니다.")
         if output["base_graph_version"] != graph["version"] or output["snapshot_id"] != snapshot_id:
             raise FlowError("GraphDelta의 기준 graph version 또는 snapshot이 다릅니다.")
+        self.settle_in_delta_duplicates(output)
         self.restore_tool_evidence(output, candidates)
         self.drop_unchecked_doc_verifies(output, graph)
         self._check_all_citations(output)

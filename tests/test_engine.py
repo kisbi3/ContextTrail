@@ -926,3 +926,16 @@ def test_draft_delta_follows_one_existing_match_and_drops_a_link_it_folds_onto_i
         ("edges_to_add", "tmp:e1"), ("events_to_add", "tmp:b"), ("events_to_add", "tmp:c"),
         ("open_items_to_upsert", "tmp:o")]
     assert (delta["base_graph_version"], delta["limitations"]) == (3, ["L"])
+
+
+def test_a_duplicate_of_an_item_the_same_delta_adds_is_folded_into_it():
+    validator = EvidenceValidator({}, {})
+    delta = {"events_to_add": [{"id": "tmp:a"}], "edges_to_add": [], "open_items_to_upsert": [],
+             "candidate_resolutions": [
+                 {"candidate_id": "tmp:x", "candidate_kind": "event", "disposition": "duplicate", "target_ids": ["tmp:a"]},
+                 {"candidate_id": "tmp:y", "candidate_kind": "event", "disposition": "duplicate", "target_ids": ["ev_old"]},
+                 {"candidate_id": "tmp:z", "candidate_kind": "event", "disposition": "updated",
+                  "target_ids": ["tmp:a", "ev_old"]}]}
+    assert validator.settle_in_delta_duplicates(delta) == 1
+    assert [row["disposition"] for row in delta["candidate_resolutions"]] == ["added", "duplicate", "updated"]
+    assert validator.normalizations == [{"mode": "in_delta_duplicate_as_added", "items": 1}]

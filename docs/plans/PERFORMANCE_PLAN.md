@@ -215,3 +215,14 @@ lean으로 조각당 입력이 줄었는데 예산 상수(`PAYLOAD_RECORD_FACTOR
 - `full`의 통합 요청은 바이트 그대로다(`test_default_integrate_output_sends_no_draft`). fixture runner로 `patch`가 `full`과 같은 그래프를 게시함을 확인(`test_integrate_patch_publishes_the_same_graph_as_full_mode`).
 - mock eval(demo, 출력 글자): full 통합 2호출 10,143 / 리뷰 1호출 1,161; patch 통합 7,533 / 리뷰 1,161; draft 통합 1호출 3,794 / 리뷰 2호출 5,117. draft는 첫 단위의 통합이 없어지는 대신, 통합이 잇던 관계가 없어 코드 신호로 리뷰가 한 번 더 돈다.
 - repairfix·installer는 단위 하나에 그래프가 비어 있어 `draft`면 통합 호출이 없다. 평가로 볼 것: 점수(`breakdown`), 시간, 토큰, 리뷰 횟수.
+- **Claude repairfix-v2 ×3씩 (`cl-int-draft-*`, `cl-int-patch-*`):**
+
+  | | 완료 | 점수 | 시간 | 캐시 쓰기 / 읽기 / 출력 토큰 |
+  |---|---|---|---|---|
+  | 기준(`cl-basis`·`cl-shape` 9회) | 9/9 | 평균 11.3 | 2.7분 | 14~26만 / 0.5~17만 / 2.2~2.8만 |
+  | draft | 2/3 | 11, 10 | 0.9~1.4분 | 7.6~11.9만 / 6.5~7.8만 / 0.8~1.3만 |
+  | patch | 2/3 | 14, 9 | 1.7분 | 18.7만 / 8.7만 / 1.4~1.5만 |
+
+  - patch 통합은 380~587자·7~9초로 거의 "초안 그대로"였다. 통합이 잇던 결과 관계는 코드 신호(`unlinked_observed_outcome`)로 리뷰가 받아 이었다(리뷰 1회 9~14초).
+  - 실패 2회: draft-1은 추출이 수리 뒤에도 반복 문구 인용(`일치 2건, 서로 다른 줄`)으로 실패(통합 방식과 무관). patch-1은 리뷰가 후보를 같은 delta의 새 사건의 `duplicate`로 적어 `기존 항목 처리는 기존 그래프 ID를 가리켜야 합니다`(installer 스모크의 full 통합에서도 1회). 그 새 사건으로 접힌 것이라는 해석 하나뿐이라 코드가 `added`로 바꾼다(`settle_in_delta_duplicates`, 감사 `in_delta_duplicate_as_added`).
+  - 점수 차이는 표본 3회에서 편차 안이다. 품질을 잃었다는 근거는 없고, 시간은 절반, 토큰은 draft에서 입력 약 40%·출력 약 50% 줄었다.
