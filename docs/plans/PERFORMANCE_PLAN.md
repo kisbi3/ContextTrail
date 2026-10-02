@@ -181,3 +181,9 @@ lean으로 조각당 입력이 줄었는데 예산 상수(`PAYLOAD_RECORD_FACTOR
 - installer 스모크(`--runner claude --model sonnet`): 실제 모델 `claude-sonnet-5-5`(effort medium). 샌드박스·인증·구조화 출력은 정상. 호출 4번 합계 1.7분(추출 0.5분, 통합 0.8분)으로 Codex(같은 fixture 4~6분)보다 훨씬 빠르다.
 - 실패: patch 리뷰가 지운 항목을 가리키는 후보 처리를 그대로 두었고(`candidate resolution 대상이 GraphDelta 또는 기존 그래프에 없습니다`), 수리 뒤에는 귀속 개수가 맞지 않았다(`change_attributions가 모든 GraphDelta 변경을 정확히 한 번 귀속해야 합니다`). 리뷰가 실패하면 단위가 게시되지 않아 1/18.
 - 조치: 합친 뒤 해석이 하나인 장부만 코드가 맞춘다(`reconcile_review_patch`) — 사라진 항목의 귀속은 버리고, 리뷰가 지운 항목만 만들던 후보 처리는 제외로 바꾸고, 리뷰가 추가했는데 귀속이 없는 항목은 그 항목을 대상으로 한 후보 처리로 귀속한다. 가리키는 후보가 없으면 그대로 검사에 맡긴다. 감사는 `review_patch_merged`에 개수로 남는다.
+- 재실행(`cl-smoke-installer-2`): complete 12/18, 약 2.3분. patch 리뷰는 출력 1.8k자·14초. 놓친 6개는 설치 스크립트가 managed_commands 변경에 합쳐진 것(3)과 전체 테스트에서 이어진 금지 `verifies` 2개.
+- **repairfix-v2 ×5 (`cl-repairfix-1..5`):** 13·9·9·13·11(평균 11.0/18), 평균 2.9분, 매회 호출 4번(추출 수리 1회 포함). Codex 8회(평균 12.4, 7.3분)와 비교해 시간은 약 40%다. 금지 관계는 실제로 한 번도 그어지지 않았다; 금지 항목의 실패는 끝점 사건이 하나로 특정되지 않아 확인 불가였던 경우다.
+  - live5 실패가 두 사건(평가 결과, 원인 진단)으로 나뉨 4회 → #1·#10·#15. 진단 사건이 `actor=assistant`인 `observed_failure`로 남은 경우가 있다.
+  - 보안 문서 수정이 LangSmith 필터 수정에 합쳐짐 3회 → #8·#17. 합쳐지면 `doc_verifies_dropped`는 걸리지 않는다(5회 0번).
+  - `repair_fix → verifies → engine_tests/live6` 5회 모두 없음(#11·#14). 추출 검증 오류 `verifies…inferred`가 4회: 관계 `basis`의 뜻이 프롬프트에 없어 Sonnet이 맞는 연결도 inferred로 적고, 수리가 그 연결을 지운 것으로 본다(2회차 그래프에서 "수리 호출이 18k자 원본 입력으로 진행" 결과가 수정에 이어지지 않음).
+- 조치: `common.md`에 관계 `basis`의 뜻(explicit/structural/inferred)과 "verifies는 실행이 그 변경을 다뤘다는 인용과 함께 explicit/structural로"를, `repair.md`에 "inferred로 거절된 verifies는 근거 인용을 찾아 explicit로, 없으면 삭제"를 넣었다. 모델 입력이 바뀌므로 소유자 평가로 확인한다.

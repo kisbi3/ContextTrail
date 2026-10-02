@@ -74,6 +74,11 @@ research, software or both. Do not do the project's work or recommend new work.
   the test code or command line), the result verifies that code change as well as any test-file
   change. An installed file or output that directly shows the change's product (a marker, a
   path) is also evidence for it. If a run result is linked to no change, say why in limitations.
+- A relation's basis names what its own evidence shows: explicit when a quote states or shows the
+  link (for verifies: the command line, test name or output naming or showing the changed file,
+  function or behaviour), structural when the records' structure makes it (a result of that very
+  tool call), inferred when you concluded it. verifies must be explicit or structural: quote what
+  shows the run covered the change; if nothing does, leave the verifies out.
 - Keep apart the evidence that two events exist and the evidence that they are connected.
 - Keep explicit and structural links apart from inferred ones. Leave out an unknown link or mark it unconfirmed.
 - Do not mix changes and test results of different sessions/worktrees.
