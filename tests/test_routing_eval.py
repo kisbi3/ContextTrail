@@ -516,3 +516,26 @@ def test_validation_error_kinds_keep_only_the_code_written_prefix():
                 {'mode': 'whitespace_normalized', 'source_id': 's1'}, {'mode': 'whitespace_normalized'}]}}
     assert summarize_calls([call])['by_role']['integrate']['normalization_modes'] == {
         'tool_evidence_restored_from_candidates': 1, 'whitespace_normalized': 2}
+
+
+def test_expectation_breakdown_separates_unmatched_endpoints_from_wrong_relations():
+    from projectflow.evaluation import check_expectations
+    def event(eid, source):
+        return {"id": eid, "title": eid, "kind": "action", "status": "applied", "actor": "assistant",
+                "evidence_ids": [f"x_{eid}"], "_source": source}
+    events = [event("a", "s1"), event("b1", "s2"), event("b2", "s2"), event("c", "s3"), event("d", "s3x")]
+    evidence = {f"x_{e['id']}": {"source_id": e["_source"]} for e in events}
+    edges = [{"id": "r1", "from_event_id": "a", "to_event_id": "c", "relation": "motivates", "active": True}]
+    graph = {"events": events, "edges": edges}
+    expectations = {"events": [{"label": "A", "source_ids": ["s1"]}, {"label": "B", "source_ids": ["s2"]},
+                               {"label": "C", "source_ids": ["s3"]}, {"label": "C2", "source_ids": ["s3"]},
+                               {"label": "M", "source_ids": ["none"]}],
+                    "relations": [{"from": "A", "relation": "motivates", "to": "C"},
+                                  {"from": "A", "relation": "verifies", "to": "C"},
+                                  {"from": "A", "relation": "motivates", "to": "B"}],
+                    "forbidden_relations": [{"from": "B", "relation": "verifies"}]}
+    result = check_expectations(graph, evidence, expectations)
+    assert result["breakdown"] == {
+        "events": {"passed": 2, "total": 5, "missing": 1, "split": 1, "merged": 1},
+        "relations": {"passed": 1, "scored": 2, "unverifiable": 1},
+        "forbidden_relations": {"passed": 0, "scored": 0, "unverifiable": 1}}

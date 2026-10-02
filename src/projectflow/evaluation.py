@@ -65,8 +65,9 @@ def summarize_calls(calls: list[dict]) -> dict:
         group['duration_ms'] += call['details'].get('duration_ms', 0)
         group['output_chars'] += call['details'].get('output_chars', 0) or 0
         usage = call['details'].get('usage') if isinstance(call['details'].get('usage'), dict) else {}
-        group['input_tokens'] += usage.get('input_tokens', 0) or 0
-        group['output_tokens'] += usage.get('output_tokens', 0) or 0
+        for name, value in usage.items():  # Claude reports cache writes/reads apart from input_tokens
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                group[name] = group.get(name, 0) + value
         if call['status'] == 'validation_error':
             for kind in error_kinds(call['details'].get('error', '')):
                 group.setdefault('validation_error_kinds', {})[kind] = group.get('validation_error_kinds', {}).get(kind, 0) + 1
@@ -112,8 +113,8 @@ def review_summary(graph: dict) -> dict:
 
 def call_timeline(calls: list[dict]) -> list[dict]:
     """Expose a local call sequence without prompt, response, or raw error text."""
-    usage_keys = ("input_tokens", "output_tokens", "cached_input_tokens",
-                  "cache_write_input_tokens", "reasoning_output_tokens")
+    usage_keys = ("input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens",
+                  "reasoning_output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
     timeline = []
     for call in calls:
         meta, details = call["metadata"], call["details"]
@@ -314,30 +315,47 @@ def check_expectations(graph: dict, evidence: dict, expectations: Any) -> dict:
         if passed:
             matched[expected['label']] = valid[0]['id']
             used.add(valid[0]['id'])
+        miss = None if passed else 'missing' if not valid else 'split' if len(valid) > 1 else 'merged'
         checks.append({'type': 'event', 'expected': expected, 'passed': passed,
-                       'matched_event_ids': [e['id'] for e in valid]})
+                       'matched_event_ids': [e['id'] for e in valid], **({'miss': miss} if miss else {})})
     for expected in expectations.get('relations', []):
         left, right = matched.get(expected.get('from')), matched.get(expected.get('to'))
         allowed = expected['relation'] if isinstance(expected['relation'], list) else [expected['relation']]
         passed = bool(left and right and any(e['active'] and e['from_event_id'] == left and
                      e['to_event_id'] == right and e['relation'] in allowed for e in graph['edges']))
-        checks.append({'type': 'relation', 'expected': expected, 'passed': passed})
+        checks.append({'type': 'relation', 'expected': expected, 'passed': passed,
+                       'endpoints_matched': bool(left and right)})
     for forbidden in expectations.get('forbidden_relations', []):
         left, right = matched.get(forbidden['from']), matched.get(forbidden.get('to', forbidden['from']))
         # Unmatched endpoints make the absence unverifiable, which is not a pass.
         hits = [e['id'] for e in graph['edges'] if e['active'] and e['from_event_id'] == left and
                 e['relation'] == forbidden['relation'] and ('to' not in forbidden or e['to_event_id'] == right)]
         checks.append({'type': 'forbidden_relation', 'expected': forbidden,
-                       'passed': bool(left and right) and not hits, 'matched_edge_ids': hits})
+                       'passed': bool(left and right) and not hits, 'matched_edge_ids': hits,
+                       'endpoints_matched': bool(left and right)})
     for forbidden in expectations.get('forbidden_events', []):
         hits = [e for e in graph['events'] if all(
             forbidden[k] in e['title'] if k == 'title_contains' else e.get(k) == forbidden[k]
             for k in forbidden)]
         checks.append({'type': 'forbidden_event', 'expected': forbidden, 'passed': not hits})
     return {'checks': checks, 'passed': sum(c['passed'] for c in checks),
-            'failed': sum(not c['passed'] for c in checks),
+            'failed': sum(not c['passed'] for c in checks), 'breakdown': expectation_breakdown(checks),
             'unmatched_events_for_human_review': [e['id'] for e in graph['events'] if e['id'] not in used],
             'semantic_quality': 'limited expectation checks only; not a general accuracy score'}
+
+
+def expectation_breakdown(checks: list[dict]) -> dict:
+    """The total split by cause: a relation whose endpoints did not match one event each is
+    unverifiable, not a wrong judgement of that relation."""
+    events = [c for c in checks if c['type'] == 'event']
+    result = {'events': {'passed': sum(c['passed'] for c in events), 'total': len(events),
+                         **{m: sum(c.get('miss') == m for c in events) for m in ('missing', 'split', 'merged')}}}
+    for kind in ('relation', 'forbidden_relation'):
+        rows = [c for c in checks if c['type'] == kind]
+        scored = [c for c in rows if c['endpoints_matched']]
+        result[kind + 's'] = {'passed': sum(c['passed'] for c in scored), 'scored': len(scored),
+                              'unverifiable': len(rows) - len(scored)}
+    return result
 
 
 # A title longer than this is probably a sentence where a short statement of the outcome would do.
