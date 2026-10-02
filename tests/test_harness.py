@@ -789,3 +789,51 @@ def test_integration_does_not_invent_a_tool_citation_the_candidate_lacked(labora
     assert [c["source_id"] for c in event["evidence"]] == ["said"]
     output["candidate_resolutions"][0]["target_ids"] = ["tmp:other"]
     assert validator.restore_tool_evidence(output, _tool_restore_case(make)[1]) == 0
+
+
+def _doc_verifies_case(make, patch_file="docs/DECISIONS.md", command="pytest -q tests"):
+    from dataclasses import replace
+    edit = make(f"Tool: apply_patch\n*** Begin Patch\n*** Update File: {patch_file}\n@@\n-old\n+new\n*** End Patch",
+                key="edit", role="tool_call")
+    run = replace(make(f'Tool: Bash\n{{"command": "{command}"}}', key="run", role="tool_call"), tool_call_id="t1")
+    result = replace(make("12 passed in 0.4s", key="result", role="tool_result"), tool_call_id="t1")
+    records = {r.source_id: r for r in (edit, run, result)}
+    validator = EvidenceValidator(records, {r.source_id: [(1, 99)] for r in records.values()})
+    cite = lambda r: {"source_id": r.source_id, "start_line": 1, "end_line": 1, "quote": r.content.splitlines()[0]}
+    output = {"events_to_add": [{"id": "tmp:change", "evidence": [cite(edit)]}, {"id": "tmp:ran", "evidence": [cite(result)]}],
+              "edges_to_add": [{"id": "tmp:v", "relation": "verifies", "from_event_id": "tmp:change", "to_event_id": "tmp:ran"}],
+              "change_attributions": [{"operation": "edges_to_add", "item_id": "tmp:v", "candidate_ids": ["tmp:c"]}],
+              "candidate_resolutions": [{"candidate_id": "tmp:c", "candidate_kind": "edge", "disposition": "added",
+                                         "target_ids": ["tmp:v"], "reason": "r", "evidence": []}],
+              "review_issues": [], "limitations": []}
+    return validator, output
+
+
+def test_a_test_run_does_not_verify_a_documentation_only_change(laboratory):
+    _, _, _, _, make = laboratory
+    validator, output = _doc_verifies_case(make)
+    assert validator.drop_unchecked_doc_verifies(output, {"events": []}) == 1
+    assert output["edges_to_add"] == [] and output["change_attributions"] == []
+    row = output["candidate_resolutions"][0]
+    assert (row["disposition"], row["target_ids"]) == ("excluded", [])
+    assert output["limitations"] and validator.normalizations == [{"mode": "doc_verifies_dropped", "edges": 1}]
+
+
+def test_a_run_that_reads_the_document_or_a_code_change_keeps_its_verifies(laboratory):
+    _, _, _, _, make = laboratory
+    named, output = _doc_verifies_case(make, command="python scripts/check_links.py docs/DECISIONS.md")
+    assert named.drop_unchecked_doc_verifies(output, {"events": []}) == 0 and output["edges_to_add"]
+    code, output = _doc_verifies_case(make, patch_file="src/app.py")
+    assert code.drop_unchecked_doc_verifies(output, {"events": []}) == 0 and output["edges_to_add"]
+
+
+def test_documentation_only_edits_are_flagged_in_tool_steps(laboratory):
+    from dataclasses import replace
+    from projectflow.analysis import tool_steps
+    _, _, _, _, make = laboratory
+    doc = replace(make("Tool: apply_patch\n*** Begin Patch\n*** Update File: README.md\n@@\n-a\n+b\n*** End Patch",
+                       key="doc", role="tool_call"), tool_call_id="d")
+    code = replace(make('Tool: Edit\n{"file_path": "/x/src/app.py", "old_string": "a"}', key="code", role="tool_call"),
+                   tool_call_id="c")
+    steps = {s["call"]: s for s in tool_steps([doc, code])}
+    assert steps[doc.source_id]["doc"] is True and "doc" not in steps[code.source_id]

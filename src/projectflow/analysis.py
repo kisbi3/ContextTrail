@@ -20,7 +20,8 @@ from .langsmith_trace import LangSmithTracer
 from .model import Snapshot, SourceRecord, is_user_prompt
 from .routing import ROUTING_VERSION, RunnerPool, TaskValidationError
 from .runners.cli_runner import EFFORTS
-from .schema import (DELTA_SCHEMA, EXTRACT_SCHEMA, EvidenceValidator, delta_schema, merge_review_patch,
+from .schema import (DELTA_SCHEMA, EDIT_TOOL_NAMES, EXTRACT_SCHEMA, EvidenceValidator, delta_schema, docs_only,
+                     edited_files, merge_review_patch,
                      record_evidence, review_patch_audit, review_patch_schema, validate_shape)
 from .sources import collect_logs
 from .store import Store
@@ -270,7 +271,7 @@ class IdAliases:
         return sent
 
 
-EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
+EDIT_TOOLS = EDIT_TOOL_NAMES
 READ_TOOLS = {"Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "web_search", "web__run", "view_image"}
 # Handing work to another agent and waiting for it: neither a run nor an outcome of its own.
 DELEGATE_TOOLS = {"spawn_agent", "wait_agent", "send_message", "followup_task", "list_agents", "close_agent",
@@ -442,9 +443,11 @@ def tool_steps(assigned: list[SourceRecord]) -> list[dict]:
         name, target, hint = step_hint(record)
         result = results.get(record.tool_call_id) if record.tool_call_id else None
         first, failed = _failed_result(result.content) if result else ("", False)
-        steps.append({"call": record.source_id, "result": result.source_id if result else None,
-                      "tool": name, "hint": hint, "target": target, "result_head": first[:120],
-                      "failed": failed})
+        step = {"call": record.source_id, "result": result.source_id if result else None,
+                "tool": name, "hint": hint, "target": target, "result_head": first[:120], "failed": failed}
+        if hint == "edit" and docs_only(edited_files(record)):
+            step["doc"] = True
+        steps.append(step)
     return steps
 
 

@@ -382,6 +382,31 @@ def resolve_quote_slips(region: str, quote: str) -> tuple[list[tuple[int, int]],
     return None
 
 
+DOC_VERIFIES_REASON = "문서만 바꾼 변경을 그 문서를 다루지 않는 실행이 확인했다는 근거가 없어 verifies 관계를 뺐습니다"
+EDIT_TOOL_NAMES = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
+DOC_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".adoc")
+
+
+def edited_files(record: SourceRecord) -> list[str]:
+    """Files a tool call edits, read off patch markers or an edit tool's path argument."""
+    if record.role != "tool_call":
+        return []
+    head, _, body = record.content.partition("\n")
+    files = re.findall(r"\*\*\* (?:Update|Add|Delete) File: ([^\s\\\"]+)", body)
+    if files:
+        return list(dict.fromkeys(files))
+    if head.removeprefix("Tool: ").strip() in EDIT_TOOL_NAMES:
+        for key in ("file_path", "notebook_path", "path"):
+            found = re.search(rf'"{key}":\s*"([^"]+)"', body)
+            if found:
+                return [found.group(1)]
+    return []
+
+
+def docs_only(files: list[str]) -> bool:
+    return bool(files) and all(f.lower().endswith(DOC_SUFFIXES) for f in files)
+
+
 def record_evidence(record: SourceRecord, max_chars: int = 2000) -> dict:
     """Evidence the code itself cites: the record's opening whole lines, at least the first."""
     lines = record.content.splitlines() or [""]
@@ -906,6 +931,55 @@ class EvidenceValidator:
             self.normalizations.append({"mode": "evidence_reused_from_candidates", "items": filled})
         return filled
 
+    def drop_unchecked_doc_verifies(self, output: dict, graph: dict) -> int:
+        """Drop a verifies between a documentation-only change and a run that never names that file.
+
+        A test passing does not check prose, so such a link claims a verification no record shows.
+        The edge is removed (not repaired), its candidate marked excluded, and the drop noted in
+        limitations and normalizations.
+        """
+        added = {event["id"]: [c["source_id"] for c in event["evidence"]] for event in output["events_to_add"]}
+        def sources(event_id: str) -> list[str]:
+            if event_id in added:
+                return added[event_id]
+            event = next((e for e in graph["events"] if e["id"] == event_id), None)
+            return [self.evidence[i]["source_id"] for i in (event or {}).get("evidence_ids", []) if i in self.evidence]
+        calls = {r.tool_call_id: r for r in self.records.values() if r.role == "tool_call" and r.tool_call_id}
+        def commands(event_id: str) -> list[str]:
+            found = []
+            for source_id in sources(event_id):
+                record = self.records.get(source_id)
+                if record and record.role == "tool_result" and record.tool_call_id in calls:
+                    found.append(calls[record.tool_call_id].content)
+                elif record and record.role == "tool_call" and not edited_files(record):
+                    found.append(record.content)
+            return found
+        def unchecked(change: str, outcome: str) -> bool:
+            files = [f for s in sources(change) if s in self.records for f in edited_files(self.records[s])]
+            if not docs_only(files):
+                return False
+            runs = commands(outcome)
+            names = {name for f in files for name in (f, f.rsplit("/", 1)[-1])}
+            return bool(runs) and not any(name in run for run in runs for name in names)
+        dropped = [edge["id"] for edge in output["edges_to_add"] if edge["relation"] == "verifies" and (
+            unchecked(edge["from_event_id"], edge["to_event_id"]) or unchecked(edge["to_event_id"], edge["from_event_id"]))]
+        if not dropped:
+            return 0
+        gone = set(dropped)
+        output["edges_to_add"] = [e for e in output["edges_to_add"] if e["id"] not in gone]
+        output["change_attributions"] = [a for a in output["change_attributions"]
+                                         if not (a["operation"] == "edges_to_add" and a["item_id"] in gone)]
+        output["review_issues"] = [i for i in output["review_issues"] if i.get("target_id") not in gone]
+        for row in output["candidate_resolutions"]:
+            if set(row["target_ids"]) & gone:
+                row["target_ids"] = [t for t in row["target_ids"] if t not in gone]
+                if not row["target_ids"]:
+                    row["disposition"] = "excluded"
+                    row["reason"] = DOC_VERIFIES_REASON
+        output["limitations"] = [*output["limitations"], f"{DOC_VERIFIES_REASON} ({len(dropped)}건)"]
+        self.normalizations.append({"mode": "doc_verifies_dropped", "edges": len(dropped)})
+        return len(dropped)
+
     def restore_tool_evidence(self, output: dict, candidates: dict | None) -> int:
         """Give back the tool or Git citation an integrated event's basis or status rests on.
 
@@ -957,6 +1031,7 @@ class EvidenceValidator:
         if output["base_graph_version"] != graph["version"] or output["snapshot_id"] != snapshot_id:
             raise FlowError("GraphDelta의 기준 graph version 또는 snapshot이 다릅니다.")
         self.restore_tool_evidence(output, candidates)
+        self.drop_unchecked_doc_verifies(output, graph)
         self._check_all_citations(output)
         review_issues = output["review_issues"]
         issue_ids = [item["id"] for item in review_issues]

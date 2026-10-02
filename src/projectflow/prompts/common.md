@@ -68,7 +68,8 @@ research, software or both. Do not do the project's work or recommend new work.
   `to` (an outcome) actually ran or tested `from` (a change). answers: `to` answered `from` (a question).
 - Use verifies only with evidence that the command or test covered that change (the same script
   run, a test of that change). Never infer it. Another test passing after a change is not
-  verifies. A fix with no later run stays unverified.
+  verifies. A fix with no later run stays unverified. A change that only edits documentation is
+  verified only by a run whose command reads that file; a test passing does not verify prose.
 - If a test or command directly calls a changed function, command or script (its name appears in
   the test code or command line), the result verifies that code change as well as any test-file
   change. An installed file or output that directly shows the change's product (a marker, a

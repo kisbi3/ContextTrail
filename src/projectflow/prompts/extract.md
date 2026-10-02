@@ -15,6 +15,8 @@ evidence is always a quote from the records.
   (an agent's own work shows up as its own records, so a delegate is normally not an event), and
   poll only reads more output of a command started earlier, so its result may be that command's
   outcome.
+  - doc: true marks an edit that changed only documentation (Markdown, text, reStructuredText).
+    Keep such edits in their own change event, apart from code changes.
   - Every edit call must appear in some event's evidence (a quote from its call or result);
     code checks this. Several edits may form one change event, but split them when different
     runs checked them.
