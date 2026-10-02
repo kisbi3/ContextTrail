@@ -196,3 +196,6 @@ lean으로 조각당 입력이 줄었는데 예산 상수(`PAYLOAD_RECORD_FACTOR
 - Claude 9회(`cl-repairfix-*`, `cl-basis-1..4`) 모두 추출 수리 1회. 원인: `인용문이…유일하게 일치하지 않습니다` 7회(전부 `multiple_in_cited_lines`, 인용한 줄 범위 안의 서로 다른 줄에 같은 문구가 반복), `파일을 바꾼 도구 호출이…근거에도 없습니다` 3회, `verifies…inferred` 4회(basis 규칙 뒤 0회).
 - 반복 문구는 지금 일부러 거절한다(같은 hunk의 diff 양쪽만 예외; `test_diff_matches_across_hunks_or_plain_lines_are_still_ambiguous`). 어느 반복을 가리키는지 코드가 정할 근거가 있는지 보려고, 실패 감사에 문구 없이 개수만 남긴다: `shape = {matches, span_lines, on_start_line, on_end_line, whole_block}`, `report.json`의 `ops.quote_repeat_shapes`. 모델 입력은 바뀌지 않는다.
 - 다음 평가에서 `on_start_line == 1`이고 `whole_block`이 거짓인 경우가 대부분이면 "모델이 적은 시작 줄에서 시작하는 반복이 하나뿐일 때 그것을 고른다"를 해석이 하나인 보정으로 제안한다(소유자 결정).
+- **`cl-shape-1..5` (모델 입력은 `cl-basis-*`와 같음):** 9·13·9·8·11(평균 10.0), 2.3~3.0분. basis 규칙 뒤 9회를 합치면 평균 11.3으로 기준선 11.0과 차이가 없다; `cl-basis-1..4`의 13.0은 편차였다. #10·#11·#14는 9회 모두 실패, #17도 다시 실패가 늘었다(5회 중 4회).
+  - 추출 수리 4/5회. 반복 문구 실패 5건의 모양이 모두 같다: `span_lines` 3, 가운데 줄에 반복 하나, 끝 줄에도 하나(시작 줄에 있는 경우는 5건 중 2건). 즉 모델이 한 줄짜리 인용에 앞뒤 한 줄씩을 붙여 3줄 범위를 적고, 그 이웃 줄에 같은 문구가 있어 거절된다. 시작 줄 기준 보정은 맞지 않는다(5건 중 3건은 시작 줄에 없음).
+- 조치: `common.md`에 "한 줄 안의 인용은 start_line = end_line, 이웃 줄로 넓히지 않는다"를 넣었다. 코드 보정은 하지 않는다.

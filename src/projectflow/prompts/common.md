@@ -102,7 +102,9 @@ research, software or both. Do not do the project's work or recommend new work.
 - How to quote: pick one distinctive stretch inside a single line (8 to 120 characters) and copy
   it character by character, keeping the record's own language, spacing and escapes. Never
   translate, shorten with "..." or "…", fix typos, or join text from two places. start_line and
-  end_line are the line numbers printed next to the text in the input, not counts or offsets.
+  end_line are the line numbers printed next to the text in the input, not counts or offsets. A
+  quote inside one line has start_line equal to end_line, that line's number; do not widen the
+  range to neighbouring lines.
   If you cannot copy a quote exactly, drop that item's evidence instead of guessing.
 - Give judgements as short reasons with quotes. Do not ask for or output private reasoning.
 - Do not write Mermaid, HTML or SQL.
