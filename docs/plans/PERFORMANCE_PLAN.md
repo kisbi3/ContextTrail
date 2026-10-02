@@ -230,3 +230,10 @@ lean으로 조각당 입력이 줄었는데 예산 상수(`PAYLOAD_RECORD_FACTOR
 - **2026-10-02 소유자 동의로 `--integrate-output` 기본값을 `draft`로 전환**(`full`로 되돌림). 테스트는 통합 호출 자체를 시험하므로 `conftest.integrate_by_model`이 `full`로 고정하고, 기본값은 `dataclasses.fields`로 따로 확인한다. `scripts/prelive_walkthrough.py`도 `full`을 명시한다.
 - 아직 실측이 없는 것: 기존 그래프가 있는 단위의 `patch` 통합(두 fixture 모두 단위 하나).
 - 기존 그래프에 대한 `patch` 통합을 재려고 `eval`에 숨은 `--unit-records`를 넣었다. repairfix-v2는 `--unit-records 40`에서 26·34기록 2단위로 나뉜다(`--preview`로 확인, 30이면 3단위).
+
+## 13. 반복 문구 인용 (2026-10-02, 소유자 동의 "전부 진행")
+
+- 최근 Claude 12회 중 약 절반이 반복 문구 인용(`multiple_in_cited_lines`)으로 추출 수리를 했고, 2회(`cl-int-draft-1` 포함)는 수리 뒤에도 실패해 단위를 잃었다. 측정된 모양은 모두 인용 범위 2~3줄 안의 반복이었다(`quote_repeat_shapes`).
+- 조치: 모델이 직접 적은 줄 범위 안에서 반복이 모두 3줄 안에 모여 있으면, 그 반복을 모두 담은 줄들을 인용으로 저장한다(`resolve_quote(close_repeats=True)`, 감사 `repeats_within_few_lines_expanded`). 같은 hunk diff 양쪽 예외와 같은 방식이고, 저장되는 인용은 원문 그대로이며 모델이 적은 범위를 넘지 않는다. 다른 줄로 옮긴(relocation) 인용에는 적용하지 않는다.
+- 더 멀리 떨어진 반복은 계속 거절하되, 오류에 반복된 줄 번호를 적어(`…1, 4번 줄 중 하나만 인용`) 수리에서 한 줄을 고르게 한다.
+- 이전 결정(`test_diff_matches_across_hunks_or_plain_lines_are_still_ambiguous`의 9줄·27줄 사례)은 그대로 거절된다.

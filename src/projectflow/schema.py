@@ -316,13 +316,16 @@ FOCUS_MAX_SPANS = 5
 # The same text on both sides of one diff hunk (removed and added lines) is kept as
 # one evidence span covering those lines, so neither side is picked on the model's behalf.
 DIFF_PAIR_MAX_LINES = 20
+# Repeats this close together are cited as the few lines that hold them all, not one guessed copy.
+REPEAT_SPAN_MAX_LINES = 3
 
 
 def _diff_body(line: str) -> bool:
     return bool(line) and line[0] in "+- " and not line.startswith(("+++ ", "--- "))
 
 
-def resolve_quote(region: str, quote: str) -> tuple[list[tuple[int, int]], int, int, str] | tuple[None, int]:
+def resolve_quote(region: str, quote: str, *,
+                  close_repeats: bool = False) -> tuple[list[tuple[int, int]], int, int, str] | tuple[None, int]:
     """Resolve a partial quote inside `region` (the provided lines joined by newlines).
 
     Returns (raw spans, first line index, last line index, mode) when the quote maps to
@@ -358,6 +361,8 @@ def resolve_quote(region: str, quote: str) -> tuple[list[tuple[int, int]], int, 
           and all(_diff_body(lines[i]) for a, b in bounds for i in range(a, b + 1))
           and not any(lines[i].startswith(("@@", "diff --git ")) for i in range(first, last + 1))):
         mode = prefix + "diff_hunk_substring_expanded_to_lines"
+    elif close_repeats and last - first < REPEAT_SPAN_MAX_LINES:
+        mode = prefix + "repeats_within_few_lines_expanded"
     else:
         return None, len(spans)
     return spans, first, last, mode
@@ -679,7 +684,8 @@ class EvidenceValidator:
             else:
                 requested_quote = citation["quote"]
                 region = "\n".join(lines[start - 1:end])
-                resolved = resolve_quote(region, requested_quote)
+                # Close repeats count only inside the lines the model itself named, never after a relocation.
+                resolved = resolve_quote(region, requested_quote, close_repeats=corrections)
                 # A fragment under SHORT_QUOTE_CHARS says little alone: it is kept only where it
                 # appears once, exactly as written, in the cited lines.
                 if len(requested_quote) < SHORT_QUOTE_CHARS and (
@@ -698,9 +704,12 @@ class EvidenceValidator:
                         resolved = slip
                 if resolved[0] is None:
                     count = resolved[1]
+                    rows = sorted({start + bisect.bisect_right(line_offsets(region), found) - 1
+                                   for found in occurrences(region, requested_quote)}) if count > 1 else []
+                    where = f", 서로 다른 줄: {', '.join(map(str, rows[:8]))}번 줄 중 하나만 인용" if rows else (
+                        ", 서로 다른 줄" if count > 1 else "")
                     raise FlowError(f"인용문이 제공된 원문 범위에서 유일하게 일치하지 않습니다: "
-                                    f"{source_id}:{start}-{end} (일치 {count}건"
-                                    f"{', 서로 다른 줄' if count > 1 else ''})")
+                                    f"{source_id}:{start}-{end} (일치 {count}건{where})")
                 spans, first, last, mode = resolved
                 corrected_start, corrected_end = start + first, start + last
                 quote = "\n".join(lines[corrected_start - 1:corrected_end])
