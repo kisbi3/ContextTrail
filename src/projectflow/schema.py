@@ -1210,7 +1210,12 @@ class EvidenceValidator:
                     if item["target_ids"]:
                         raise FlowError("excluded 후보에는 대상 ID를 지정할 수 없습니다.")
                 elif not item["target_ids"] or not set(item["target_ids"]) <= targets_by_kind[item["candidate_kind"]]:
-                    raise FlowError("candidate resolution 대상이 GraphDelta 또는 기존 그래프에 없습니다.")
+                    missing = sorted(set(item["target_ids"]) - targets_by_kind[item["candidate_kind"]])
+                    other = any(t in ids for t in missing for kind, ids in targets_by_kind.items()
+                                if kind != item["candidate_kind"])
+                    why = "대상 없음" if not item["target_ids"] else "다른 종류 항목" if other else "없는 ID"
+                    raise FlowError(f"candidate resolution 대상이 GraphDelta 또는 기존 그래프에 없습니다"
+                                    f"({item['candidate_kind']}, {why}): {item['candidate_id']} → {', '.join(missing)}")
                 if item["disposition"] == "added" and not set(item["target_ids"]) <= added_by_kind[item["candidate_kind"]]:
                     raise FlowError("added 후보 처리는 같은 종류의 새 GraphDelta 항목을 가리켜야 합니다.")
                 if item["disposition"] in {"duplicate", "updated"} and any(i.startswith("tmp:") for i in item["target_ids"]):
@@ -1234,10 +1239,7 @@ class EvidenceValidator:
                 raise FlowError("change_attributions가 모든 GraphDelta 변경을 정확히 한 번 귀속해야 합니다.")
             resolution_by_id = {row["candidate_id"]: row for row in resolutions}
 
-            def attribution_linked(item: dict) -> bool:
-                attributed = [resolution_by_id[cid] for cid in item["candidate_ids"]]
-                if any(item["item_id"] in row["target_ids"] for row in attributed):
-                    return True
+            def linked_ends(item: dict) -> set[str]:
                 if item["operation"] == "edges_to_add":
                     edge = next(x for x in output["edges_to_add"] if x["id"] == item["item_id"])
                     ends = {edge["from_event_id"], edge["to_event_id"]}
@@ -1249,7 +1251,14 @@ class EvidenceValidator:
                 elif item["operation"] == "open_items_to_resolve":
                     ends = set(next(x for x in graph["open_items"] if x["id"] == item["item_id"]).get("related_event_ids", []))
                 else:
-                    return False
+                    ends = set()
+                return ends
+
+            def attribution_linked(item: dict) -> bool:
+                attributed = [resolution_by_id[cid] for cid in item["candidate_ids"]]
+                if any(item["item_id"] in row["target_ids"] for row in attributed):
+                    return True
+                ends = linked_ends(item)
                 return any(row["candidate_kind"] == "event" and set(row["target_ids"]) & ends for row in attributed)
 
             for item in attributions:
@@ -1262,7 +1271,17 @@ class EvidenceValidator:
                         self.normalizations.append({"mode": "attribution_candidates_from_resolutions",
                                                     "operation": item["operation"], "item_id": item["item_id"]})
                 if not attribution_linked(item):
-                    raise FlowError("change attribution 후보의 처리 대상이 귀속 GraphDelta 변경과 연결되지 않습니다.")
+                    # A relation or open item no candidate names is tied to the event candidates at its ends.
+                    ends = linked_ends(item)
+                    owners = sorted(row["candidate_id"] for row in resolutions
+                                    if row["candidate_kind"] == "event" and set(row["target_ids"]) & ends)
+                    if owners:
+                        item["candidate_ids"] = owners
+                        self.normalizations.append({"mode": "attribution_candidates_from_endpoints",
+                                                    "operation": item["operation"], "item_id": item["item_id"]})
+                if not attribution_linked(item):
+                    raise FlowError(f"change attribution 후보의 처리 대상이 귀속 GraphDelta 변경과 연결되지 않습니다"
+                                    f"({item['operation']}): {item['item_id']}")
                 if item["operation"] == "events_to_add" and self.assigned_source_ids is not None and not any(
                         quote["source_id"] in self.assigned_source_ids for quote in item["evidence"]):
                     raise FlowError("새 사건 귀속에는 이번 WorkUnit의 인용이 필요합니다.")

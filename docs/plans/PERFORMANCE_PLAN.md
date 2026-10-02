@@ -237,3 +237,17 @@ lean으로 조각당 입력이 줄었는데 예산 상수(`PAYLOAD_RECORD_FACTOR
 - 조치: 모델이 직접 적은 줄 범위 안에서 반복이 모두 3줄 안에 모여 있으면, 그 반복을 모두 담은 줄들을 인용으로 저장한다(`resolve_quote(close_repeats=True)`, 감사 `repeats_within_few_lines_expanded`). 같은 hunk diff 양쪽 예외와 같은 방식이고, 저장되는 인용은 원문 그대로이며 모델이 적은 범위를 넘지 않는다. 다른 줄로 옮긴(relocation) 인용에는 적용하지 않는다.
 - 더 멀리 떨어진 반복은 계속 거절하되, 오류에 반복된 줄 번호를 적어(`…1, 4번 줄 중 하나만 인용`) 수리에서 한 줄을 고르게 한다.
 - 이전 결정(`test_diff_matches_across_hunks_or_plain_lines_are_still_ambiguous`의 9줄·27줄 사례)은 그대로 거절된다.
+
+## 14. 2단위 평가: 기존 그래프에 대한 통합 (2026-10-02)
+
+- repairfix-v2 `--unit-records 40`(2단위), Claude Sonnet 5.5, 각 3회:
+
+  | | 완료 | 점수 | 시간 | 캐시 쓰기 / 출력 토큰 | 통합 출력 |
+  |---|---|---|---|---|---|
+  | full (`cl-2u-full-*`) | 2/3 | 13, 12 | 2.5~4.0분 | 13.8~21만 / 2.4~3.8만 | 1.3만~3.9만 자 |
+  | draft (`cl-2u-draft-*`) | 2/3 (+부분 1) | 14, 9 | 1.3~1.9분 | 15.4~26.3만 / 1.1~1.6만 | 1.6~2.7천 자 |
+
+  - 반복 문구 규칙(`repeats_within_few_lines_expanded`)이 6회 모두 적용됐고 반복 문구 실패는 0건. 추출 수리의 남은 원인은 `verifies…inferred`(3/6)뿐이다.
+  - 두 번째 단위의 patch 통합은 15~25초, 출력 수천 자. `in_delta_duplicate_as_added`가 1회 실제로 쓰였다.
+  - 실패: full-1은 리뷰 patch의, draft-1은 두 번째 단위 통합 patch의 장부 오류(`candidate resolution 대상이 GraphDelta 또는 기존 그래프에 없습니다`, `change attribution 후보의 처리 대상이…연결되지 않습니다`). full-2도 통합 수리 1회가 같은 귀속 오류.
+- 조치: 후보 처리 어디에도 이름이 없는 관계·열린 항목의 귀속은 양 끝 사건을 대상으로 한 사건 후보로 코드가 채운다(`attribution_candidates_from_endpoints`; 기존 `…from_resolutions` 다음 단계). 두 장부 오류 메시지에 코드가 쓴 분류를 붙였다: 귀속은 `(operation)`, 처리 대상은 `(candidate_kind, 대상 없음|다른 종류 항목|없는 ID)`. `report.json`의 `validation_error_kinds`에서 원인별로 센다.

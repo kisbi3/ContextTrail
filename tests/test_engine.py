@@ -774,7 +774,7 @@ def test_review_patch_leaving_a_candidate_unresolved_is_rejected(laboratory):
     assert result["status"] == "complete", result  # the repair round put the candidate back
     assert _review_statuses(store) == [("reviewed", ["resolved"])]
     failures = [call["details"]["error"] for call in _review_calls(store) if call["status"] == "validation_error"]
-    assert ["change attribution 후보의 처리 대상이 귀속 GraphDelta 변경과 연결되지 않습니다." in error
+    assert ["change attribution 후보의 처리 대상이 귀속 GraphDelta 변경과 연결되지 않습니다(" in error
             for error in failures] == [True]
     # The merged delta is what got published, so the event the review disowned is not there twice.
     assert [event["title"] for event in store.graph()["events"]] == ["JSON 저장 채택", "SQLite로 전환 결정"]
@@ -941,3 +941,34 @@ def test_a_duplicate_of_an_item_the_same_delta_adds_is_folded_into_it():
     assert validator.settle_in_delta_duplicates(delta) == 1
     assert [row["disposition"] for row in delta["candidate_resolutions"]] == ["added", "duplicate", "updated"]
     assert validator.normalizations == [{"mode": "in_delta_duplicate_as_added", "items": 1}]
+
+
+
+def test_a_relation_no_candidate_names_is_attributed_to_the_event_candidates_at_its_ends(laboratory):
+    _, store, engine, records, make = laboratory
+    records.extend([make(CASES[0][0]), make(CASES[1][0], key="s2", role="assistant"),
+                    make(CASES[5][0], key="s3", role="assistant")])
+    strays = []
+
+    class StrayAttribution(FixtureRunner):
+        def run(self, task, schema, cancel):
+            output = super().run(task, schema, cancel)
+            if task["stage"] == "integrate" and output["edges_to_add"]:
+                edge = output["edges_to_add"][0]
+                ends = {edge["from_event_id"], edge["to_event_id"]}
+                stray = next((r["candidate_id"] for r in output["candidate_resolutions"]
+                              if r["candidate_kind"] == "event" and not set(r["target_ids"]) & ends), None)
+                assert stray, "the fixture needs an event away from the relation"
+                for item in output["change_attributions"]:
+                    if item["item_id"] == edge["id"]:
+                        item["candidate_ids"] = [stray]
+                        strays.append(stray)
+            return output
+
+    result = engine.analyze(StrayAttribution)
+    assert result["status"] == "complete", result.get("error")
+    assert strays
+    audit = [item for call in store.llm_calls() if call["stage"] == "integrate"
+             for item in call["details"]["citation_normalization_audit"]]
+    assert [item["operation"] for item in audit if item["mode"] == "attribution_candidates_from_endpoints"] == [
+        "edges_to_add"]
