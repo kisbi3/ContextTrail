@@ -815,3 +815,31 @@ def test_merge_review_patch_replaces_adds_and_removes_items():
     with pytest.raises(FlowError, match="다른 종류의 제안 항목"):
         merge_review_patch(proposed, {**answer, "patch": {**answer["patch"],
                                                            "edges_to_add": [{"id": "tmp:a"}]}})
+
+
+def test_review_patch_bookkeeping_with_one_reading_is_settled_in_code():
+    from projectflow.schema import reconcile_review_patch
+    empty = {"events_to_update": [], "edges_to_invalidate": [], "open_items_to_upsert": [], "open_items_to_resolve": []}
+    cite = {"source_id": "s1", "start_line": 1, "end_line": 1, "quote": "the run passed"}
+    proposed = {**empty, "events_to_add": [{"id": "tmp:a", "evidence": [cite]}], "edges_to_add": [{"id": "tmp:e"}]}
+    merged = {**empty,
+        "events_to_add": [{"id": "tmp:c", "evidence": []}],          # the review removed tmp:a and added tmp:c
+        "edges_to_add": [{"id": "tmp:e"}],
+        "candidate_resolutions": [
+            {"candidate_id": "c1", "candidate_kind": "event", "disposition": "added", "target_ids": ["tmp:a"], "reason": "r"},
+            {"candidate_id": "c2", "candidate_kind": "event", "disposition": "added", "target_ids": ["tmp:c"], "reason": "r"},
+            {"candidate_id": "c3", "candidate_kind": "edge", "disposition": "added", "target_ids": ["tmp:e"], "reason": "r"}],
+        "change_attributions": [{"operation": "events_to_add", "item_id": "tmp:a", "candidate_ids": ["c1"]},
+                                {"operation": "edges_to_add", "item_id": "tmp:e", "candidate_ids": ["c3"]}]}
+    candidates = {"event_candidates": [{"id": "c2", "evidence": [cite]}], "edge_candidates": [], "open_items": []}
+    counts = reconcile_review_patch(merged, proposed, candidates)
+    assert counts == {"stale_attributions": 1, "excluded_resolutions": 1, "added_attributions": 1}
+    assert [(a["operation"], a["item_id"], a["candidate_ids"]) for a in merged["change_attributions"]] == [
+        ("edges_to_add", "tmp:e", ["c3"]), ("events_to_add", "tmp:c", ["c2"])]
+    assert merged["change_attributions"][1]["evidence"] == [cite]
+    assert merged["candidate_resolutions"][0]["disposition"] == "excluded"
+    assert merged["candidate_resolutions"][0]["target_ids"] == []
+    orphan = {**empty, "events_to_add": [{"id": "tmp:x", "evidence": [cite]}], "edges_to_add": [],
+              "candidate_resolutions": [], "change_attributions": []}
+    assert reconcile_review_patch(orphan, {**empty, "events_to_add": [], "edges_to_add": []}, None)["added_attributions"] == 0
+    assert orphan["change_attributions"] == []  # no candidate points at it: left for the checks to reject

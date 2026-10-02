@@ -175,3 +175,9 @@ lean으로 조각당 입력이 줄었는데 예산 상수(`PAYLOAD_RECORD_FACTOR
 - 8회 분석(`report.json`의 `matched_event_ids`): 4회는 보안 문서 수정을 LangSmith 필터 코드 수정과 한 변경 사건으로 묶어 그 코드의 테스트가 문서까지 "검증"했고, 4회는 문서 사건을 따로 두고도 테스트 결과를 `verifies`로 이었다.
 - 조치(소유자 동의): `tool_steps`의 편집 단계 중 문서 파일만 고친 것에 `doc: true`; 프롬프트에 "문서 수정은 코드 수정과 다른 변경 사건으로, 문서는 그 파일을 읽는 실행만 검증한다"; 코드는 문서만 바꾼 변경과, 명령줄에 그 파일이 나오지 않는 실행 사이의 `verifies`를 수리 대신 빼고 한계에 적는다(`drop_unchecked_doc_verifies`, `doc_verifies_dropped`). 모델이 쓴 관계를 코드가 덜어 내는 첫 규칙이다.
 - fixture: 원본 `/private/tmp/contexttrail-selfeval-20260925/*.json`은 macOS의 `/tmp` 정리로 지워졌다. 평가 출력의 `fixture.json` 사본에서 `~/contexttrail-evals/`로 복구하고, 프롬프트 규칙과 충돌하는 19번(`forbidden_event user adopted`)을 뺀 `repairfix-expected-v2.json`(18항목)을 쓴다.
+
+## 9. Claude Runner 첫 실행 (2026-10-02)
+
+- installer 스모크(`--runner claude --model sonnet`): 실제 모델 `claude-sonnet-5-5`(effort medium). 샌드박스·인증·구조화 출력은 정상. 호출 4번 합계 1.7분(추출 0.5분, 통합 0.8분)으로 Codex(같은 fixture 4~6분)보다 훨씬 빠르다.
+- 실패: patch 리뷰가 지운 항목을 가리키는 후보 처리를 그대로 두었고(`candidate resolution 대상이 GraphDelta 또는 기존 그래프에 없습니다`), 수리 뒤에는 귀속 개수가 맞지 않았다(`change_attributions가 모든 GraphDelta 변경을 정확히 한 번 귀속해야 합니다`). 리뷰가 실패하면 단위가 게시되지 않아 1/18.
+- 조치: 합친 뒤 해석이 하나인 장부만 코드가 맞춘다(`reconcile_review_patch`) — 사라진 항목의 귀속은 버리고, 리뷰가 지운 항목만 만들던 후보 처리는 제외로 바꾸고, 리뷰가 추가했는데 귀속이 없는 항목은 그 항목을 대상으로 한 후보 처리로 귀속한다. 가리키는 후보가 없으면 그대로 검사에 맡긴다. 감사는 `review_patch_merged`에 개수로 남는다.

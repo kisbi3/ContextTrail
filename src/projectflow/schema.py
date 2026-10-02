@@ -177,6 +177,43 @@ def merge_review_patch(proposed: dict, answer: dict) -> dict:
     return merged
 
 
+REVIEW_REMOVED_REASON = "리뷰가 이 후보로 만든 항목을 지웠습니다"
+REVIEW_ATTRIBUTION_REASON = "리뷰가 추가한 항목을, 그 항목을 대상으로 한 후보 처리에서 귀속했습니다"
+
+
+def reconcile_review_patch(merged: dict, proposed: dict, candidates: dict | None) -> dict:
+    """Bookkeeping a review patch left with one reading only, settled in code before the checks.
+
+    An attribution of an item that is gone is dropped; a resolution that only produced items the
+    review removed becomes excluded; an item the review added with no attribution is attributed
+    to the candidates whose resolution targets it. Anything else is left for the checks.
+    """
+    present = {(op, item["id"]) for op in DELTA_ITEM_ARRAYS for item in merged[op]}
+    removed = {item["id"] for op in DELTA_ITEM_ARRAYS for item in proposed[op]} - {i for _, i in present}
+    counts = {"stale_attributions": 0, "excluded_resolutions": 0, "added_attributions": 0}
+    kept = [a for a in merged["change_attributions"] if (a["operation"], a["item_id"]) in present]
+    counts["stale_attributions"] = len(merged["change_attributions"]) - len(kept)
+    merged["change_attributions"] = kept
+    for row in merged["candidate_resolutions"]:
+        if set(row["target_ids"]) & removed:
+            row["target_ids"] = [t for t in row["target_ids"] if t not in removed]
+            if not row["target_ids"] and row["disposition"] != "excluded":
+                row["disposition"], row["reason"] = "excluded", REVIEW_REMOVED_REASON
+                counts["excluded_resolutions"] += 1
+    evidence_of = {c["id"]: c.get("evidence", []) for key in ("event_candidates", "edge_candidates", "open_items")
+                   for c in (candidates or {}).get(key, [])}
+    items = {(op, item["id"]): item for op in DELTA_ITEM_ARRAYS for item in merged[op]}
+    attributed = {(a["operation"], a["item_id"]) for a in merged["change_attributions"]}
+    for key in sorted(present - attributed):
+        owners = [row["candidate_id"] for row in merged["candidate_resolutions"] if key[1] in row["target_ids"]]
+        evidence = list(items[key].get("evidence") or []) or [c for cid in owners for c in evidence_of.get(cid, [])]
+        if owners and evidence:
+            merged["change_attributions"].append({"operation": key[0], "item_id": key[1], "candidate_ids": owners,
+                                                  "reason": REVIEW_ATTRIBUTION_REASON, "evidence": evidence})
+            counts["added_attributions"] += 1
+    return counts
+
+
 def review_patch_audit(proposed: dict, answer: dict) -> dict:
     """How many items a review patch added, replaced and removed, for the call ledger."""
     proposed_keys = {(array, patch_key(array, item)) for array in PATCH_ARRAYS for item in proposed[array]}

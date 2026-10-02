@@ -21,7 +21,7 @@ from .model import Snapshot, SourceRecord, is_user_prompt
 from .routing import ROUTING_VERSION, RunnerPool, TaskValidationError
 from .runners.cli_runner import EFFORTS
 from .schema import (DELTA_SCHEMA, EDIT_TOOL_NAMES, EXTRACT_SCHEMA, EvidenceValidator, delta_schema, docs_only,
-                     edited_files, merge_review_patch,
+                     edited_files, merge_review_patch, reconcile_review_patch,
                      record_evidence, review_patch_audit, review_patch_schema, validate_shape)
 from .sources import collect_logs
 from .store import Store
@@ -1941,7 +1941,7 @@ class Engine:
             if patch_mode:
                 delta = harness.task("integrate", review_data, check_review, validator=validator,
                                      schema=review_patch_schema(self.config.integrate_evidence == "reuse"),
-                                     merge=lambda answer: self._merge_review_patch(answer, proposal, validator))
+                                     merge=lambda answer: self._merge_review_patch(answer, proposal, validator, candidate_set))
             else:
                 delta = harness.task("integrate", review_data, check_review, validator=validator)
             prepared.delta = delta
@@ -1966,10 +1966,13 @@ class Engine:
         return result
 
     @staticmethod
-    def _merge_review_patch(answer: dict, proposal: dict, validator: EvidenceValidator) -> dict:
+    def _merge_review_patch(answer: dict, proposal: dict, validator: EvidenceValidator,
+                            candidates: dict | None = None) -> dict:
         """What the checker sees in patch mode: the proposal with the review's changes folded in."""
         merged = merge_review_patch(proposal, answer)
-        validator.normalizations.append({"mode": "review_patch_merged", **review_patch_audit(proposal, answer)})
+        settled = reconcile_review_patch(merged, proposal, candidates)
+        validator.normalizations.append({"mode": "review_patch_merged", **review_patch_audit(proposal, answer),
+                                         **{k: v for k, v in settled.items() if v}})
         return merged
 
     def _plan_units(self, snapshot: Snapshot, issues: list[str], *,
