@@ -235,8 +235,9 @@ def test_a_failed_quote_is_classified_by_where_it_went(laboratory, text, start, 
     with pytest.raises(FlowError, match="인용문"):
         validator.citations([{"source_id": record.source_id, "start_line": start, "end_line": end, "quote": quote}])
     [item] = validator.mismatch_audit()
-    assert item == {"source_id": record.source_id, "lines": [start, end], "category": category,
-                    "quote_chars": len(quote)}
+    assert {k: v for k, v in item.items() if k != "shape"} == {
+        "source_id": record.source_id, "lines": [start, end], "category": category, "quote_chars": len(quote)}
+    assert ("shape" in item) == (category == "multiple_in_cited_lines")
     assert validator.mismatches[0]["quote"] == quote  # kept in memory for the repair round only
 
 
@@ -501,6 +502,18 @@ def test_escape_decoded_quote_is_stored_as_exact_raw_source_text(laboratory):
     start, end = saved["focus"][0]
     assert saved["quote"][start:end] == '+  \\"$venv/bin/contexttrail\\" install-commands'
     assert validator.normalizations[0]["mode"] == "escape_decoded_substring_expanded_to_lines"
+
+
+def test_a_repeated_quote_records_where_its_repeats_sit_without_text(laboratory):
+    _, _, _, _, make = laboratory
+    record = make("intro\nsame words here now\nmiddle\nsame words here now\nouter")
+    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 5)]})
+    with pytest.raises(FlowError, match="일치 2건, 서로 다른 줄"):
+        validator.citations([{"source_id": record.source_id, "start_line": 2, "end_line": 4,
+                              "quote": "same words here now"}])
+    [item] = validator.mismatch_audit()
+    assert item["shape"] == {"matches": 2, "span_lines": 3, "on_start_line": 1, "on_end_line": 1,
+                             "whole_block": False}
 
 
 def test_escape_decoded_quote_may_span_an_escaped_newline(laboratory):

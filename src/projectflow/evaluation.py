@@ -93,6 +93,8 @@ def summarize_calls(calls: list[dict]) -> dict:
             'quote_mismatch_categories': dict(Counter(
                 item['category'] for c in calls
                 for item in (c['details'].get('quote_mismatch_audit') or []) if 'category' in item)),
+            'quote_repeat_shapes': [item['shape'] for c in calls
+                                    for item in (c['details'].get('quote_mismatch_audit') or []) if 'shape' in item],
             'notes': ['host_calls는 CLI task invocation 수이며 provider 내부 model turn 수나 실제 과금액이 아닙니다.',
                       'model은 요청값/alias입니다. actual_models_reported가 비었으면 실제 모델을 확인하지 못했습니다'
                       ' (Codex는 응답에 사용한 모델을 보고하지 않습니다).',

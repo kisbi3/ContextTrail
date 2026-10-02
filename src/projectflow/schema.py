@@ -707,13 +707,21 @@ class EvidenceValidator:
         region = "\n".join(record.content.splitlines()[start - 1:end])
         resolved = resolve_quote(region, quote)
         matches = len(resolved[0]) if resolved[0] is not None else resolved[1]
-        self.mismatches.append({"source_id": source_id, "lines": [start, end], "quote": quote,
-            "quote_chars": len(quote), "matches": matches,
-            "category": self._classify_mismatch(citation, region, matches)})
+        item = {"source_id": source_id, "lines": [start, end], "quote": quote,
+                "quote_chars": len(quote), "matches": matches,
+                "category": self._classify_mismatch(citation, region, matches)}
+        if item["category"] == "multiple_in_cited_lines":
+            # Counts only: whether the cited line numbers single out one of the repeats.
+            offsets = line_offsets(region)
+            rows = [bisect.bisect_right(offsets, found) - 1 for found in occurrences(region, quote)]
+            item["shape"] = {"matches": len(rows), "span_lines": end - start + 1,
+                             "on_start_line": rows.count(0), "on_end_line": rows.count(end - start),
+                             "whole_block": [start, end] in [list(b) for b in self.provided.get(source_id, [])]}
+        self.mismatches.append(item)
 
     def mismatch_audit(self) -> list[dict]:
         """The mismatch list as it is written to the ledger: category and size, never the quote."""
-        return [{key: item[key] for key in ("source_id", "lines", "category", "quote_chars")}
+        return [{key: item[key] for key in ("source_id", "lines", "category", "quote_chars", "shape") if key in item}
                 for item in self.mismatches]
 
     def _check_all_citations(self, value: dict) -> None:

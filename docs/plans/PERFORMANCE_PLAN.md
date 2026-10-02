@@ -190,3 +190,9 @@ lean으로 조각당 입력이 줄었는데 예산 상수(`PAYLOAD_RECORD_FACTOR
 - **basis 규칙 뒤 repairfix-v2 ×5 (`cl-basis-1..5`):** 1~4회 15·10·14·13(평균 13.0/18), 평균 2.7분, 호출 4번(추출 수리 1회는 그대로; 원인은 인용 불일치·편집 인용 누락). 5회차는 통합 호출에서 Claude 세션 한도(`You've hit your session limit`)로 실패해 제외한다.
   - `verifies…inferred` 오류 4회 → 0회, live5 실패가 둘로 나뉜 실행 4회 → 0회(#1·#15 통과). 금지 관계는 이번에도 실제로 0개.
   - #11·#14(`repair_fix → verifies → engine_tests/live6`)와 #10(`live5_failed → motivates → repair_fix`)은 4회 모두 실패. 거절되던 inferred 연결이 사라졌지만 모델이 처음부터 그 연결을 만들지 않는다. 테스트 파일 실행이 그 테스트가 부르는 수정 코드까지 검증한다는 두 단계 판단이 필요해, fixture에 맞춘 프롬프트 조정은 보류한다.
+
+## 10. 추출 수리 호출 (2026-10-02)
+
+- Claude 9회(`cl-repairfix-*`, `cl-basis-1..4`) 모두 추출 수리 1회. 원인: `인용문이…유일하게 일치하지 않습니다` 7회(전부 `multiple_in_cited_lines`, 인용한 줄 범위 안의 서로 다른 줄에 같은 문구가 반복), `파일을 바꾼 도구 호출이…근거에도 없습니다` 3회, `verifies…inferred` 4회(basis 규칙 뒤 0회).
+- 반복 문구는 지금 일부러 거절한다(같은 hunk의 diff 양쪽만 예외; `test_diff_matches_across_hunks_or_plain_lines_are_still_ambiguous`). 어느 반복을 가리키는지 코드가 정할 근거가 있는지 보려고, 실패 감사에 문구 없이 개수만 남긴다: `shape = {matches, span_lines, on_start_line, on_end_line, whole_block}`, `report.json`의 `ops.quote_repeat_shapes`. 모델 입력은 바뀌지 않는다.
+- 다음 평가에서 `on_start_line == 1`이고 `whole_block`이 거짓인 경우가 대부분이면 "모델이 적은 시작 줄에서 시작하는 반복이 하나뿐일 때 그것을 고른다"를 해석이 하나인 보정으로 제안한다(소유자 결정).
