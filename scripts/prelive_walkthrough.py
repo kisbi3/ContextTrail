@@ -36,7 +36,8 @@ def walkthrough(output: Path) -> dict:
     # This walks the extract/integrate handoff. The lone revision below has nothing to revise,
     # which would add a delta review; that path is covered by the Studio tests instead.
     config = AnalysisConfig(extract_model='scripted-small', integrate_model='scripted-integrator',
-                            escalation_model='scripted-reviewer', max_calls=8, semantic_review=False)
+                            escalation_model='scripted-reviewer', max_calls=8, semantic_review=False,
+                            integrate_output='full')
     engine = Engine(scope, store, config)
     def record(key: str, content: str, minute: int) -> SourceRecord:
         return SourceRecord(key,'claude','synthetic-session','user',content,

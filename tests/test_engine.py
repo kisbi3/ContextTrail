@@ -849,10 +849,12 @@ def _integrate_calls(store):
     return [call for call in store.llm_calls() if call["metadata"].get("routing_role") == "integrate"]
 
 
-def test_default_integrate_output_sends_no_draft(laboratory):
+def test_integrate_output_is_draft_by_default_and_full_sends_no_draft(laboratory):
+    import dataclasses
+    assert {f.name: f.default for f in dataclasses.fields(AnalysisConfig)}["integrate_output"] == "draft"
     _, _, engine, records, make = laboratory
     records.append(make(CASES[0][0]))
-    assert engine.config.integrate_output == "full"
+    assert engine.config.integrate_output == "full"  # pinned for these tests by conftest
     result, seen = _capturing_analyze(engine)
     assert result["status"] == "complete", result
     [(integrate, schema)] = [item for item in seen if item[0]["stage"] == "integrate"]

@@ -226,3 +226,6 @@ lean으로 조각당 입력이 줄었는데 예산 상수(`PAYLOAD_RECORD_FACTOR
   - patch 통합은 380~587자·7~9초로 거의 "초안 그대로"였다. 통합이 잇던 결과 관계는 코드 신호(`unlinked_observed_outcome`)로 리뷰가 받아 이었다(리뷰 1회 9~14초).
   - 실패 2회: draft-1은 추출이 수리 뒤에도 반복 문구 인용(`일치 2건, 서로 다른 줄`)으로 실패(통합 방식과 무관). patch-1은 리뷰가 후보를 같은 delta의 새 사건의 `duplicate`로 적어 `기존 항목 처리는 기존 그래프 ID를 가리켜야 합니다`(installer 스모크의 full 통합에서도 1회). 그 새 사건으로 접힌 것이라는 해석 하나뿐이라 코드가 `added`로 바꾼다(`settle_in_delta_duplicates`, 감사 `in_delta_duplicate_as_added`).
   - 점수 차이는 표본 3회에서 편차 안이다. 품질을 잃었다는 근거는 없고, 시간은 절반, 토큰은 draft에서 입력 약 40%·출력 약 50% 줄었다.
+- **draft 6회(`cl-int-draft-1..6`):** 완료 5/6, 점수 11·10·14·12·11(평균 11.6, 기준 11.3), 평균 1.1분(0.9~1.5), 캐시 쓰기 5.6~13만·출력 0.7~1.3만 토큰. 실패 1회는 추출 단계의 반복 문구 인용.
+- **2026-10-02 소유자 동의로 `--integrate-output` 기본값을 `draft`로 전환**(`full`로 되돌림). 테스트는 통합 호출 자체를 시험하므로 `conftest.integrate_by_model`이 `full`로 고정하고, 기본값은 `dataclasses.fields`로 따로 확인한다. `scripts/prelive_walkthrough.py`도 `full`을 명시한다.
+- 아직 실측이 없는 것: 기존 그래프가 있는 단위의 `patch` 통합(두 fixture 모두 단위 하나).

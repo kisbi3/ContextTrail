@@ -57,7 +57,7 @@ class AnalysisConfig:
     review_output: str = "patch"
     # `patch`: code adds every candidate as extracted and the integrator answers only its changes;
     # `draft`: the same, with no integrate call while the graph is still empty.
-    integrate_output: str = "full"
+    integrate_output: str = "draft"
     extract_workers: int = 1
     max_calls: int = 30
     # Work units for this run (never saved). Unset, the call cap alone bounds a run.
