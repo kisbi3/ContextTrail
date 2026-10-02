@@ -108,6 +108,8 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--integrate-evidence", choices=["full", "reuse"], help=argparse.SUPPRESS)
     sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
     sub.add_argument("--integrate-output", choices=["full", "patch", "draft"], help=argparse.SUPPRESS)
+    # Fewer records per unit splits a fixture so later units integrate against an existing graph.
+    sub.add_argument("--unit-records", type=int, help=argparse.SUPPRESS)
     langsmith_options(sub)
     route_options(sub)
     sub = commands.add_parser("review", help="저장된 eval의 모델 후보·인용·검증 결과를 HTML로 열람. AI 호출 없음")
