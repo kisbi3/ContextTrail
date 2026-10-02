@@ -229,3 +229,4 @@ lean으로 조각당 입력이 줄었는데 예산 상수(`PAYLOAD_RECORD_FACTOR
 - **draft 6회(`cl-int-draft-1..6`):** 완료 5/6, 점수 11·10·14·12·11(평균 11.6, 기준 11.3), 평균 1.1분(0.9~1.5), 캐시 쓰기 5.6~13만·출력 0.7~1.3만 토큰. 실패 1회는 추출 단계의 반복 문구 인용.
 - **2026-10-02 소유자 동의로 `--integrate-output` 기본값을 `draft`로 전환**(`full`로 되돌림). 테스트는 통합 호출 자체를 시험하므로 `conftest.integrate_by_model`이 `full`로 고정하고, 기본값은 `dataclasses.fields`로 따로 확인한다. `scripts/prelive_walkthrough.py`도 `full`을 명시한다.
 - 아직 실측이 없는 것: 기존 그래프가 있는 단위의 `patch` 통합(두 fixture 모두 단위 하나).
+- 기존 그래프에 대한 `patch` 통합을 재려고 `eval`에 숨은 `--unit-records`를 넣었다. repairfix-v2는 `--unit-records 40`에서 26·34기록 2단위로 나뉜다(`--preview`로 확인, 30이면 3단위).
