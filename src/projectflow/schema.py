@@ -1258,6 +1258,11 @@ class EvidenceValidator:
                 attributed = [resolution_by_id[cid] for cid in item["candidate_ids"]]
                 if any(item["item_id"] in row["target_ids"] for row in attributed):
                     return True
+                if item["operation"] == "open_items_to_resolve":
+                    # A new event closes an old open item: the candidate it came from is the source,
+                    # though it is not among the events the item was opened on.
+                    return any(row["candidate_kind"] == "event" and row["disposition"] != "excluded"
+                               for row in attributed)
                 ends = linked_ends(item)
                 return any(row["candidate_kind"] == "event" and set(row["target_ids"]) & ends for row in attributed)
 

@@ -972,3 +972,37 @@ def test_a_relation_no_candidate_names_is_attributed_to_the_event_candidates_at_
              for item in call["details"]["citation_normalization_audit"]]
     assert [item["operation"] for item in audit if item["mode"] == "attribution_candidates_from_endpoints"] == [
         "edges_to_add"]
+
+
+def test_a_new_event_may_close_an_old_open_item_it_was_not_opened_on(laboratory):
+    _, store, _, _, make = laboratory
+    record = make("The flaky upload test now passes after the retry fix.", role="assistant")
+    cite = [{"source_id": record.source_id, "start_line": 1, "end_line": 1,
+             "quote": "The flaky upload test now passes after the retry fix."}]
+    graph = store.graph()
+    graph["events"] = [dict(id="ev_old", title="old", summary="", kind="question", status="asked", actor="user",
+                            basis="explicit_statement", session_ids=[], worktree_ids=[], evidence_ids=[],
+                            recorded_at=None, occurred_at=None)]
+    graph["open_items"] = [dict(id="open_old", text="flaky upload", status="open", related_event_ids=["ev_old"],
+                                evidence_ids=[])]
+    event = {"id": "tmp:e", "kind": "outcome", "title": "업로드 테스트 통과 보고", "summary": "", "actor": "assistant",
+             "status": "reported_complete", "basis": "explicit_statement", "session_ids": [], "worktree_ids": [],
+             "recorded_at": None, "occurred_at": None, "evidence": cite}
+    candidates = {"event_candidates": [event], "edge_candidates": [], "existing_event_matches": [],
+                  "open_items": [], "limitations": []}
+    delta = {"status": "complete", "read_requests": [], "snapshot_id": "snap", "base_graph_version": graph["version"],
+             "events_to_add": [copy.deepcopy(event)], "events_to_update": [], "edges_to_add": [],
+             "edges_to_invalidate": [], "open_items_to_upsert": [],
+             "open_items_to_resolve": [{"id": "open_old", "reason": "통과 보고", "evidence": cite}],
+             "candidate_resolutions": [{"candidate_id": "tmp:e", "candidate_kind": "event", "disposition": "added",
+                                        "target_ids": ["tmp:e"], "reason": "r", "evidence": cite}],
+             "change_attributions": [
+                 {"operation": "events_to_add", "item_id": "tmp:e", "candidate_ids": ["tmp:e"], "reason": "r",
+                  "evidence": cite},
+                 {"operation": "open_items_to_resolve", "item_id": "open_old", "candidate_ids": ["tmp:e"],
+                  "reason": "r", "evidence": cite}],
+             "review_issues": [], "review_resolutions": [], "limitations": []}
+    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 1)]},
+                                  assigned_source_ids={record.source_id})
+    result = validator.apply_delta(delta, graph, "snap", "run", candidates)
+    assert [(item["id"], item["status"]) for item in result["open_items"]] == [("open_old", "resolved")]

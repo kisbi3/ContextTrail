@@ -32,7 +32,9 @@ item exactly once, each with the original candidate ID and kind, a disposition
 reason and a source quote. New events/relations/open items are added and target their GraphDelta
 tmp ID. Updating existing content is updated; content already in an existing item is duplicate;
 not applied for lack of evidence is excluded. Exclusions also carry a reason and a quote. Do not
-add new events that no candidate leads to.
+add new events that no candidate leads to. A resolution's target_ids are items of the candidate's own
+kind: an event candidate targets events. When a new event closes an existing open item, keep the event
+candidate's own resolution and put the open item in open_items_to_resolve, attributed to that candidate.
 
 `change_attributions` records every addition, update, invalidation and resolution in the
 GraphDelta exactly once. operation and item_id point at the GraphDelta array item, candidate_ids
