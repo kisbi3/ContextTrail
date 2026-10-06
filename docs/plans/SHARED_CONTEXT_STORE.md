@@ -161,3 +161,12 @@ B2를 마지막에 둔 이유: 돈이 드는 분석을 사람이 모르게 띄�
 - 2026-10-06 C·D·E 완료: opencode 명령 파일 둘, `OPENCODE_PERMISSION_HINT`, `scan --json`의 `runner`, 스킬 본문의 runner 선택 단계와 도구 간 문구, README·DECISIONS·PRD·CLAUDE.md.
 - 2026-10-06 B1 완료: `freshness.py`(`build_index`·`check`·`summary`·`status_lines`), `contexttrail status [--json]`, `find` 첫 줄과 `--json`의 `freshness`, TUI 1행과 브라우저 상태줄(그래프 버전당 한 번 계산), context 스킬의 규칙 한 줄. 테스트 465개.
 - 2026-10-06 A 완료: `sources/opencode.py`, `collect_logs(opencode_home=)`, `AnalysisConfig.opencode_home`, `--opencode-home`, `scan`의 소스별 개수, 도구 이름 표(`edit`/`write`/`read`/`bash`/`task`), `render.PROVIDER`, 평가 fixture의 provider 허용. 테스트 459개 통과. 9절 1·6·7 확인.
+
+### 2026-10-07 점검
+
+소유자가 "더 개선할 것이 있나"라고 물어 실제 저장소의 상태로 다시 봤다.
+
+- **훅 자동 갱신은 오래된 것부터 처리한다.** 이 저장소에는 미분석 559단위가 있어 하루 8회·1단위씩으로는 최근 세션이 두 달 뒤에나 차례가 온다. "방금 끝난 세션만 분석"하는 방식은 소유자가 "오래된 작업을 기억 못해 분류를 잘못할 수 있다"고 짚었고 맞는 말이다: 통합 단계는 현재 그래프와 비교해 중복·수정·관계를 정하므로, 앞선 맥락이 없으면 같은 목표를 새 사건으로 세우거나 재시도를 첫 시도로 적을 수 있다. 시간순은 유지한다. 밀린 기록은 한 번 수동으로 따라잡는 것이 답이고 비용 결정은 소유자 몫으로 남긴다.
+- **구현한 것(0.1.0a6):** 훅이 띄우는 자식을 `auto-update --run`으로 바꿔 종료 코드를 기록하고 연속 3회 실패 시 멈춤(`--status`에 표시, `--enable`로 재시작); `find`/`status`의 바뀐 파일 파싱 결과를 scan·저장 기록 기준으로 캐시(2.0 s → 0.3 s); `scan --json` 수용(스킬 본문이 그렇게 부르는데 a5는 거부했다).
+- **a6 릴리스:** 버전·CHANGELOG 올림. PyPI 배포는 `v0.1.0a6` 태그 push로 publish 워크플로가 하므로 태그는 소유자가 올린다.
+- README는 이미 영어다(계획서 초기의 "영어 README 필요"는 틀린 전제였다).

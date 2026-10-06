@@ -10,9 +10,11 @@ Every host hook (Claude Code `Stop`, Codex `Stop`, opencode `session.idle`) runs
    is the explicit request the analysis invariant asks for, and records the runner consent;
 3. still does nothing when an analysis is running, when nothing is pending, inside the cooldown,
    past the daily cap, or when the host is ContextTrail's own runner session;
-4. otherwise starts `contexttrail analyze … --yes --no-tui --brief --units N --trigger hook` as a
-   detached process (new session, stdin closed, output to `auto-update.log` in the state
-   directory) and returns at once.
+4. otherwise starts a detached child (new session, stdin closed, output to `auto-update.log` in
+   the state directory) and returns at once. The child, `contexttrail auto-update --run`, runs
+   `contexttrail analyze … --yes --no-tui --brief --units N --trigger hook` in its own process
+   and records how it ended, so after `FAILURE_STOP` failed runs in a row the hook stops starting
+   new ones (`failing`) until the person enables automatic analysis again.
 
 The command always exits 0 and never writes transcript text to its log: a hook must not stop the
 host, and a log must not become a copy of the conversation.
@@ -35,11 +37,14 @@ from .store import Store
 from .util import FlowError, now, private_dir
 
 META_KEY = "auto_update"          # the person's settings for this project
-STATE_KEY = "auto_update_state"   # when the hook last started a run
+STATE_KEY = "auto_update_state"   # when the hook started runs, and how the last ones ended
 LOG_NAME = "auto-update.log"
 RUNNERS = ("codex", "claude")
 DEFAULT_COOLDOWN = 15 * 60
 DEFAULT_MAX_RUNS_PER_DAY = 8
+FAILURE_STOP = 3                  # failed runs in a row after which the hook starts nothing more
+RUN_OK_CODES = {0, 2}             # analyze: complete/noop, or partial (units left, which `--units N` always leaves)
+RUNS_KEPT = 16
 SELF_RUN_PREFIXES = ("contexttrail-run-", "projectflow-run-")
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$")
 _UNITS = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
@@ -88,6 +93,10 @@ def enable(store: Store, *, runner: str, units: int, cooldown: int = DEFAULT_COO
     options = store.get_meta("options", {}) or {}
     options["runner"] = runner
     store.set_meta("options", options)
+    # Enabling again is also how the person restarts after the failure stop: the run history is forgotten,
+    # the day's start count is not (the cap still holds).
+    state = store.get_meta(STATE_KEY, {}) or {}
+    store.set_meta(STATE_KEY, {"starts": state.get("starts", []), "runs": []})
     return value
 
 
@@ -115,6 +124,8 @@ def decide(scope: Scope, store: Store, *, moment: datetime | None = None) -> tup
         return "cooldown", None
     if len(recent) >= value["max_runs_per_day"]:
         return "daily_cap", None
+    if failing(state):
+        return "failing", None
     fresh = check(scope, store, budget_bytes=FIND_BUDGET_BYTES, **_homes(store))
     since = fresh.get("since_scan") or {}
     pending = fresh["pending"]["records"] or since.get("records") or (
@@ -128,13 +139,71 @@ def record_start(store: Store, moment: datetime | None = None) -> None:
     moment = moment or datetime.now(timezone.utc)
     state = store.get_meta(STATE_KEY, {}) or {}
     starts = [s for s in state.get("starts", []) if isinstance(s, str) and _parse(s) and moment - _parse(s) < timedelta(days=1)]
-    starts.append(moment.strftime("%Y-%m-%dT%H:%M:%SZ"))
-    store.set_meta(STATE_KEY, {"starts": starts[-64:]})
+    stamp = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    starts.append(stamp)
+    runs = [r for r in state.get("runs", []) if isinstance(r, dict)]
+    runs.append({"started": stamp, "finished": None, "exit": None})
+    store.set_meta(STATE_KEY, {"starts": starts[-64:], "runs": runs[-RUNS_KEPT:]})
+
+
+def record_finish(store: Store, exit_code: int, note: str | None = None, moment: datetime | None = None) -> None:
+    """The child's exit code, on the last run that has no end yet (a run killed outright keeps none)."""
+    moment = moment or datetime.now(timezone.utc)
+    state = store.get_meta(STATE_KEY, {}) or {}
+    runs = [r for r in state.get("runs", []) if isinstance(r, dict)]
+    target = next((r for r in reversed(runs) if r.get("finished") is None), None)
+    if target is None:
+        target = {"started": None}
+        runs.append(target)
+    target.update(finished=moment.strftime("%Y-%m-%dT%H:%M:%SZ"), exit=int(exit_code), ok=int(exit_code) in RUN_OK_CODES)
+    if note:
+        target["note"] = note[:120]
+    store.set_meta(STATE_KEY, {"starts": state.get("starts", []), "runs": runs[-RUNS_KEPT:]})
+
+
+def failing(state: dict[str, Any]) -> bool:
+    """True after `FAILURE_STOP` finished runs in a row that did not end well."""
+    finished = [r for r in state.get("runs", []) if isinstance(r, dict) and r.get("finished")]
+    tail = finished[-FAILURE_STOP:]
+    return len(tail) == FAILURE_STOP and not any(r.get("ok") for r in tail)
 
 
 def analyze_argv(folder: Path, value: dict[str, Any], python: Path | None = None) -> list[str]:
     return [str(python or sys.executable), "-m", "contexttrail", "analyze", str(folder), "--runner", value["runner"],
             "--yes", "--no-tui", "--brief", "--units", str(value["units"]), "--trigger", "hook"]
+
+
+def child_argv(folder: Path, python: Path | None = None) -> list[str]:
+    """The detached process the hook starts: it runs the analysis and records how it ended."""
+    return [str(python or sys.executable), "-m", "contexttrail", "auto-update", "--run", "--folder", str(folder)]
+
+
+def run_child(folder: Path) -> int:
+    """What `contexttrail auto-update --run` does: the analysis, in this process, with its end recorded."""
+    from .cli import main  # the CLI imports this module
+
+    scope = Scope.resolve(folder)
+    if not (scope.state_dir / "state.sqlite").is_file():
+        return 0  # like the hook: no state is created for a project the person did not open
+    store = Store(scope.state_dir, scope.id)
+    value = settings(store)
+    if not value:
+        return 0
+    code, note = 1, None
+    try:
+        code = main(analyze_argv(scope.folder, value)[3:])
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 1
+    except BaseException as exc:  # recorded, then re-raised: the log keeps the traceback
+        note = type(exc).__name__
+        raise
+    finally:
+        try:
+            record_finish(store, code, note)
+            _log(scope.state_dir / LOG_NAME, f"run finished: exit {code}" + (f" ({note})" if note else ""))
+        except Exception:
+            pass
+    return code
 
 
 def spawn(argv: list[str], log_path: Path, cwd: Path) -> int:
@@ -169,7 +238,7 @@ def run_hook(folder: Path | None, *, python: Path | None = None, launcher=None) 
                 _log(scope.state_dir / LOG_NAME, f"hook: {reason}")
             return reason, None
         record_start(store)
-        pid = (launcher or spawn)(analyze_argv(scope.folder, value, python), scope.state_dir / LOG_NAME, scope.folder)
+        pid = (launcher or spawn)(child_argv(scope.folder, python), scope.state_dir / LOG_NAME, scope.folder)
         return "run", pid
     except Exception as exc:  # a hook reports to its log only
         try:
@@ -199,18 +268,31 @@ def _parse(value: str) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def describe(store: Store) -> list[str]:
+def describe(store: Store, log_path: Path | None = None) -> list[str]:
     value = settings(store)
     if not value:
         return [tr("이 프로젝트의 자동 갱신: 꺼짐", "Automatic analysis for this project: off")]
     state = store.get_meta(STATE_KEY, {}) or {}
     starts = state.get("starts", [])
-    return [tr(f"이 프로젝트의 자동 갱신: 켜짐 · runner {value['runner']} · 한 번에 {value['units']}개 단위 · "
-               f"cooldown {value['cooldown_seconds']}초 · 하루 최대 {value['max_runs_per_day']}회 · 켠 시각 {value['enabled_at']}",
-               f"Automatic analysis for this project: on · runner {value['runner']} · {value['units']} units per run · "
-               f"cooldown {value['cooldown_seconds']} s · at most {value['max_runs_per_day']} runs a day · enabled {value['enabled_at']}"),
-            tr(f"훅이 띄운 실행: 지난 24시간 {len(starts)}회" + (f", 마지막 {starts[-1]}" if starts else ""),
-               f"Runs started by hooks: {len(starts)} in the last 24 h" + (f", last {starts[-1]}" if starts else ""))]
+    lines = [tr(f"이 프로젝트의 자동 갱신: 켜짐 · runner {value['runner']} · 한 번에 {value['units']}개 단위 · "
+                f"cooldown {value['cooldown_seconds']}초 · 하루 최대 {value['max_runs_per_day']}회 · 켠 시각 {value['enabled_at']}",
+                f"Automatic analysis for this project: on · runner {value['runner']} · {value['units']} units per run · "
+                f"cooldown {value['cooldown_seconds']} s · at most {value['max_runs_per_day']} runs a day · enabled {value['enabled_at']}"),
+             tr(f"훅이 띄운 실행: 지난 24시간 {len(starts)}회" + (f", 마지막 {starts[-1]}" if starts else ""),
+                f"Runs started by hooks: {len(starts)} in the last 24 h" + (f", last {starts[-1]}" if starts else ""))]
+    finished = [r for r in state.get("runs", []) if isinstance(r, dict) and r.get("finished")]
+    if finished:
+        last = finished[-1]
+        verdict = tr("정상", "ok") if last.get("ok") else tr("실패", "failed")
+        lines.append(tr(f"마지막 실행 결과: {verdict} (exit {last.get('exit')}, 종료 {last['finished']})",
+                        f"Last run: {verdict} (exit {last.get('exit')}, ended {last['finished']})"))
+    if failing(state):
+        where = f" · {log_path}" if log_path else ""
+        lines.append(tr(f"연속 {FAILURE_STOP}회 실패로 멈춤: 훅은 새 실행을 시작하지 않습니다. 원인은 로그에{where}, "
+                        f"고친 뒤 다시 켜려면 contexttrail auto-update --enable --runner {value['runner']} --units {value['units']}",
+                        f"Stopped after {FAILURE_STOP} failed runs in a row: the hooks start nothing more. The cause is in the log{where}; "
+                        f"once fixed, enable again: contexttrail auto-update --enable --runner {value['runner']} --units {value['units']}"))
+    return lines
 
 
 # ---- hook installation -------------------------------------------------------------------------

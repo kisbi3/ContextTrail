@@ -98,6 +98,9 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--history-limit", type=int)
         sub.add_argument("--timeout", type=float, help=tr("모델 호출 하나의 제한 시간(초); 기본 600", "Time limit per model call in seconds; default 600"))
         sub.add_argument("--record-chars", type=int)
+        if command == "scan":
+            sub.add_argument("--json", action="store_true", help=tr("scan의 출력은 항상 JSON; find/status와 맞추려고 받습니다",
+                                                                   "scan always prints JSON; accepted to match find/status"))
         sub.add_argument("--unit-chars", type=int)
         sub.add_argument("--context-mode", choices=["full", "lean"], help=argparse.SUPPRESS)
         sub.add_argument("--trigger", choices=["hook"], help=argparse.SUPPRESS)
@@ -172,6 +175,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--units", type=int, help=tr("훅 한 번에 처리할 작업 단위 수", "Work units per hook-started run"))
     sub.add_argument("--cooldown", default="15m", help=tr("자동 실행 사이 최소 간격; 기본 15m", "Minimum gap between hook-started runs; default 15m"))
     sub.add_argument("--max-runs-per-day", type=int, default=8)
+    sub.add_argument("--run", action="store_true", help=argparse.SUPPRESS)  # the detached child the hook starts
     sub = commands.add_parser("install-hooks", help=tr("세 도구의 훅에 auto-update 명령을 등록 (설정 파일은 병합, 사용자 항목 유지)",
                                                        "Register the auto-update command in the three tools' hooks (settings are merged, user entries kept)"))
     sub.add_argument("--claude", action="store_true", help="~/.claude/settings.json: Stop hook (async)")
@@ -386,6 +390,8 @@ def _find(args) -> int:
 
 
 def _auto_update(args) -> int:
+    if args.run:
+        return auto_update.run_child(Path(args.folder or "."))
     if args.enable or args.disable or args.status:
         scope = Scope.resolve(args.folder or ".")
         store = Store(scope.state_dir, scope.id)
@@ -402,7 +408,7 @@ def _auto_update(args) -> int:
         elif args.disable:
             auto_update.disable(store)
             print(tr(f"껐습니다: {safe_text(scope.folder)}", f"Disabled for {safe_text(scope.folder)}"))
-        for line in auto_update.describe(store):
+        for line in auto_update.describe(store, scope.state_dir / auto_update.LOG_NAME):
             print(line)
         return 0
     # The hook entry point: quiet, quick, and never a non-zero exit.

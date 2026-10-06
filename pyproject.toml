@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "contexttrail"
-version = "0.1.0a5"
+version = "0.1.0a6"
 description = "Evidence-linked project history from local Codex and Claude Code transcripts"
 readme = "README.md"
 license = "MIT"

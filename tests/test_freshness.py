@@ -11,7 +11,7 @@ from contexttrail.demo import FixtureRunner
 from contexttrail.freshness import INDEX_KEY, ago, build_index, check, summary
 from contexttrail.git_context import Scope
 from contexttrail.store import Store
-from contexttrail.util import dumps
+from contexttrail.util import digest, dumps
 
 from test_opencode_source import Builder, conversation
 
@@ -79,10 +79,22 @@ def test_only_changed_files_are_parsed_and_their_new_records_counted(tmp_path, m
     assert since["newest_at"] == "2026-10-06T05:00:00Z"
     assert result["pending"]["records"] == 0
     assert "scan 이후 세션 2개·기록 3개" in summary(result)
+    # a second check re-reads nothing: the per-file counts are kept under this scan; a file that changes again is re-read alone
+    again = check(scope, store, **homes)
+    assert sorted(parsed) == ["new.jsonl", "old.jsonl"] and again["since_scan"] == since
+    write(homes["claude_home"] / "projects" / "p" / "new.jsonl", claude_rows(folder, "new", ["Hello.", "Hi."], start=5))
+    assert check(scope, store, **homes)["since_scan"]["records"] == 4 and sorted(parsed) == ["new.jsonl", "new.jsonl", "old.jsonl"]
     # The budget only counts
     result = check(scope, store, budget_bytes=10, **homes)
     assert result["since_scan"]["parsed"] is False and result["since_scan"]["files_changed"] == 3
     assert summary(result).startswith("scan 이후 바뀐 기록 파일 3개 (파싱 안 함")
+    # after a new scan nothing has changed since it, so nothing is read; the cache is keyed on the scan and on the
+    # stored records, so a scan in the same second as the one before still invalidates it
+    engine.preview_plan(engine.scan())
+    result = check(scope, store, **homes)
+    assert result["since_scan"]["files_changed"] == 0 and result["since_scan"]["records"] == 0
+    assert sorted(parsed) == ["new.jsonl", "new.jsonl", "old.jsonl"]
+    assert store.get_meta(freshness.CACHE_KEY)["basis"]["sources"] != digest(sorted((k, r["content_hash"]) for k, r in store.sources().items()))
 
 
 def test_opencode_sessions_count_by_their_update_time(tmp_path):

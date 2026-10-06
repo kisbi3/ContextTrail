@@ -11,8 +11,9 @@ import pytest
 
 from contexttrail import auto_update
 from contexttrail.analysis import AnalysisConfig, Engine
-from contexttrail.auto_update import (analyze_argv, decide, enable, hook_folder, install_hooks, parse_duration,
-                                      run_hook, spawn)
+from contexttrail.auto_update import (analyze_argv, child_argv, decide, enable, failing, hook_folder, install_hooks,
+                                      parse_duration, run_child, run_hook, spawn)
+from contexttrail import cli
 from contexttrail.cli import main
 from contexttrail.demo import FixtureRunner
 from contexttrail.git_context import Scope
@@ -70,10 +71,51 @@ def test_enabling_records_consent_and_the_runner_and_the_hook_then_starts_a_run(
     reason, pid = run_hook(folder, launcher=launcher(calls))
     assert (reason, pid) == ("run", 4242)
     argv, log_path, cwd = calls[0]
-    assert argv == [sys.executable, "-m", "contexttrail", "analyze", str(scope.folder), "--runner", "claude",
-                    "--yes", "--no-tui", "--brief", "--units", "3", "--trigger", "hook"]
+    assert argv == child_argv(scope.folder) == [sys.executable, "-m", "contexttrail", "auto-update", "--run", "--folder", str(scope.folder)]
     assert log_path == scope.state_dir / "auto-update.log" and cwd == scope.folder
-    assert store.get_meta("auto_update_state")["starts"]
+    state = store.get_meta("auto_update_state")
+    assert state["starts"] and state["runs"][-1] == {"started": state["starts"][-1], "finished": None, "exit": None}
+    assert analyze_argv(scope.folder, value) == [sys.executable, "-m", "contexttrail", "analyze", str(scope.folder), "--runner", "claude",
+                                                 "--yes", "--no-tui", "--brief", "--units", "3", "--trigger", "hook"]
+
+
+def test_the_child_records_how_the_analysis_ended_and_three_failures_stop_the_hook(tmp_path, monkeypatch, capsys):
+    folder, scope, store, _ = project(tmp_path)
+    enable(store, runner="claude", units=2, cooldown=0)
+    seen = []
+    monkeypatch.setattr(cli, "main", lambda argv: seen.append(argv) or 2)  # partial: units left, which --units always leaves
+    assert run_hook(folder, launcher=launcher([]))[0] == "run"
+    assert run_child(folder) == 2
+    assert seen == [analyze_argv(scope.folder, {"runner": "claude", "units": 2})[3:]]
+    runs = store.get_meta("auto_update_state")["runs"]
+    assert runs[-1]["exit"] == 2 and runs[-1]["ok"] is True and runs[-1]["finished"]
+    assert "run finished: exit 2" in (scope.state_dir / "auto-update.log").read_text()
+    monkeypatch.setattr(cli, "main", lambda argv: 1)
+    for _ in range(3):
+        assert run_hook(folder, launcher=launcher([]))[0] == "run"
+        assert run_child(folder) == 1
+    state = store.get_meta("auto_update_state")
+    assert failing(state) and [r["ok"] for r in state["runs"]] == [True, False, False, False]
+    assert run_hook(folder, launcher=launcher([])) == ("failing", None)
+    assert "hook: failing" in (scope.state_dir / "auto-update.log").read_text()
+    assert main(["auto-update", "--status", "--folder", str(folder)]) == 0
+    out = capsys.readouterr().out
+    assert "마지막 실행 결과: 실패 (exit 1" in out and "연속 3회 실패로 멈춤" in out and "auto-update.log" in out
+    # a child that dies with an exception records that too; enabling again forgets the history, not the day's starts
+    def boom(argv):
+        raise RuntimeError("x")
+    monkeypatch.setattr(cli, "main", boom)
+    enable(store, runner="claude", units=2, cooldown=0)
+    assert store.get_meta("auto_update_state")["runs"] == [] and len(store.get_meta("auto_update_state")["starts"]) == 4
+    assert run_hook(folder, launcher=launcher([]))[0] == "run"
+    with pytest.raises(RuntimeError):
+        run_child(folder)
+    assert store.get_meta("auto_update_state")["runs"][-1]["note"] == "RuntimeError"
+    # the child, like the hook, creates no state for a folder ContextTrail never opened
+    other = tmp_path / "other"
+    other.mkdir()
+    assert main(["auto-update", "--run", "--folder", str(other)]) == 0
+    assert not (other / ".contexttrail").exists()
 
 
 def test_hook_stays_quiet_during_a_run_when_nothing_is_pending_in_cooldown_and_past_the_cap(tmp_path):
@@ -119,7 +161,7 @@ def test_the_hook_command_exits_zero_and_prints_nothing_to_stdout(tmp_path, caps
     assert "켰습니다" in out and "cooldown 3600초" in out
     monkeypatch.setattr("sys.stdin", _Stdin(json.dumps({"cwd": str(folder)})))
     assert main(["auto-update"]) == 0
-    assert calls and calls[0][0][-2:] == ["--trigger", "hook"]
+    assert calls and calls[0][0][-3:] == ["--run", "--folder", str(folder)]
     assert main(["auto-update", "--status", "--folder", str(folder)]) == 0
     assert "지난 24시간 1회" in capsys.readouterr().out
     assert main(["auto-update", "--disable", "--folder", str(folder)]) == 0

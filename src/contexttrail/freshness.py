@@ -7,7 +7,10 @@ Two numbers answer "is this graph current?":
   machine with a few gigabytes of sessions, so the last scan leaves an index of every transcript
   file (size, mtime) and of every in-scope opencode session (`time_updated`) in the store, and this
   check parses only the files that are new or changed. A caller with a time budget (the agent's
-  `find` header) can skip that parse above a byte limit and gets the file count instead.
+  `find` header) can skip that parse above a byte limit and gets the file count instead. What one
+  check parsed is kept per file (`freshness_cache`: size, mtime and the counts) under the scan and
+  the stored records it was measured against, so a `find` after a `find` re-reads only what changed
+  in between.
 
 Nothing here estimates. What was not parsed is reported as not parsed.
 """
@@ -25,10 +28,11 @@ from .model import Snapshot
 from .sources.local import jsonl_files, parse_claude, parse_codex, source_homes
 from .sources.opencode import opencode_databases, parse_opencode, session_times
 from .store import Store
-from .util import now
+from .util import digest, now
 
 INDEX_KEY = "source_index"
 INDEX_VERSION = 1
+CACHE_KEY = "freshness_cache"
 # `find` parses changed files up to this many bytes (about a second and a half at the measured
 # 80 MB/s); `status` has no limit.
 FIND_BUDGET_BYTES = 128 * 1024 * 1024
@@ -84,6 +88,7 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
     codex_home, claude_home, opencode_home = source_homes(codex_home, claude_home, opencode_home)
     known = index.get("files", {})
     changed: list[tuple[Path, str]] = []
+    stats: dict[str, dict[str, int]] = {}
     new_files, changed_bytes, newest_mtime = 0, 0, 0
     for path, provider in jsonl_files(codex_home, claude_home):
         try:
@@ -96,15 +101,16 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
         if not before:
             new_files += 1
         changed.append((path, provider))
+        stats[str(path)] = {"bytes": info.st_size, "mtime_ns": info.st_mtime_ns}
         changed_bytes += info.st_size
         newest_mtime = max(newest_mtime, info.st_mtime_ns)
     deleted = sum(1 for path in known if not Path(path).exists())
-    databases_changed: list[Path] = []
+    databases_changed: list[tuple[Path, dict[str, int]]] = []
     for path in opencode_databases(opencode_home):
         before = (index.get("opencode", {}).get(str(path)) or {}).get("sessions", {})
         times = session_times(path, scope)
         if times is None or any(before.get(session) != stamp for session, stamp in times.items()):
-            databases_changed.append(path)
+            databases_changed.append((path, times or {}))
             try:
                 changed_bytes += os.stat(path).st_size
             except OSError:
@@ -118,14 +124,19 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
     if budget_bytes is not None and changed_bytes > budget_bytes:
         result["took_ms"] = int((time.perf_counter() - started) * 1000)
         return result
-    sessions: set[tuple[str, str | None]] = set()
-    by_source: dict[str, int] = {}
-    newest: str | None = None
-    count = 0
-    snapshots = [parse_claude(path, scope) if provider == "claude" else parse_codex(path, scope) for path, provider in changed]
-    snapshots += [parse_opencode(path, scope) for path in databases_changed]
-    for snapshot in snapshots:
-        for record in snapshot.records:
+    # Per-file results of an earlier check against the same scan and the same stored records (a "new" record is
+    # one the store does not hold with that hash, so the cache is keyed on both); a file is re-read only when it
+    # changed again.
+    basis = {"scanned_at": index.get("scanned_at"),
+             "sources": digest(sorted((key, row["content_hash"]) for key, row in sources.items()))}
+    cache = store.get_meta(CACHE_KEY) or {}
+    cached = cache.get("files", {}) if cache.get("basis") == basis else {}
+    kept: dict[str, dict[str, Any]] = {}
+    parsed_now = False
+
+    def tally(records) -> dict[str, Any]:
+        count, newest, by_source, sessions = 0, None, {}, set()
+        for record in records:
             row = sources.get(record.source_id)
             if row and row["content_hash"] == record.content_hash:
                 continue
@@ -134,6 +145,39 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
             by_source[record.provider] = by_source.get(record.provider, 0) + 1
             if record.recorded_at and (newest is None or record.recorded_at > newest):
                 newest = record.recorded_at
+        return {"records": count, "newest": newest, "by_source": by_source, "sessions": sorted(sessions)}
+
+    for path, provider in changed:
+        key = str(path)
+        entry = cached.get(key)
+        if not (entry and entry.get("bytes") == stats[key]["bytes"] and entry.get("mtime_ns") == stats[key]["mtime_ns"]):
+            snapshot = parse_claude(path, scope) if provider == "claude" else parse_codex(path, scope)
+            entry = {**stats[key], **tally(snapshot.records)}
+            parsed_now = True
+        kept[key] = entry
+    for path, times in databases_changed:
+        key = str(path)
+        entry = cached.get(key)
+        if not (entry and entry.get("sessions_at") == times):
+            entry = {"sessions_at": times, **tally(parse_opencode(path, scope).records)}
+            parsed_now = True
+        kept[key] = entry
+    if parsed_now:
+        try:
+            store.set_meta(CACHE_KEY, {"basis": basis, "files": kept})
+        except Exception:  # a read path never fails for want of its cache
+            pass
+    sessions: set[tuple[str, str | None]] = set()
+    by_source: dict[str, int] = {}
+    newest: str | None = None
+    count = 0
+    for entry in kept.values():
+        count += entry.get("records", 0)
+        sessions.update(tuple(s) for s in entry.get("sessions", []))
+        for provider, n in (entry.get("by_source") or {}).items():
+            by_source[provider] = by_source.get(provider, 0) + n
+        if entry.get("newest") and (newest is None or entry["newest"] > newest):
+            newest = entry["newest"]
     since.update(parsed=True, sessions=len(sessions), records=count, newest_at=newest, by_source=by_source)
     result["took_ms"] = int((time.perf_counter() - started) * 1000)
     return result

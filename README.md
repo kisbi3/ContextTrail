@@ -6,7 +6,7 @@
 
 ContextTrail reads the transcripts the three tools keep locally (Codex and Claude Code JSONL files, the opencode SQLite database), plus the project's Git history, and asks the Codex or Claude CLI you already have installed (sandboxed, read-only) to reconstruct the flow. Every event and every arrow carries a quote from the source, and the code checks each quote against the record before anything is stored. You get a terminal view, a local browser view, `find`/`show`/`status` commands, and two agent skills so Codex, Claude Code and opencode can answer "why did we drop X?" from the saved graph instead of from memory, and can tell when that graph is behind the transcripts.
 
-Development alpha `0.1.0a5`. Linux and macOS, Python 3.11+. [What has been measured](#6-what-has-been-measured) is further down; nothing on this page is an estimate presented as a result.
+Development alpha `0.1.0a6`. Linux and macOS, Python 3.11+. [What has been measured](#6-what-has-been-measured) is further down; nothing on this page is an estimate presented as a result.
 
 ![The terminal view on the synthetic demo: the event flow on top, the selected event with its links and quoted evidence below](docs/images/tui-demo-en.png)
 
@@ -164,7 +164,7 @@ Earlier in the same flow a change is `applied · unverified` because its tests w
 - **Costs tokens from your own account.** The pipeline is tuned so a cheap model does the work: on the measured fixture, Claude Sonnet finishes a work unit in about a minute. The plan shown before a run estimates calls, tokens and minutes.
 - **Is incremental.** Finished work units are never re-sent. Re-running with no new records makes zero calls.
 
-Version: `0.1.0a5` · Linux / SSH primary, macOS measured · names are provisional.
+Version: `0.1.0a6` · Linux / SSH primary, macOS measured · names are provisional.
 
 **Languages:** the terminal, TUI, browser view and CLI help are in English or Korean, chosen from `--language`, `CONTEXTTRAIL_LANGUAGE`, the project's saved output language, or the locale. Event titles and summaries are written in the language of your own messages (`--language` overrides). Everything the model reads is English. A Korean README is not written yet.
 
@@ -461,7 +461,7 @@ contexttrail install-hooks --claude --codex --opencode     # merges into ~/.clau
 contexttrail auto-update --status
 ```
 
-Enabling is the explicit request: it records your consent for that runner and the project. Every hook runs the same command, `contexttrail auto-update`, which exits 0 at once in every case and never blocks the tool. It starts a detached `analyze … --units N` (output in the state directory's `auto-update.log`) only when the project has it enabled, no analysis is running, records are pending, the cooldown has passed and the daily cap is not reached; in other projects the hook does nothing and creates nothing. Runs started this way carry `trigger: hook` in the local run ledger. `contexttrail auto-update --disable` turns it off; `--force` on `install-hooks` refreshes a hook ContextTrail installed earlier, and hooks you wrote yourself are kept. Checked live on 2026-10-06 in this repository: the opencode plugin fired on `session.idle` and started a one-unit analysis (graph v8); Claude Code ran the `Stop` hook in an interactive session (in `claude -p` the async hook is registered and then cancelled when the process exits, as its docs say); Codex ran its `Stop` hook after the "Hooks need review" prompt in its TUI was answered with trust (a new `hooks.json` is not run until then). The hook's log in the state directory has one line per quiet decision (`hook: cooldown`, `lock_held`, `nothing_pending`) so "why did nothing happen?" has an answer.
+Enabling is the explicit request: it records your consent for that runner and the project. Every hook runs the same command, `contexttrail auto-update`, which exits 0 at once in every case and never blocks the tool. It starts a detached `analyze … --units N` (output in the state directory's `auto-update.log`) only when the project has it enabled, no analysis is running, records are pending, the cooldown has passed and the daily cap is not reached; in other projects the hook does nothing and creates nothing. Runs started this way carry `trigger: hook` in the local run ledger. `contexttrail auto-update --disable` turns it off; `--force` on `install-hooks` refreshes a hook ContextTrail installed earlier, and hooks you wrote yourself are kept. Checked live on 2026-10-06 in this repository: the opencode plugin fired on `session.idle` and started a one-unit analysis (graph v8); Claude Code ran the `Stop` hook in an interactive session (in `claude -p` the async hook is registered and then cancelled when the process exits, as its docs say); Codex ran its `Stop` hook after the "Hooks need review" prompt in its TUI was answered with trust (a new `hooks.json` is not run until then). The hook's log in the state directory has one line per quiet decision (`hook: cooldown`, `lock_held`, `nothing_pending`) so "why did nothing happen?" has an answer. The detached child records how each run ended; after three failed runs in a row (a runner that cannot start, for example) the hooks stop starting new ones, `contexttrail auto-update --status` says so with the log path, and `--enable` again restarts them.
 
 ### Export
 
