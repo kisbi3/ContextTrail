@@ -12,6 +12,7 @@ from .analysis import AnalysisConfig, Engine, _evidence_ids, tool_steps
 from .demo import CASES, FixtureRunner
 from .eval_review import EvalCallRecorder, render_eval_review
 from .git_context import Scope
+from .i18n import tr
 from .model import Snapshot, SourceRecord
 from .render import export_text
 from .runners import CLIRunner
@@ -96,10 +97,16 @@ def summarize_calls(calls: list[dict]) -> dict:
                 for item in (c['details'].get('quote_mismatch_audit') or []) if 'category' in item)),
             'quote_repeat_shapes': [item['shape'] for c in calls
                                     for item in (c['details'].get('quote_mismatch_audit') or []) if 'shape' in item],
-            'notes': ['host_calls는 CLI task invocation 수이며 provider 내부 model turn 수나 실제 과금액이 아닙니다.',
-                      'model은 요청값/alias입니다. actual_models_reported가 비었으면 실제 모델을 확인하지 못했습니다'
-                      ' (Codex는 응답에 사용한 모델을 보고하지 않습니다).',
-                      'call 비율을 원문/토큰 절감 비율로 해석하지 마세요. 의미 품질은 별도 평가가 필요합니다.']}
+            'notes': [tr('host_calls는 CLI task invocation 수이며 provider 내부 model turn 수나 실제 과금액이 아닙니다.',
+                         'host_calls counts CLI task invocations, not the provider\'s internal model turns'
+                         ' or the actual charge.'),
+                      tr('model은 요청값/alias입니다. actual_models_reported가 비었으면 실제 모델을 확인하지 못했습니다'
+                         ' (Codex는 응답에 사용한 모델을 보고하지 않습니다).',
+                         'model is the requested value/alias. An empty actual_models_reported means the actual'
+                         ' model could not be confirmed (Codex does not report the model it used).'),
+                      tr('call 비율을 원문/토큰 절감 비율로 해석하지 마세요. 의미 품질은 별도 평가가 필요합니다.',
+                         'Do not read the call ratio as a saving in source text or tokens. Semantic quality'
+                         ' needs a separate evaluation.')]}
 
 
 def review_summary(graph: dict) -> dict:
@@ -162,15 +169,18 @@ def load_fixture(value: str) -> dict:
         return demo_fixture()
     path = Path(value).expanduser()
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 8_000_000:
-        raise FlowError('평가 fixture는 symlink가 아닌 8 MB 이하 JSON 파일이어야 합니다.')
+        raise FlowError(tr('평가 fixture는 symlink가 아닌 8 MB 이하 JSON 파일이어야 합니다.',
+                           'An eval fixture must be a JSON file of at most 8 MB, not a symlink.'))
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
     except (ValueError, UnicodeError) as exc:
-        raise FlowError('평가 fixture JSON을 읽을 수 없습니다.') from exc
+        raise FlowError(tr('평가 fixture JSON을 읽을 수 없습니다.', 'The eval fixture JSON cannot be read.')) from exc
     if not isinstance(data, dict) or data.get('format') != 'projectflow-eval-v1':
-        raise FlowError('fixture format은 projectflow-eval-v1이어야 합니다.')
+        raise FlowError(tr('fixture format은 projectflow-eval-v1이어야 합니다.',
+                           'The fixture format must be projectflow-eval-v1.'))
     if not isinstance(data.get('records'), list) or not 1 <= len(data['records']) <= 2000:
-        raise FlowError('fixture에는 1~2000개의 고정된 records가 필요합니다.')
+        raise FlowError(tr('fixture에는 1~2000개의 고정된 records가 필요합니다.',
+                           'A fixture needs 1 to 2000 frozen records.'))
     return data
 
 
@@ -180,19 +190,22 @@ def fixture_records(data: dict) -> list[SourceRecord]:
     seen = set()
     for item in data['records']:
         if not isinstance(item, dict) or set(item) - allowed:
-            raise FlowError('fixture record에 알 수 없는 필드가 있습니다.')
+            raise FlowError(tr('fixture record에 알 수 없는 필드가 있습니다.', 'A fixture record has an unknown field.'))
         try:
             record = SourceRecord(**item)
         except (TypeError, ValueError) as exc:
-            raise FlowError('fixture SourceRecord 필수 필드가 잘못되었습니다.') from exc
+            raise FlowError(tr('fixture SourceRecord 필수 필드가 잘못되었습니다.',
+                               'A required SourceRecord field in the fixture is invalid.')) from exc
         if not isinstance(record.source_id, str) or not record.source_id or record.source_id in seen:
-            raise FlowError('fixture source_id는 고유한 비어 있지 않은 문자열이어야 합니다.')
+            raise FlowError(tr('fixture source_id는 고유한 비어 있지 않은 문자열이어야 합니다.',
+                               'A fixture source_id must be a unique non-empty string.'))
         if not isinstance(record.content, str) or not record.content.strip():
-            raise FlowError('fixture content는 비어 있지 않은 문자열이어야 합니다.')
+            raise FlowError(tr('fixture content는 비어 있지 않은 문자열이어야 합니다.',
+                               'Fixture content must be a non-empty string.'))
         if record.role not in {'user', 'assistant', 'tool_call', 'tool_result', 'metadata', 'git'}:
-            raise FlowError('fixture role이 지원 범위 밖입니다.')
+            raise FlowError(tr('fixture role이 지원 범위 밖입니다.', 'The fixture role is not supported.'))
         if record.provider not in {'codex', 'claude', 'git'} or not isinstance(record.locator, dict):
-            raise FlowError('fixture provider/locator가 잘못되었습니다.')
+            raise FlowError(tr('fixture provider/locator가 잘못되었습니다.', 'The fixture provider/locator is invalid.'))
         # The eval loader never reads paths in locator or executes log commands.
         # Disable revision-file capabilities: a fixture cannot grant filesystem access.
         record.locator = {'kind': 'frozen_fixture', 'original_locator': record.locator}
@@ -224,11 +237,13 @@ def fixture_integrity(records: list[SourceRecord]) -> dict:
                 unresolved.append({'source_id': record.source_id, 'session_id': int(match.group(1))})
     limitations = []
     if without_result:
-        limitations.append(f"fixture에 결과가 없는 도구 호출 {len(without_result)}건: {', '.join(without_result)}")
+        limitations.append(tr(f"fixture에 결과가 없는 도구 호출 {len(without_result)}건: {', '.join(without_result)}",
+                              f"{len(without_result)} tool calls without a result in the fixture: {', '.join(without_result)}"))
     if without_call:
-        limitations.append(f"fixture에 호출이 없는 도구 결과 {len(without_call)}건: {', '.join(without_call)}")
+        limitations.append(tr(f"fixture에 호출이 없는 도구 결과 {len(without_call)}건: {', '.join(without_call)}",
+                              f"{len(without_call)} tool results without a call in the fixture: {', '.join(without_call)}"))
     if unresolved:
-        limitations.append("fixture에 시작 기록이 없는 실행 세션 참조: " + ", ".join(
+        limitations.append(tr("fixture에 시작 기록이 없는 실행 세션 참조: ", "exec session references without an opening record in the fixture: ") + ", ".join(
             f"{item['source_id']}(session {item['session_id']})" for item in unresolved))
     return {'tool_calls_without_result': without_result, 'tool_results_without_call': without_call,
             'unresolved_stdin_sessions': unresolved, 'complete': not limitations, 'limitations': limitations}
@@ -240,56 +255,67 @@ def validate_expectations(expectations: Any, source_ids: set[str]) -> None:
         return
     if not isinstance(expectations, dict) or set(expectations) - {
             "events", "relations", "forbidden_events", "forbidden_relations"}:
-        raise FlowError("expectations에는 events/relations/forbidden_events/forbidden_relations 배열만 허용합니다.")
+        raise FlowError(tr("expectations에는 events/relations/forbidden_events/forbidden_relations 배열만 허용합니다.",
+                           "expectations allows only the arrays events/relations/forbidden_events/forbidden_relations."))
     for key, items in expectations.items():
         if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
-            raise FlowError(f"expectations.{key}는 object 배열이어야 합니다.")
+            raise FlowError(tr(f"expectations.{key}는 object 배열이어야 합니다.", f"expectations.{key} must be an array of objects."))
     labels = set()
     for item in expectations.get("events", []):
         if set(item) - {"label", "title_contains", "status", "kind", "actor", "source_ids", "source_ids_any"}:
-            raise FlowError("event expectation에 알 수 없는 필드가 있습니다.")
+            raise FlowError(tr("event expectation에 알 수 없는 필드가 있습니다.", "An event expectation has an unknown field."))
         if not isinstance(item.get("label"), str) or not item["label"].strip():
-            raise FlowError("event expectation에는 label이 필요합니다.")
+            raise FlowError(tr("event expectation에는 label이 필요합니다.", "An event expectation needs a label."))
         # Model titles vary; a source-anchored expectation may omit title_contains.
         if "title_contains" in item or not (item.get("source_ids") or item.get("source_ids_any")):
             if not isinstance(item.get("title_contains"), str) or not item["title_contains"].strip():
-                raise FlowError("event expectation에는 title_contains 또는 source_ids가 필요합니다.")
+                raise FlowError(tr("event expectation에는 title_contains 또는 source_ids가 필요합니다.",
+                                   "An event expectation needs title_contains or source_ids."))
         if item["label"] in labels:
-            raise FlowError("event expectation label은 중복될 수 없습니다.")
+            raise FlowError(tr("event expectation label은 중복될 수 없습니다.", "Event expectation labels must be unique."))
         labels.add(item["label"])
         for key in ("status", "kind", "actor"):
             if key in item and (not isinstance(item[key], str) or not item[key].strip()):
-                raise FlowError(f"event expectation {key}는 비어 있지 않은 문자열이어야 합니다.")
+                raise FlowError(tr(f"event expectation {key}는 비어 있지 않은 문자열이어야 합니다.",
+                                   f"event expectation {key} must be a non-empty string."))
         if item.get("status", STATUSES[0]) not in STATUSES or item.get("kind", KINDS[0]) not in KINDS:
-            raise FlowError("event expectation의 status/kind가 지원 상태와 다릅니다.")
+            raise FlowError(tr("event expectation의 status/kind가 지원 상태와 다릅니다.",
+                               "The status/kind of an event expectation is not a supported value."))
         # source_ids must all be cited; source_ids_any needs one of them, for an event whose
         # evidence is spread over several records any of which shows it.
         for key in ("source_ids", "source_ids_any"):
             ids = item.get(key, [])
             if not isinstance(ids, list) or any(not isinstance(i, str) or i not in source_ids for i in ids):
-                raise FlowError(f"event expectation {key}는 fixture의 실제 ID여야 합니다.")
+                raise FlowError(tr(f"event expectation {key}는 fixture의 실제 ID여야 합니다.",
+                                   f"event expectation {key} must name IDs that exist in the fixture."))
         if "source_ids_any" in item and not item["source_ids_any"]:
-            raise FlowError("event expectation source_ids_any는 비어 있을 수 없습니다.")
+            raise FlowError(tr("event expectation source_ids_any는 비어 있을 수 없습니다.",
+                               "event expectation source_ids_any cannot be empty."))
     for item in expectations.get("relations", []):
         # `relation` may list alternatives when more than one reading is correct.
         allowed = item.get("relation") if isinstance(item.get("relation"), list) else [item.get("relation")]
         if set(item) != {"from", "to", "relation"} or not isinstance(item["from"], str) or not isinstance(
                 item["to"], str) or not allowed or not all(isinstance(v, str) for v in allowed):
-            raise FlowError("relation expectation에는 from/to 문자열과 relation 문자열(또는 문자열 배열)이 필요합니다.")
+            raise FlowError(tr("relation expectation에는 from/to 문자열과 relation 문자열(또는 문자열 배열)이 필요합니다.",
+                               "A relation expectation needs from/to strings and a relation string (or array of strings)."))
         if item["from"] not in labels or item["to"] not in labels or not set(allowed) <= set(RELATIONS):
-            raise FlowError("relation expectation의 사건 label/관계가 잘못되었습니다.")
+            raise FlowError(tr("relation expectation의 사건 label/관계가 잘못되었습니다.",
+                               "A relation expectation names an unknown event label or relation."))
     # A forbidden relation without `to` forbids that relation from the event to anything,
     # e.g. a `verifies` from a change that no run actually exercised.
     for item in expectations.get("forbidden_relations", []):
         if not {"from", "relation"} <= set(item) <= {"from", "to", "relation"} or not all(
                 isinstance(v, str) for v in item.values()):
-            raise FlowError("forbidden_relations에는 from/relation(과 선택적 to) 문자열이 필요합니다.")
+            raise FlowError(tr("forbidden_relations에는 from/relation(과 선택적 to) 문자열이 필요합니다.",
+                               "forbidden_relations needs from/relation (and optionally to) strings."))
         if item["from"] not in labels or item.get("to", item["from"]) not in labels or item["relation"] not in RELATIONS:
-            raise FlowError("forbidden_relations의 사건 label/관계가 잘못되었습니다.")
+            raise FlowError(tr("forbidden_relations의 사건 label/관계가 잘못되었습니다.",
+                               "forbidden_relations names an unknown event label or relation."))
     for item in expectations.get("forbidden_events", []):
         if not item or set(item) - {"title_contains", "status", "kind", "actor", "basis"} or any(
                 not isinstance(v, str) or not v.strip() for v in item.values()):
-            raise FlowError("forbidden_events에는 비어 있지 않은 사건 조건이 필요합니다.")
+            raise FlowError(tr("forbidden_events에는 비어 있지 않은 사건 조건이 필요합니다.",
+                               "forbidden_events needs a non-empty event condition."))
 
 
 def check_expectations(graph: dict, evidence: dict, expectations: Any) -> dict:
@@ -297,12 +323,13 @@ def check_expectations(graph: dict, evidence: dict, expectations: Any) -> dict:
         return {'checks': [], 'passed': None, 'failed': None,
                 'semantic_quality': 'not_scored; human expectations were not supplied'}
     if not isinstance(expectations, dict):
-        raise FlowError('expectations는 JSON object여야 합니다.')
+        raise FlowError(tr('expectations는 JSON object여야 합니다.', 'expectations must be a JSON object.'))
     checks, matched, used = [], {}, set()
     for expected in expectations.get('events', []):
         if not isinstance(expected, dict) or not expected.get('label') or not (
                 expected.get('title_contains') or expected.get('source_ids') or expected.get('source_ids_any')):
-            raise FlowError('event expectation에는 label과 title_contains 또는 source_ids가 필요합니다.')
+            raise FlowError(tr('event expectation에는 label과 title_contains 또는 source_ids가 필요합니다.',
+                               'An event expectation needs a label and title_contains or source_ids.'))
         hits = [e for e in graph['events'] if expected.get('title_contains', '') in e['title']]
         valid = []
         for event in hits:
@@ -382,19 +409,22 @@ def run_eval(fixture: str, output: Path, runner_name: str, config: AnalysisConfi
              progress: Callable[[str], None] | None = None) -> dict:
     data = load_fixture(fixture)
     if runner_name != 'mock' and not yes:
-        raise FlowError('실제 CLI 평가는 개인 계정 사용량과 자료 전송을 수반합니다. --yes로 명시적으로 동의하세요.')
+        raise FlowError(tr('실제 CLI 평가는 개인 계정 사용량과 자료 전송을 수반합니다. --yes로 명시적으로 동의하세요.',
+                           'A live CLI eval uses your personal account and sends data to a model service. Consent explicitly with --yes.'))
     if runner_name == 'mock' and fixture != 'demo':
-        raise FlowError('mock은 demo 합성 fixture만 지원합니다. 실제 자료의 의미 평가인 것처럼 실행하지 않습니다.')
+        raise FlowError(tr('mock은 demo 합성 fixture만 지원합니다. 실제 자료의 의미 평가인 것처럼 실행하지 않습니다.',
+                           'The mock runner supports only the synthetic demo fixture; it is never run as if it evaluated real data.'))
     config.validate()
     records = fixture_records(data)
     validate_expectations(data.get("expectations"), {r.source_id for r in records})
     integrity = fixture_integrity(records)
     snapshot = Snapshot(records)
     if output.is_symlink():
-        raise FlowError('평가 output symlink는 허용하지 않습니다.')
+        raise FlowError(tr('평가 output symlink는 허용하지 않습니다.', 'The eval output must not be a symlink.'))
     output = output.expanduser().resolve()
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
-        raise FlowError('평가는 새 디렉터리 또는 빈 디렉터리에서만 시작합니다. production 상태와 A/B 결과를 혼합하지 않습니다.')
+        raise FlowError(tr('평가는 새 디렉터리 또는 빈 디렉터리에서만 시작합니다. production 상태와 A/B 결과를 혼합하지 않습니다.',
+                           'An eval starts only in a new or empty directory; production state and A/B results are never mixed.'))
     private_dir(output)
     scope_id = ident('eval_', snapshot.id)
     scope = Scope(output, None, None, '', [output], output / 'state', scope_id)
@@ -410,7 +440,8 @@ def run_eval(fixture: str, output: Path, runner_name: str, config: AnalysisConfi
     second = None
     if first['status'] == 'complete':
         def forbid_call():
-            raise FlowError('평가의 동일 입력 재실행에서 Runner 생성이 감지됐습니다.')
+            raise FlowError(tr('평가의 동일 입력 재실행에서 Runner 생성이 감지됐습니다.',
+                               'A Runner was created while re-running the eval on the same input.'))
         second = engine.analyze(forbid_call)
     graph = store.graph()
     evidence = store.evidence_many(_evidence_ids(graph))
@@ -423,8 +454,10 @@ def run_eval(fixture: str, output: Path, runner_name: str, config: AnalysisConfi
               'ops': summarize_calls(calls), 'semantic_review': review_summary(graph), 'expectations': check_expectations(graph, evidence, data.get('expectations')),
               'style': {**style_checks(graph, evidence, snapshot.records), 'output_language': config.output_language},
               'fixture_integrity': integrity,
-              'limitations': ['유효한 JSON/인용/기대 사건 검사만으로 의미적 정답을 보장하지 않습니다.',
-                              '토큰/사용량 미제공은 unknown이며 실제 결제액을 추정하지 않습니다.',
+              'limitations': [tr('유효한 JSON/인용/기대 사건 검사만으로 의미적 정답을 보장하지 않습니다.',
+                                 'Valid JSON, citation and expectation checks alone do not guarantee semantic correctness.'),
+                              tr('토큰/사용량 미제공은 unknown이며 실제 결제액을 추정하지 않습니다.',
+                                 'Missing token/usage figures are unknown; the actual bill is never estimated.'),
                               *integrity['limitations']]}
     files = {'fixture.json': dumps(data, pretty=True), 'report.json': dumps(report, pretty=True),
              'calls.json': dumps(calls, pretty=True), 'flow.json': dumps({'graph': graph, 'evidence': evidence}, pretty=True),

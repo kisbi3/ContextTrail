@@ -11,6 +11,8 @@ from typing import Any
 
 from wcwidth import wcwidth, wcswidth
 
+from .i18n import tr
+
 
 class FlowError(Exception):
     """A user-facing operational error; messages must never contain credentials."""
@@ -91,8 +93,8 @@ def ellipsis(text: str, width: int) -> str:
 
 def private_dir(path: Path) -> None:
     if path.is_symlink():
-        raise FlowError(f"상태 디렉터리 symlink는 허용하지 않습니다: {path}")
+        raise FlowError(tr(f"상태 디렉터리 symlink는 허용하지 않습니다: {path}", f"A state directory that is a symlink is not allowed: {path}"))
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     if path.stat().st_uid != os.getuid():
-        raise FlowError("상태 디렉터리는 현재 사용자 소유여야 합니다.")
+        raise FlowError(tr("상태 디렉터리는 현재 사용자 소유여야 합니다.", "The state directory must be owned by the current user."))
     os.chmod(path, 0o700)

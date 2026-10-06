@@ -1,5 +1,6 @@
 import http.client
 import json
+import re
 import threading
 import pytest
 from projectflow.demo import CASES, FixtureRunner
@@ -79,3 +80,20 @@ def test_refresh_requires_all_guards_and_is_deduplicated(viewer):
     assert request(obj,'POST','/refresh',headers=headers,body='{"confirm":true}')[0]==409
     assert len(calls)==1
     gate.set()
+
+
+def test_english_screen_serves_english_page_and_labels(viewer):
+    from projectflow import i18n
+    from projectflow.render import event_detail
+    i18n.set_language("en")
+    obj,calls,_=viewer
+    status,data,_=request(obj,'GET','/',auth=False)
+    page=data.decode('utf-8')
+    assert status==200 and '<html lang="en">' in page and 'Analyze changes' in page
+    assert not re.search('[가-힣]',page)
+    graph=json.loads(request(obj,'GET','/graph')[1])['graph']
+    event=json.loads(request(obj,'GET','/events/'+graph['events'][0]['id'])[1])['event']
+    assert event['status_label'] and not re.search('[가-힣]',event['status_label'])
+    texts=[text for text,_ in event_detail(graph,event['id'],obj.store.evidence)]
+    assert 'What happened' in texts and not any(re.search('[가-힣]',text) for text in texts if 'Source evidence' in text)
+    assert not calls

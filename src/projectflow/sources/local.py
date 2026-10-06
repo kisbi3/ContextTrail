@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..git_context import Scope
+from ..i18n import tr
 from ..model import Snapshot, SourceRecord, segment_record
 from ..util import FlowError, digest, ident, within
 
@@ -124,13 +125,15 @@ def _jsonl(path: Path) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
         with os.fdopen(descriptor, "rb") as stream:
             before = os.fstat(stream.fileno())
             if before.st_size > MAX_FILE_BYTES:
-                raise FlowError(f"로그 파일 한도({MAX_FILE_BYTES} bytes) 초과: {path.name}")
+                raise FlowError(tr(f"로그 파일 한도({MAX_FILE_BYTES} bytes) 초과: {path.name}",
+                                   f"Log file over the limit ({MAX_FILE_BYTES} bytes): {path.name}"))
             data = stream.read(before.st_size)
             after = os.fstat(stream.fileno())
             stream.seek(0)
             again = stream.read(before.st_size)
             if data != again or after.st_size < before.st_size:
-                raise FlowError(f"로그를 읽는 동안 재작성/축소됨: {path.name}")
+                raise FlowError(tr(f"로그를 읽는 동안 재작성/축소됨: {path.name}",
+                                   f"Log rewritten or truncated while being read: {path.name}"))
     except (OSError, FlowError) as exc:
         return [], [f"로그 읽기 보류: {path.name} ({type(exc).__name__})"], {}
     boundary = data.rfind(b"\n") + 1

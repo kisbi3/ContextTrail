@@ -313,3 +313,39 @@ def test_no_command_opens_the_current_or_given_folder_without_ai(tmp_path, monke
     assert _default_command(['graph','.'])==['graph','.']
     assert _default_command(['--version'])==['--version']
     assert _default_command(['typo-command'])==['typo-command']  # not a folder: argparse reports it
+
+
+def test_english_screen_follows_the_language_flag_env_and_saved_project_language(tmp_path, monkeypatch, capsys):
+    from projectflow import i18n
+    monkeypatch.setenv(i18n.ENV, "en")
+    i18n.set_language("en")
+    directory = tmp_path / 'demo'
+    assert main(['demo', '--path', str(directory), '--no-tui']) == 0
+    out = capsys.readouterr().out
+    assert 'Runner calls this run: ' in out and 'Legend:' in out and '[Synthetic data / mock analysis' in out
+    folder = directory / 'sample-project'
+    # The parser's help text follows the screen language, set before the parser is built.
+    with pytest.raises(SystemExit):
+        main(['analyze', '--help'])
+    help_text = capsys.readouterr().out
+    assert 'Analyze new records and open the TUI' not in help_text and 'Number of work units' in help_text
+    with pytest.raises(SystemExit):
+        main(['--help'])
+    assert 'Analyze new records and open the TUI' in capsys.readouterr().out
+    # The project's saved output language refines the screen once its store is open, below the environment.
+    scope = Scope.resolve(folder)
+    Store(scope.state_dir, scope.id).set_meta("output_language", "Korean")
+    assert main(['view', str(folder), '--no-tui']) == 0
+    assert 'Runner calls this run' in capsys.readouterr().out
+    monkeypatch.delenv(i18n.ENV)
+    assert main(['view', str(folder), '--no-tui']) == 0
+    assert '이번 실행의 Runner 호출' in capsys.readouterr().out
+    # The flag wins over everything and reaches the help text too.
+    assert main(['view', str(folder), '--no-tui', '--language', 'English']) == 0
+    assert 'Runner calls this run' in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        main(['view', '--language=English', '--help'])
+    assert 'Number of work units to process' in capsys.readouterr().out
+    monkeypatch.setenv("LC_ALL", "en_US.UTF-8")
+    assert main(['view', str(folder), '--no-tui', '--language', 'auto']) == 0
+    assert '이번 실행의 Runner 호출' in capsys.readouterr().out  # auto is no choice: the saved Korean shows

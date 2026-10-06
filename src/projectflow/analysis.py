@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from .git_context import Scope, collect_git, git
+from .i18n import tr
 from .langsmith_trace import LangSmithTracer
 from .model import Snapshot, SourceRecord, is_user_prompt
 from .routing import ROUTING_VERSION, RunnerPool, TaskValidationError
@@ -73,36 +74,45 @@ class AnalysisConfig:
 
     def validate(self) -> None:
         if not 1 <= self.extract_workers <= 8:
-            raise FlowError("extract_workers는 1~8이어야 합니다. 처음에는 1~2를 권장합니다.")
+            raise FlowError(tr("extract_workers는 1~8이어야 합니다. 처음에는 1~2를 권장합니다.",
+                               "extract_workers must be between 1 and 8; 1 or 2 is recommended at first."))
         if self.max_calls < 1:
-            raise FlowError("max_calls는 양수여야 합니다.")
+            raise FlowError(tr("max_calls는 양수여야 합니다.", "max_calls must be a positive number."))
         if self.max_units is not None and self.max_units < 1:
-            raise FlowError("처리할 작업 단위 수는 1 이상이어야 합니다.")
+            raise FlowError(tr("처리할 작업 단위 수는 1 이상이어야 합니다.", "The number of work units to process must be at least 1."))
         for value in (self.extract_model, self.integrate_model, self.escalation_model):
             if value is not None and (not value.strip() or any(ord(c) < 32 for c in value)):
-                raise FlowError("모델 식별자는 비어 있거나 제어 문자를 포함할 수 없습니다.")
+                raise FlowError(tr("모델 식별자는 비어 있거나 제어 문자를 포함할 수 없습니다.",
+                                   "A model identifier cannot be empty or contain control characters."))
         for value in (self.extract_effort, self.integrate_effort, self.escalation_effort):
             if value not in EFFORTS:
-                raise FlowError("추론 수준은 " + ", ".join(EFFORTS) + " 중 하나여야 합니다.")
+                raise FlowError(tr("추론 수준은 " + ", ".join(EFFORTS) + " 중 하나여야 합니다.",
+                                 "The reasoning effort must be one of " + ", ".join(EFFORTS) + "."))
         if self.langsmith_include_content and not self.langsmith_enabled:
-            raise FlowError("모델 입력·출력 추적에는 --langsmith도 필요합니다.")
+            raise FlowError(tr("모델 입력·출력 추적에는 --langsmith도 필요합니다.",
+                               "Tracing model inputs and outputs also requires --langsmith."))
         if self.langsmith_project is not None and not self.langsmith_enabled:
-            raise FlowError("LangSmith 프로젝트 이름을 지정하려면 --langsmith도 필요합니다.")
+            raise FlowError(tr("LangSmith 프로젝트 이름을 지정하려면 --langsmith도 필요합니다.",
+                               "Naming a LangSmith project also requires --langsmith."))
         if self.langsmith_project is not None and (
                 not self.langsmith_project.strip() or any(ord(c) < 32 for c in self.langsmith_project)):
-            raise FlowError("LangSmith 프로젝트 이름이 비어 있거나 제어 문자를 포함합니다.")
+            raise FlowError(tr("LangSmith 프로젝트 이름이 비어 있거나 제어 문자를 포함합니다.",
+                               "The LangSmith project name is empty or contains control characters."))
         if min(self.history_limit, self.unit_chars, self.record_chars, self.task_chars, self.unit_records) <= 0:
-            raise FlowError("입력 예산은 양수여야 합니다.")
+            raise FlowError(tr("입력 예산은 양수여야 합니다.", "Input budgets must be positive."))
         if self.context_mode not in {"full", "lean"}:
-            raise FlowError("context_mode는 full 또는 lean이어야 합니다.")
+            raise FlowError(tr("context_mode는 full 또는 lean이어야 합니다.", "context_mode must be full or lean."))
         if self.integrate_evidence not in {"full", "reuse"}:
-            raise FlowError("integrate_evidence는 full 또는 reuse이어야 합니다.")
+            raise FlowError(tr("integrate_evidence는 full 또는 reuse이어야 합니다.",
+                               "integrate_evidence must be full or reuse."))
         if self.review_output not in {"full", "patch"}:
-            raise FlowError("review_output은 full 또는 patch이어야 합니다.")
+            raise FlowError(tr("review_output은 full 또는 patch이어야 합니다.", "review_output must be full or patch."))
         if self.integrate_output not in {"full", "patch", "draft"}:
-            raise FlowError("integrate_output은 full, patch 또는 draft이어야 합니다.")
+            raise FlowError(tr("integrate_output은 full, patch 또는 draft이어야 합니다.",
+                               "integrate_output must be full, patch or draft."))
         if self.record_chars > self.unit_chars or self.unit_chars >= self.task_chars:
-            raise FlowError("record_chars ≤ unit_chars < task_chars 조건이 필요합니다.")
+            raise FlowError(tr("record_chars ≤ unit_chars < task_chars 조건이 필요합니다.",
+                               "record_chars ≤ unit_chars < task_chars is required."))
 
 
 # The language titles and summaries are written in: one per project, so a graph does not mix
@@ -553,9 +563,11 @@ def session_family(records: list[SourceRecord], wanted: str) -> set[str]:
     sessions = {r.session_id for r in records if r.session_id and r.provider in ("codex", "claude")}
     found = sorted(s for s in sessions if s.startswith(wanted))
     if not found:
-        raise FlowError(f"이 프로젝트 범위의 기록에 세션 {wanted}가 없습니다.")
+        raise FlowError(tr(f"이 프로젝트 범위의 기록에 세션 {wanted}가 없습니다.",
+                           f"No session {wanted} in the records of this project scope."))
     if len(found) > 1 and wanted not in found:
-        raise FlowError(f"세션 {wanted}에 해당하는 세션이 {len(found)}개입니다. 더 길게 지정하세요.")
+        raise FlowError(tr(f"세션 {wanted}에 해당하는 세션이 {len(found)}개입니다. 더 길게 지정하세요.",
+                           f"{len(found)} sessions match {wanted}; give a longer prefix."))
     family = {wanted if wanted in found else found[0]}
     parents = {r.session_id: r.lineage.get("parent_session_id") for r in records
                if r.session_id and r.lineage.get("parent_session_id")}
@@ -626,22 +638,29 @@ def plan_summary(units: list[dict], pool: dict[str, SourceRecord], max_calls: in
 
 
 def _tokens(value: int) -> str:
-    return f"{value / 10_000:,.0f}만" if value >= 10_000 else f"{value:,}"
+    """Tens of thousands in Korean (12만), thousands in English (120k); smaller counts as they are."""
+    return tr(f"{value / 10_000:,.0f}만", f"{value / 1_000:,.0f}k") if value >= 10_000 else f"{value:,}"
 
 
 def plan_text(plan: dict) -> str:
     if not plan["units"]:
-        return "대기 작업 단위 없음 · 보낼 것이 없습니다"
-    basis = (f"지난 {plan['past_units']}개 단위 기준" if plan.get("basis") == "past_runs" else "추정")
-    language = f" · 출력 언어 {plan['output_language']}" if plan.get("output_language") else ""
-    return (f"대기 {plan['units']:,}개 단위 · 이번 실행 {plan['units_this_run']:,}개 "
-            f"(AI 호출 ≤{plan['max_calls']}) · 입력 약 {_tokens(plan['input_tokens_this_run'])} 토큰 · "
-            f"약 {plan.get('minutes_this_run', 0)}분({basis}){language}")
+        return tr("대기 작업 단위 없음 · 보낼 것이 없습니다", "No pending work units · nothing to send")
+    basis = (tr(f"지난 {plan['past_units']}개 단위 기준", f"based on the last {plan['past_units']} units")
+             if plan.get("basis") == "past_runs" else tr("추정", "estimate"))
+    language = (tr(f" · 출력 언어 {plan['output_language']}", f" · output language {plan['output_language']}")
+                if plan.get("output_language") else "")
+    tokens, minutes = _tokens(plan['input_tokens_this_run']), plan.get('minutes_this_run', 0)
+    return tr(f"대기 {plan['units']:,}개 단위 · 이번 실행 {plan['units_this_run']:,}개 "
+              f"(AI 호출 ≤{plan['max_calls']}) · 입력 약 {tokens} 토큰 · 약 {minutes}분({basis}){language}",
+              f"{plan['units']:,} units pending · {plan['units_this_run']:,} this run "
+              f"(AI calls ≤{plan['max_calls']}) · input ≈{tokens} tokens · ≈{minutes} min ({basis}){language}")
 
 
 def plan_choices_text(plan: dict) -> str:
     """The unit counts to choose from, with their tokens and time, on one line."""
-    return " · ".join(f"{c['units']:,}개 ≈{_tokens(c['input_tokens'])} 토큰 {c['minutes']}분" for c in plan["choices"])
+    return " · ".join(tr(f"{c['units']:,}개 ≈{_tokens(c['input_tokens'])} 토큰 {c['minutes']}분",
+                         f"{c['units']:,} units ≈{_tokens(c['input_tokens'])} tokens {c['minutes']} min")
+                     for c in plan["choices"])
 
 
 def _one_line(text: str, limit: int = 240) -> str:
@@ -1372,7 +1391,8 @@ class Harness:
         for entry in manifest:
             replies = [{"request": request, "results": self.read(request)} for request in entry["requests"]]
             if digest(replies) != entry["reply_digest"]:
-                raise FlowError("저장된 추가 근거가 변경/소실되어 추출을 다시 수행해야 합니다.")
+                raise FlowError(tr("저장된 추가 근거가 변경/소실되어 추출을 다시 수행해야 합니다.",
+                                   "The saved extra evidence changed or is missing; the extraction must be redone."))
             self.read_history.append(replies)
             self.read_manifest.append(copy.deepcopy(entry))
 
@@ -1391,11 +1411,12 @@ class Harness:
         aliases = IdAliases()
         while True:
             if self.cancel.is_set():
-                raise Cancelled("분석 중단")
+                raise Cancelled(tr("분석 중단", "Analysis stopped"))
             # The Runner sees short IDs; everything the host checks or stores uses the full ones.
             sent = aliases.wire(task)
             if len(dumps(sent)) > self.config.task_chars:
-                raise FlowError("분석 입력 예산을 초과했습니다. 이 단위는 처리 완료로 저장하지 않습니다.")
+                raise FlowError(tr("분석 입력 예산을 초과했습니다. 이 단위는 처리 완료로 저장하지 않습니다.",
+                                   "The analysis input budget was exceeded; this unit is not saved as completed."))
             attempt += 1
             call_id = "llm_" + uuid.uuid4().hex
             metadata = {
@@ -1737,7 +1758,8 @@ class Engine:
                             cancel: threading.Event, issues: list[str]) -> PreparedExtraction:
         assigned = [pool[i] for i in unit["sources"]]
         if any(len(r.content) > self.config.record_chars for r in assigned):
-            raise FlowError("이전 보류 단위가 현재 입력 한도를 초과합니다.")
+            raise FlowError(tr("이전 보류 단위가 현재 입력 한도를 초과합니다.",
+                               "A previously deferred unit exceeds the current input limit."))
         h = Harness(None, pool, graph, self.store, self.config, cancel, run_id, unit["id"],
                     budget=runners.budget, tracer=self.tracer,
                     detailed_trace=self.detailed_trace, review_capture=self.review_capture)
@@ -1757,12 +1779,13 @@ class Engine:
         Validated extractions are reused if integration or post-delta review later fails.
         """
         if cancel.is_set():
-            raise Cancelled("분석 중단")
+            raise Cancelled(tr("분석 중단", "Analysis stopped"))
         prepared = prepared or self._prepare_extraction(unit, pool, graph, snapshot_id, run_id,
                                                          runners, cancel, issues)
         if prepared.graph_version != graph["version"] or prepared.data["unit_id"] != unit["id"] or (
                 prepared.data["snapshot_id"] != snapshot_id):
-            raise FlowError("준비된 추출 입력의 작업·snapshot·graph 기준이 달라졌습니다.")
+            raise FlowError(tr("준비된 추출 입력의 작업·snapshot·graph 기준이 달라졌습니다.",
+                               "The prepared extract input's unit, snapshot or graph base has changed."))
         h, validator, context, data = (prepared.harness, prepared.validator,
                                        prepared.context, prepared.data)
         signature = self._routing_signature()
@@ -1841,7 +1864,7 @@ class Engine:
             except TaskValidationError as exc:
                 output, waived, dropped = self._salvage_extraction(exc, validator, unit["id"], snapshot_id, graph)
         if output is None:
-            raise FlowError("검증된 추출 결과가 없습니다.")
+            raise FlowError(tr("검증된 추출 결과가 없습니다.", "No validated extraction result."))
         requests_added = add_user_requests(output, [pool[i] for i in unit["sources"]], validator)
         cached = {"payload": output, "evidence": validator.evidence, "routing_signature": signature,
                   "user_requests_added": requests_added, "waived_citations": waived,
@@ -1910,7 +1933,8 @@ class Engine:
                                                           snapshot_id, run_id, runners, cancel)
         if prepared.graph_version != graph["version"] or (prepared.data is not None and
                 prepared.data["snapshot_id"] != snapshot_id):
-            raise FlowError("준비된 통합 입력의 snapshot 또는 graph 기준이 달라졌습니다.")
+            raise FlowError(tr("준비된 통합 입력의 snapshot 또는 graph 기준이 달라졌습니다.",
+                               "The prepared integrate input's snapshot or graph base has changed."))
         h, validator, data = prepared.harness, prepared.validator, prepared.data
         if data is not None:
             candidate_set = data["validated_candidates"]

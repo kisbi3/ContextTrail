@@ -28,6 +28,7 @@ from projectflow.analysis import classify_steps as classify_records
 from projectflow.demo import FixtureRunner, create_demo
 from projectflow.evaluation import fixture_records, load_fixture
 from projectflow.git_context import Scope
+from projectflow.i18n import tr
 from projectflow.model import Snapshot
 from projectflow.render import graph_summary
 from projectflow.runners.cli_runner import CLIRunner
@@ -128,7 +129,7 @@ def _cli_session(state: StudioState) -> _CliInvocation:
     with _cli_invocations_lock:
         session = _cli_invocations.get(state["run_id"])
     if session is None:
-        raise FlowError("CLI 분석 실행 상태가 사라졌습니다.")
+        raise FlowError(tr("CLI 분석 실행 상태가 사라졌습니다.", "The CLI analysis run state is gone."))
     return session
 
 
@@ -184,18 +185,19 @@ def _context(state: StudioState) -> tuple[Engine, Store, Snapshot]:
     if state.get("mode") == "cli":
         session = _cli_session(state)
         if session.snapshot is None:
-            raise FlowError("CLI 입력 snapshot이 아직 준비되지 않았습니다.")
+            raise FlowError(tr("CLI 입력 snapshot이 아직 준비되지 않았습니다.", "The CLI input snapshot is not ready yet."))
         return session.engine, session.engine.store, session.snapshot
     if state.get("mode") in {"live", "eval"}:
         with _live_sessions_lock:
             session = _live_sessions.get(state["run_id"])
         if session is None:
-            raise FlowError("실제 Studio 실행 상태가 사라졌습니다. 새 실행을 시작하세요.")
+            raise FlowError(tr("실제 Studio 실행 상태가 사라졌습니다. 새 실행을 시작하세요.",
+                               "The live Studio run state is gone. Start a new run."))
         return session.engine, session.store, session.snapshot
     private_dir(ROOT)
     directory = Path(state["fixture_dir"]).resolve()
     if not directory.is_relative_to(ROOT.resolve()) or not (directory / "DEMO_ONLY.txt").is_file():
-        raise FlowError("Studio는 자체 합성 fixture만 읽습니다.")
+        raise FlowError(tr("Studio는 자체 합성 fixture만 읽습니다.", "Studio reads only its own synthetic fixtures."))
     scope = Scope.resolve(directory / "sample-project")
     store = Store(scope.state_dir, scope.id)
     config = AnalysisConfig(codex_home=directory / "fixture-codex",
@@ -233,26 +235,31 @@ def prepare_run(state: StudioState) -> StudioState:
         return {"unit_index": 0, "completed_units": 0, "reused_extractions": 0,
                 "unit_results": []}
     if mode not in {"synthetic", "live", "eval"}:
-        raise FlowError("Studio mode는 synthetic, live 또는 eval이어야 합니다.")
+        raise FlowError(tr("Studio mode는 synthetic, live 또는 eval이어야 합니다.",
+                           "Studio mode must be synthetic, live or eval."))
     if mode in {"live", "eval"}:
         if state.get("confirm_live") is not True:
-            raise FlowError("실제 Studio 실행에는 confirm_live=true가 필요합니다.")
+            raise FlowError(tr("실제 Studio 실행에는 confirm_live=true가 필요합니다.",
+                               "A live Studio run requires confirm_live=true."))
         units, calls = state.get("max_units", 1), state.get("max_calls", 10)
         if type(units) is not int or not 1 <= units <= 10 or type(calls) is not int or not 1 <= calls <= 50:
-            raise FlowError("Studio 실제 실행은 max_units=1~10, max_calls=1~50만 허용합니다.")
+            raise FlowError(tr("Studio 실제 실행은 max_units=1~10, max_calls=1~50만 허용합니다.",
+                               "A live Studio run allows only max_units=1~10 and max_calls=1~50."))
         common = {"mode": mode, "max_units": units, "max_calls": calls,
                   "unit_index": 0, "completed_units": 0, "unit_results": []}
         if mode == "eval":
             raw_fixture = os.environ.get("CONTEXTTRAIL_STUDIO_EVAL_FIXTURE")
             if not raw_fixture or not Path(raw_fixture).is_absolute():
-                raise FlowError("서버 환경변수 CONTEXTTRAIL_STUDIO_EVAL_FIXTURE에 절대 fixture 경로를 고정하세요.")
+                raise FlowError(tr("서버 환경변수 CONTEXTTRAIL_STUDIO_EVAL_FIXTURE에 절대 fixture 경로를 고정하세요.",
+                                   "Pin an absolute fixture path in the server environment variable CONTEXTTRAIL_STUDIO_EVAL_FIXTURE."))
             return {**common, "eval_fixture_path": str(Path(raw_fixture).resolve(strict=True))}
         raw_scope = os.environ.get("CONTEXTTRAIL_STUDIO_SCOPE")
         if not raw_scope or not Path(raw_scope).is_absolute():
-            raise FlowError("서버 환경변수 CONTEXTTRAIL_STUDIO_SCOPE에 절대 프로젝트 경로를 고정하세요.")
+            raise FlowError(tr("서버 환경변수 CONTEXTTRAIL_STUDIO_SCOPE에 절대 프로젝트 경로를 고정하세요.",
+                               "Pin an absolute project path in the server environment variable CONTEXTTRAIL_STUDIO_SCOPE."))
         folder = Path(raw_scope).resolve(strict=True)
         if not folder.is_dir():
-            raise FlowError("Studio의 실제 프로젝트 경로가 디렉터리가 아닙니다.")
+            raise FlowError(tr("Studio의 실제 프로젝트 경로가 디렉터리가 아닙니다.", "Studio's live project path is not a directory."))
         return {**common, "scope_folder": str(folder)}
     private_dir(ROOT)
     directory = Path(tempfile.mkdtemp(prefix="run-", dir=ROOT))
@@ -264,7 +271,7 @@ def prepare_run(state: StudioState) -> StudioState:
 def scan_sources(state: StudioState) -> StudioState:
     if state.get("mode") == "cli":
         session = _cli_session(state)
-        session.update("입력 변화 확인 중")
+        session.update(tr("입력 변화 확인 중", "Checking for input changes"))
         snapshot = session.engine.scan()
         session.snapshot = snapshot
         session.engine.store.ingest(snapshot.records)
@@ -275,13 +282,15 @@ def scan_sources(state: StudioState) -> StudioState:
         if state["mode"] == "live":
             fixed_scope = os.environ.get("CONTEXTTRAIL_STUDIO_SCOPE")
             if not fixed_scope or Path(fixed_scope).resolve() != Path(state["scope_folder"]).resolve():
-                raise FlowError("Studio 프로젝트 경로가 서버에 고정된 범위와 다릅니다.")
+                raise FlowError(tr("Studio 프로젝트 경로가 서버에 고정된 범위와 다릅니다.",
+                                   "The Studio project path differs from the scope pinned on the server."))
             scope = Scope.resolve(Path(state["scope_folder"]))
             frozen_snapshot = None
         else:
             fixed_fixture = os.environ.get("CONTEXTTRAIL_STUDIO_EVAL_FIXTURE")
             if not fixed_fixture or Path(fixed_fixture).resolve() != Path(state["eval_fixture_path"]).resolve():
-                raise FlowError("Studio 평가 fixture가 서버에 고정된 파일과 다릅니다.")
+                raise FlowError(tr("Studio 평가 fixture가 서버에 고정된 파일과 다릅니다.",
+                                   "The Studio eval fixture differs from the file pinned on the server."))
             frozen_snapshot = Snapshot(fixture_records(load_fixture(state["eval_fixture_path"])))
             private_dir(ROOT)
             output = Path(tempfile.mkdtemp(prefix="eval-", dir=ROOT))
@@ -332,7 +341,7 @@ def classify_steps(state: StudioState) -> StudioState:
 def plan_work_units(state: StudioState) -> StudioState:
     engine, _, snapshot = _context(state)
     if snapshot.id != state["snapshot_id"]:
-        raise FlowError("Studio fixture snapshot이 변경됐습니다.")
+        raise FlowError(tr("Studio fixture snapshot이 변경됐습니다.", "The Studio fixture snapshot has changed."))
     issues = list(state["limitations"])
     language = engine.resolve_language(snapshot)
     units, pending, missing = engine._plan_units(snapshot, issues, repair=True)
@@ -346,7 +355,8 @@ def plan_work_units(state: StudioState) -> StudioState:
                 "output_language": language}
         answer = session.consent(snapshot, plan) if units and session.consent else True
         if not answer:
-            raise Cancelled("외부 전송에 동의하지 않아 분석하지 않았습니다.")
+            raise Cancelled(tr("외부 전송에 동의하지 않아 분석하지 않았습니다.",
+                            "Not analyzed: consent to send data externally was not given."))
         # A consent may answer with a unit count (the screen's choice); True keeps the plan as it is.
         if answer is not True:
             limit = int(answer)
@@ -378,11 +388,12 @@ def select_unit(state: StudioState) -> StudioState:
 def prepare_extract_input(state: StudioState) -> StudioState:
     engine, store, snapshot = _context(state)
     if snapshot.id != state["snapshot_id"]:
-        raise FlowError("추출 입력의 snapshot이 변경됐습니다.")
+        raise FlowError(tr("추출 입력의 snapshot이 변경됐습니다.", "The extract input's snapshot has changed."))
     unit = state["planned_units"][state["unit_index"]]
     if state.get("mode") == "cli" and engine.config.extract_workers > 1:
         return {"extract_input": {"unit_id": unit["id"], "mode": "parallel_batch",
-                                  "note": "배치의 정확한 요청은 각 worker의 Build extract request trace에서 확인합니다."}}
+                                  "note": tr("배치의 정확한 요청은 각 worker의 Build extract request trace에서 확인합니다.",
+                                             "The exact request of a batch is in each worker's Build extract request trace.")}}
     pool = {r.source_id: r for r in snapshot.records}
     cancel = _cli_session(state).cancel if state.get("mode") == "cli" else threading.Event()
     prepared = engine._prepare_extraction(unit, pool, store.graph(), snapshot.id,
@@ -405,7 +416,9 @@ def prepare_extract_input(state: StudioState) -> StudioState:
         # Exactly what the Runner receives on the first attempt, short IDs included.
         "request": None if reused else IdAliases().wire(build_task("extract", data, engine.config.output_language)),
         "response_schema": None if reused else EXTRACT_SCHEMA,
-        "reuse_reason": "저장된 추출을 먼저 검증합니다. 근거가 바뀌었으면 새 요청을 만듭니다." if reused else None}}
+        "reuse_reason": tr("저장된 추출을 먼저 검증합니다. 근거가 바뀌었으면 새 요청을 만듭니다.",
+                           "The saved extraction is checked first; a new request is built if the evidence has changed.")
+                        if reused else None}}
 
 
 def _current_calls(store: Store, state: StudioState) -> list[dict]:
@@ -452,7 +465,7 @@ def _prefetch_next(state: StudioState, engine: Engine, store: Store, snapshot_id
 def extract_model_and_validate(state: StudioState) -> StudioState:
     engine, store, snapshot = _context(state)
     if snapshot.id != state["snapshot_id"]:
-        raise FlowError("Studio fixture snapshot이 변경됐습니다.")
+        raise FlowError(tr("Studio fixture snapshot이 변경됐습니다.", "The Studio fixture snapshot has changed."))
     pool = {r.source_id: r for r in snapshot.records}
     unit = state["planned_units"][state["unit_index"]]
     with _prepared_lock:
@@ -462,7 +475,8 @@ def extract_model_and_validate(state: StudioState) -> StudioState:
         if session.prefetch is not None and session.prefetch[0] == state["unit_index"]:
             future = session.prefetch[1]
             session.prefetch = None
-            session.update(f"구간 추출 결과 대기 · {state['unit_index'] + 1}/{len(state['planned_units'])}")
+            session.update(tr(f"구간 추출 결과 대기 · {state['unit_index'] + 1}/{len(state['planned_units'])}",
+                              f"Waiting for unit extraction · {state['unit_index'] + 1}/{len(state['planned_units'])}"))
             try:
                 session.batch_outcomes = {state["unit_index"]: future.result()}
             except Exception as exc:
@@ -472,7 +486,8 @@ def extract_model_and_validate(state: StudioState) -> StudioState:
             offset = state["unit_index"]
             batch = state["planned_units"][offset:offset + width]
             base = copy.deepcopy(store.graph())
-            session.update(f"구간 추출 중 · {offset + 1}~{offset + len(batch)}/{len(state['planned_units'])} · workers={width}")
+            session.update(tr(f"구간 추출 중 · {offset + 1}~{offset + len(batch)}/{len(state['planned_units'])} · workers={width}",
+                              f"Extracting units · {offset + 1}~{offset + len(batch)}/{len(state['planned_units'])} · workers={width}"))
             if width == 1:
                 outcomes: list[dict | BaseException] = [engine._extract_unit(
                     batch[0], pool, base, snapshot.id, state["run_id"], session.runners,
@@ -501,7 +516,7 @@ def extract_model_and_validate(state: StudioState) -> StudioState:
         if isinstance(extracted, BaseException):
             raise extracted
         if session.cancel.is_set():
-            raise Cancelled("분석 중단")
+            raise Cancelled(tr("분석 중단", "Analysis stopped"))
         session.reused += int(extracted["reused"])
         _prefetch_next(state, engine, store, snapshot.id, pool)
     else:
@@ -522,7 +537,7 @@ def extract_model_and_validate(state: StudioState) -> StudioState:
 def validate_candidates(state: StudioState) -> StudioState:
     _, store, snapshot = _context(state)
     if snapshot.id != state["snapshot_id"]:
-        raise FlowError("후보 검증의 snapshot이 변경됐습니다.")
+        raise FlowError(tr("후보 검증의 snapshot이 변경됐습니다.", "The candidate validation's snapshot has changed."))
     pool = {r.source_id: r for r in snapshot.records}
     evidence = state["extracted"]["evidence"]
     provided: dict[str, list[tuple[int, int]]] = {}
@@ -558,7 +573,7 @@ def validate_candidates(state: StudioState) -> StudioState:
 def prepare_integrate_input(state: StudioState) -> StudioState:
     engine, store, snapshot = _context(state)
     if snapshot.id != state["snapshot_id"]:
-        raise FlowError("통합 입력의 snapshot이 변경됐습니다.")
+        raise FlowError(tr("통합 입력의 snapshot이 변경됐습니다.", "The integrate input's snapshot has changed."))
     pool = {r.source_id: r for r in snapshot.records}
     unit = state["planned_units"][state["unit_index"]]
     cancel = _cli_session(state).cancel if state.get("mode") == "cli" else threading.Event()
@@ -569,7 +584,8 @@ def prepare_integrate_input(state: StudioState) -> StudioState:
         _prepared_integrations[(state["run_id"], state["unit_index"])] = prepared
     if prepared.data is None:
         return {"integrate_input": {"unit_id": unit["id"], "model_call_expected": False,
-                                    "reason": "통합할 사건·관계 후보가 없습니다.",
+                                    "reason": tr("통합할 사건·관계 후보가 없습니다.",
+                                                 "No event or relation candidates to integrate."),
                                     "base_graph_version": prepared.graph_version}}
     return {"integrate_input": {
         "unit_id": unit["id"], "model_call_expected": True,
@@ -583,12 +599,13 @@ def prepare_integrate_input(state: StudioState) -> StudioState:
 def integrate_model_and_validate(state: StudioState) -> StudioState:
     engine, store, snapshot = _context(state)
     if snapshot.id != state["snapshot_id"]:
-        raise FlowError("Studio fixture snapshot이 변경됐습니다.")
+        raise FlowError(tr("Studio fixture snapshot이 변경됐습니다.", "The Studio fixture snapshot has changed."))
     pool = {r.source_id: r for r in snapshot.records}
     unit = state["planned_units"][state["unit_index"]]
     cancel = _cli_session(state).cancel if state.get("mode") == "cli" else threading.Event()
     if state.get("mode") == "cli":
-        _cli_session(state).update(f"근거 확인·흐름 통합 중 · {state['unit_index'] + 1}/{len(state['planned_units'])}")
+        _cli_session(state).update(tr(f"근거 확인·흐름 통합 중 · {state['unit_index'] + 1}/{len(state['planned_units'])}",
+                                      f"Checking evidence and integrating the flow · {state['unit_index'] + 1}/{len(state['planned_units'])}"))
     with _prepared_lock:
         prepared = _prepared_integrations.pop((state["run_id"], state["unit_index"]), None)
     new_graph, evidence, dependencies = engine._integrate_unit(
@@ -663,7 +680,7 @@ def semantic_review_route(state: StudioState) -> Literal["semantic_review_model_
 def semantic_review_model_validate(state: StudioState) -> StudioState:
     engine, store, snapshot = _context(state)
     if snapshot.id != state["snapshot_id"]:
-        raise FlowError("의미 재검토 snapshot이 변경됐습니다.")
+        raise FlowError(tr("의미 재검토 snapshot이 변경됐습니다.", "The semantic review's snapshot has changed."))
     runners = _runners(state, engine)
     prepared = state["prepared_integration"]
     graph = engine._review_delta(prepared, store.graph(), snapshot.id, state["run_id"], runners)
@@ -677,7 +694,7 @@ def link_request_turns(state: StudioState) -> StudioState:
     """Code, not a model: a node for every user message, and each new event tied to its turn."""
     engine, store, snapshot = _context(state)
     if snapshot.id != state["snapshot_id"]:
-        raise FlowError("Studio fixture snapshot이 변경됐습니다.")
+        raise FlowError(tr("Studio fixture snapshot이 변경됐습니다.", "The Studio fixture snapshot has changed."))
     pool = {r.source_id: r for r in snapshot.records}
     graph, cited = analysis_link_request_turns(state["new_graph"], store.graph(), pool, state["source_ids"],
                                                state["evidence"], store.evidence_many, state["run_id"])
@@ -718,7 +735,7 @@ def summarize_graph_changes(state: StudioState) -> StudioState:
 def publish_result(state: StudioState) -> StudioState:
     engine, store, snapshot = _context(state)
     if snapshot.id != state["snapshot_id"]:
-        raise FlowError("Studio fixture snapshot이 변경됐습니다.")
+        raise FlowError(tr("Studio fixture snapshot이 변경됐습니다.", "The Studio fixture snapshot has changed."))
     graph = state["new_graph"]
     completed = state["completed_units"] + 1
     all_done = (completed == state["total_planned_units"] and not state["missing_sources"]
@@ -754,7 +771,8 @@ def publish_result(state: StudioState) -> StudioState:
     if state.get("mode") == "cli":
         session = _cli_session(state)
         session.completed = completed
-        session.update(f"단위 완료 {completed}/{state['total_planned_units']} · 그래프 v{published['version']}")
+        session.update(tr(f"단위 완료 {completed}/{state['total_planned_units']} · 그래프 v{published['version']}",
+                          f"Units done {completed}/{state['total_planned_units']} · graph v{published['version']}"))
     unit_result = {"provider": state["provider"], "source_count": len(state["source_ids"]),
                    "candidate_count": state["candidate_count"],
                    "validation_repair_executed": state["validation_repair_executed"],
@@ -822,7 +840,8 @@ def _record_failure(store: Store, run_id: str, exc: BaseException, *,
                     limitations: list[str] | None = None) -> tuple[str, dict]:
     status = "cancelled" if isinstance(exc, (Cancelled, KeyboardInterrupt)) else (
         "partial" if completed else "failed")
-    message = str(exc) if isinstance(exc, FlowError) else f"내부 오류: {type(exc).__name__}"
+    message = str(exc) if isinstance(exc, FlowError) else tr(f"내부 오류: {type(exc).__name__}",
+                                                             f"Internal error: {type(exc).__name__}")
     details = {"run_id": run_id, "runner_calls": runner_calls,
                "completed_units": completed, "reused_extractions": reused,
                "error": message, "limitations": limitations or [],

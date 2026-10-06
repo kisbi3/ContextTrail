@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from .i18n import tr
 from .model import SourceRecord, empty_graph
 from .util import FlowError, dumps, merge_focus, now, private_dir
 
@@ -24,14 +25,14 @@ class Store:
         private_dir(directory)
         self.path = directory / "state.sqlite"
         if self.path.is_symlink():
-            raise FlowError("SQLite 상태 파일 symlink는 허용하지 않습니다.")
+            raise FlowError(tr("SQLite 상태 파일 symlink는 허용하지 않습니다.", "A SQLite state file that is a symlink is not allowed."))
         fd = os.open(self.path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
         os.close(fd)
         os.chmod(self.path, 0o600)
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version not in (0, 1):
-                raise FlowError(f"지원하지 않는 DB schema: {version}")
+                raise FlowError(tr(f"지원하지 않는 DB schema: {version}", f"Unsupported DB schema: {version}"))
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS project_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, metadata TEXT NOT NULL);
@@ -60,7 +61,7 @@ class Store:
             db.execute("PRAGMA journal_mode=WAL")
             row = db.execute("SELECT value FROM project_meta WHERE key='scope_id'").fetchone()
             if row and json.loads(row[0]) != scope_id:
-                raise FlowError("저장된 프로젝트 scope와 요청 scope가 일치하지 않습니다.")
+                raise FlowError(tr("저장된 프로젝트 scope와 요청 scope가 일치하지 않습니다.", "The saved project scope does not match the requested scope."))
             db.execute("INSERT OR IGNORE INTO project_meta VALUES ('scope_id', ?)", (dumps(scope_id),))
             db.commit()
 
@@ -83,7 +84,7 @@ class Store:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
-                raise FlowError("이 scope에서 이미 분석이 진행 중입니다.") from exc
+                raise FlowError(tr("이 scope에서 이미 분석이 진행 중입니다.", "An analysis is already running in this scope.")) from exc
             yield
         finally:
             os.close(fd)
@@ -105,7 +106,7 @@ class Store:
             else:
                 row = db.execute("SELECT graph FROM graph_versions WHERE version=?", (version,)).fetchone()
             if version is not None and row is None:
-                raise FlowError("요청한 그래프 버전이 없습니다.")
+                raise FlowError(tr("요청한 그래프 버전이 없습니다.", "The requested graph version does not exist."))
             return json.loads(row[0]) if row else empty_graph(self.scope_id)
 
     def sources(self) -> dict[str, dict]:
@@ -252,7 +253,8 @@ class Store:
                 db.execute("BEGIN IMMEDIATE")
                 current = db.execute("SELECT MAX(version) FROM graph_versions").fetchone()[0] or 0
                 if current != expected_version:
-                    raise FlowError("기준 graph version이 달라졌습니다. 통합 결과를 적용하지 않았습니다.")
+                    raise FlowError(tr("기준 graph version이 달라졌습니다. 통합 결과를 적용하지 않았습니다.",
+                                       "The base graph version changed; the integration result was not applied."))
                 for item_id, item in evidence.items():
                     db.execute("INSERT OR IGNORE INTO evidence_items VALUES (?,?)", (item_id, dumps(item)))
                     if item.get("focus"):

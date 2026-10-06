@@ -111,3 +111,22 @@ def test_an_eval_counts_long_titles_and_events_that_rest_only_on_reads(laborator
                         {"id": "e2", "title": "짧은 제목", "actor": "user", "evidence_ids": ["q1"]}]}
     style = style_checks(graph, {"q1": {"source_id": "r1"}}, [call, result])
     assert (style["events"], style["titles_over_limit"], style["events_citing_only_reads"]) == (2, 1, 1)
+
+
+def test_the_plan_and_run_errors_read_in_english_when_the_screen_language_is_english():
+    from projectflow import i18n
+    from projectflow.analysis import AnalysisConfig, plan_choices_text, plan_text
+    plan = {"units": 12, "units_this_run": 5, "max_calls": 30, "input_tokens_this_run": 120_000,
+            "minutes_this_run": 4, "basis": "past_runs", "past_units": 3, "output_language": "Korean",
+            "choices": [{"units": 5, "input_tokens": 120_000, "minutes": 4},
+                        {"units": 12, "input_tokens": 9_500, "minutes": 1}]}
+    korean = plan_text(plan)
+    assert korean == ("대기 12개 단위 · 이번 실행 5개 (AI 호출 ≤30) · 입력 약 12만 토큰 · 약 4분(지난 3개 단위 기준)"
+                      " · 출력 언어 Korean")
+    i18n.set_language("en")
+    assert plan_text(plan) == ("12 units pending · 5 this run (AI calls ≤30) · input ≈120k tokens · ≈4 min"
+                               " (based on the last 3 units) · output language Korean")
+    assert plan_choices_text(plan) == "5 units ≈120k tokens 4 min · 12 units ≈9,500 tokens 1 min"
+    assert plan_text({"units": 0}) == "No pending work units · nothing to send"
+    with pytest.raises(FlowError, match="max_calls must be a positive number"):
+        AnalysisConfig(max_calls=0).validate()

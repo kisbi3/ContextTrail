@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 
 from wcwidth import wcswidth, wcwidth
 
+from .i18n import tr
 from .render import ASCII_MARK, KIND, MARK, RELATION, _when, status_labels, status_tones
 from .util import cell_slice, safe_text
 
@@ -30,15 +31,15 @@ OBSERVED = {"observed_success", "observed_failure"}
 # Relations that put a result beside the event it came from, most telling first.
 ANCHOR_ORDER = {"verifies": 0, "produces": 1}
 LIGHT = {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "│", "lt": "├", "rt": "┤",
-         "down": "┬", "cross": "┼", "right": "▶", "arrow_down": "▼", "up": "↑ 위", "back": "←", "forward": "→",
+         "down": "┬", "cross": "┼", "right": "▶", "arrow_down": "▼", "up": "↑", "back": "←", "forward": "→",
          "flow": "═"}
 PLAIN = {"tl": "+", "tr": "+", "bl": "+", "br": "+", "h": "-", "v": "|", "lt": "+", "rt": "+",
-         "down": "+", "cross": "+", "right": ">", "arrow_down": "v", "up": "^ 위", "back": "<-", "forward": "->",
+         "down": "+", "cross": "+", "right": ">", "arrow_down": "v", "up": "^", "back": "<-", "forward": "->",
          "flow": "="}
 # The selected box is redrawn with heavy lines.
 HEAVY = str.maketrans("┌┐└┘─│├┤┬┼", "┏┓┗┛━┃┣┫┳╋")
 MAX_RAILS = 4
-ARROW_GAP = 11  # between the two columns: "──┬─검증──▶"
+ARROW_GAP = 11  # between the two columns: "──┬─검증──▶"; a wider relation label widens it
 
 
 @dataclass
@@ -304,10 +305,14 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
     # Rails at columns 1, 3, …; then at least one line cell and the widest arrival label.
     label_room = max((wcswidth(arrival(edge)) for group, _ in rails for edge in group), default=0)
     margin = 2 * lanes + 1 + label_room if lanes else 0
-    box_width = (width - margin - ARROW_GAP) // 2
+    # The gap between the columns holds "──┬─" + the widest label drawn across it + "──▶".
+    across = max((wcswidth(RELATION.get(edge["relation"], edge["relation"])) for edge in edges
+                  if edge["to_event_id"] in anchor), default=0)
+    arrow_gap = max(ARROW_GAP, across + 7)
+    box_width = (width - margin - arrow_gap) // 2
     if box_width < 22:
         return None
-    x_left, x_right = margin, margin + box_width + ARROW_GAP
+    x_left, x_right = margin, margin + box_width + arrow_gap
     inner = box_width - 4
     # Each rail end takes its own inner row of a box; a box with many rails grows to fit them.
     ends: dict[str, int] = {}
@@ -327,7 +332,7 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
             for text, edge_id in notes.get(key, []):
                 lines += [(part, "dim", frozenset({edge_id})) for part in _wrap(text, inner)]
             if key not in linked:
-                lines.append(("연결된 사건 없음", "dim", none))
+                lines.append((tr("연결된 사건 없음", "no linked events"), "dim", none))
             lines += [("", "", none)] * max(0, ends.get(key, 0) - len(lines))
             drawn[key] = lines
         return drawn[key]
@@ -367,8 +372,9 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
         first, last = (_when(times[0]), _when(times[-1])) if times else ("", "")
         if last[:5] == first[:5]:
             last = last[6:]
-        parts = [f"흐름 {n}/{len(groups)}", f"사건 {len(group)}개"]
-        parts += [f"세션 {len(sessions)}개"] if sessions else []
+        parts = [tr(f"흐름 {n}/{len(groups)}", f"flow {n}/{len(groups)}"),
+                 tr(f"사건 {len(group)}개", f"{len(group)} events")]
+        parts += [tr(f"세션 {len(sessions)}개", f"{len(sessions)} sessions")] if sessions else []
         parts += [first + ("–" + last if last and last != first[6:] else "")] if first else []
         text = f"{g['flow'] * 2} {' · '.join(parts)} "
         diagram.put(y, 0, text + g["flow"] * max(0, width - 1 - wcswidth(text)), "heading")
@@ -410,7 +416,8 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
                 else:  # a result drawn beside another box: point at it instead of drawing it twice
                     arrow_row = row if arrows else row + 1  # the first arrow must leave from inside the box
                     arrows.append((arrow_row, relation, edge["id"]))
-                    where = g["up"] if target in diagram.boxes else g["arrow_down"] + " 아래"
+                    where = (f"{g['up']} {tr('위', 'up')}" if target in diagram.boxes
+                             else f"{g['arrow_down']} {tr('아래', 'below')}")
                     diagram.put(arrow_row, x_right + 1, f"{number[target]} {where}", "dim", target,
                                 edges=frozenset({edge["id"]}))
                     row = arrow_row + 2

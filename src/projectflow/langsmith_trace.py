@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Any, Callable
 from urllib.parse import urlparse
 
+from .i18n import tr
 from .util import FlowError
 
 # Values that may leave the process in a metadata-only trace. Anything else is dropped:
@@ -158,17 +159,20 @@ class LangSmithTracer:
                  graph_client_factory: Callable[..., Any] | None = None):
         key = os.environ.get("LANGSMITH_API_KEY")
         if not key:
-            raise FlowError("LangSmith 추적에는 LANGSMITH_API_KEY가 필요합니다. 키를 명령 인자로 전달하지 마세요.")
+            raise FlowError(tr("LangSmith 추적에는 LANGSMITH_API_KEY가 필요합니다. 키를 명령 인자로 전달하지 마세요.",
+                               "LangSmith tracing requires LANGSMITH_API_KEY. Do not pass the key as a command argument."))
         endpoint = os.environ.get("LANGSMITH_ENDPOINT")
         if endpoint:
             parsed = urlparse(endpoint)
             if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-                raise FlowError("LANGSMITH_ENDPOINT는 인증정보가 없는 HTTPS 주소여야 합니다.")
+                raise FlowError(tr("LANGSMITH_ENDPOINT는 인증정보가 없는 HTTPS 주소여야 합니다.",
+                                   "LANGSMITH_ENDPOINT must be an HTTPS address without credentials."))
         if client_factory is None:
             try:
                 from langsmith import Client
             except ImportError as exc:
-                raise FlowError("LangSmith SDK가 없습니다. python -m pip install -e '.[langsmith]'를 실행하세요.") from exc
+                raise FlowError(tr("LangSmith SDK가 없습니다. python -m pip install -e '.[langsmith]'를 실행하세요.",
+                                   "The LangSmith SDK is missing. Run python -m pip install -e '.[langsmith]'.")) from exc
             client_factory = Client
         self._key = key
         self._endpoint = endpoint

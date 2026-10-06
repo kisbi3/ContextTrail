@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from .schema import DELTA_ITEM_ARRAYS, EVENT_FIELDS, PATCH_ARRAYS, patch_key
+from .i18n import tr
 from .util import FlowError, dumps
 
 
@@ -149,7 +150,7 @@ class FixtureRunner:
 def create_demo(directory: Path) -> tuple[Path, Path, Path]:
     directory = directory.expanduser().resolve()
     if directory.exists() and any(directory.iterdir()):
-        raise FlowError("demo는 비어 있거나 새 디렉터리에서만 생성할 수 있습니다.")
+        raise FlowError(tr("demo는 비어 있거나 새 디렉터리에서만 생성할 수 있습니다.", "The demo can only be created in an empty or new directory."))
     folder, codex_home, claude_home = directory / "sample-project", directory / "fixture-codex", directory / "fixture-claude"
     folder.mkdir(parents=True, exist_ok=True)
     codex = codex_home / "sessions" / "demo.jsonl"

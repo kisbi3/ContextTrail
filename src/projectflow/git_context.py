@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .i18n import tr
 from .model import SourceRecord, Snapshot, segment_record
 from .util import FlowError, digest, ident, now, within
 
@@ -72,7 +73,7 @@ class Scope:
     def resolve(cls, folder: str | Path) -> "Scope":
         folder = Path(folder).expanduser().resolve()
         if not folder.is_dir():
-            raise FlowError(f"프로젝트 디렉터리가 없습니다: {folder}")
+            raise FlowError(tr(f"프로젝트 디렉터리가 없습니다: {folder}", f"Project directory does not exist: {folder}"))
         root_text = git(folder, "rev-parse", "--show-toplevel", ok=True)
         if not root_text:
             return cls(folder, None, None, "", [folder], folder / ".projectflow",

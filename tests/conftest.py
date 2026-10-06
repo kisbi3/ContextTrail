@@ -2,10 +2,24 @@ from pathlib import Path
 
 import pytest
 
+from projectflow import i18n
 from projectflow.analysis import AnalysisConfig, Engine
 from projectflow.git_context import Scope
 from projectflow.model import Snapshot, SourceRecord
 from projectflow.store import Store
+
+
+@pytest.fixture(autouse=True)
+def korean_screen(monkeypatch):
+    """The suite reads the Korean screen text; a test of the English screen sets the language itself.
+
+    The environment variable reaches the CLI processes tests start, whatever the host locale.
+    """
+    monkeypatch.setenv(i18n.ENV, "ko")
+    previous = i18n._language
+    i18n.set_language("ko")
+    yield
+    i18n._language = previous
 
 
 @pytest.fixture(autouse=True)

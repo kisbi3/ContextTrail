@@ -9,9 +9,39 @@ from importlib.resources import files
 from urllib.parse import parse_qs, quote, urlsplit
 
 from .agent_view import reference
+from .i18n import language, tr
 from .render import RELATION, evidence_excerpt, mermaid, status_labels, svg
 from .store import Store
 from .util import FlowError, dumps
+
+
+# The page ships in Korean; the English screen gets the same markup with these texts swapped.
+# Keys are the exact Korean texts in `assets/index.html`, so a stale entry fails `page_html`.
+PAGE_TEXT_EN = {
+    "Project Flow · 근거 보기": "Project Flow · evidence view",
+    "프로젝트의 흐름과 근거": "The project's flow and evidence",
+    "변경분 분석": "Analyze changes",
+    "터미널에서 안내한 접근 주소로 열어 주세요.": "Open this page with the access link shown in the terminal.",
+    "진행 흐름": "Flow",
+    "노드를 선택하면 오른쪽에 원문이 표시됩니다.": "Select a node to see its source text on the right.",
+    "사건과 근거": "Event and evidence",
+    "사건을 선택하세요.": "Select an event.",
+    "분석 범위와 한계": "Scope and limitations",
+    "저장된 그래프를 보고 있습니다. 페이지 새로고침은 AI 분석을 실행하지 않습니다. 점선 관계는 추정입니다.":
+        "You are viewing the saved graph. Reloading the page runs no AI analysis. Dashed relations are inferred.",
+}
+
+
+def page_html(text: str, lang: str | None = None) -> str:
+    """`index.html` in the screen language: the `lang` attribute and, for English, the static texts."""
+    lang = lang or language()
+    if lang == "ko":
+        return text
+    for korean, english in PAGE_TEXT_EN.items():
+        if korean not in text:
+            raise FlowError(f"page text not found: {korean}")
+        text = text.replace(korean, english)
+    return text.replace('<html lang="ko">', f'<html lang="{lang}">', 1)
 
 
 class LocalViewer:
@@ -70,7 +100,7 @@ class LocalViewer:
                     try:
                         return viewer.store.graph(int(values[0]))
                     except ValueError as exc:
-                        raise FlowError("잘못된 버전") from exc
+                        raise FlowError(tr("잘못된 버전", "invalid version")) from exc
                 return viewer.store.graph()
 
             def do_GET(self):
@@ -82,7 +112,8 @@ class LocalViewer:
                           "/style.css": ("style.css", "text/css; charset=utf-8")}
                 if path in assets:
                     name, content_type = assets[path]
-                    return self.send_data(200, files("projectflow").joinpath("assets", name).read_text(encoding="utf-8"), content_type)
+                    text = files("projectflow").joinpath("assets", name).read_text(encoding="utf-8")
+                    return self.send_data(200, page_html(text) if name == "index.html" else text, content_type)
                 if not self.authorized():
                     return self.send_data(401, {"error": "access token required"})
                 try:
@@ -98,7 +129,7 @@ class LocalViewer:
                     if path.startswith("/events/"):
                         event = next((e for e in graph["events"] if e["id"] == path[len("/events/"):]), None)
                         if not event:
-                            raise FlowError("사건 없음")
+                            raise FlowError(tr("사건 없음", "no such event"))
                         relations = [e for e in graph["edges"] if e["active"] and
                                      event["id"] in {e["from_event_id"], e["to_event_id"]}]
                         titles = {e["id"]: e["title"] for e in graph["events"]}
@@ -123,7 +154,7 @@ class LocalViewer:
                                for i in item.get("evidence_ids", [])}
                         evidence = viewer.store.evidence(evidence_id) if evidence_id in ids else None
                         if not evidence:
-                            raise FlowError("근거 없음")
+                            raise FlowError(tr("근거 없음", "no such evidence"))
                         return self.send_data(200, evidence)
                     return self.send_data(404, {"error": "not found"})
                 except FlowError as exc:
@@ -152,7 +183,8 @@ class LocalViewer:
                             result = viewer.refresh_callback()
                             viewer.refresh_result = {k: v for k, v in result.items() if k != "graph"}
                         except Exception:
-                            viewer.refresh_result = {"status": "failed", "error": "갱신 실패; 터미널에서 상태를 확인하세요."}
+                            viewer.refresh_result = {"status": "failed", "error": tr("갱신 실패; 터미널에서 상태를 확인하세요.",
+                                                                                  "Update failed; check the terminal for its state.")}
                     viewer.refresh_result = None
                     viewer.refresh_thread = threading.Thread(target=run, name="projectflow-refresh", daemon=True)
                     viewer.refresh_thread.start()

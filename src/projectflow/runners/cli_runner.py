@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..i18n import tr
 from ..util import Cancelled, FlowError, dumps, safe_text
 
 ADAPTER_VERSION = "cli-platform-sandbox-v3-output-checks"
@@ -34,16 +35,17 @@ def execute(args: list[str], *, input_text: str = "", timeout: float = 300,
             process = subprocess.Popen(args, stdin=stdin, stdout=stdout, stderr=stderr,
                                        env=env, cwd=cwd, start_new_session=True)
         except OSError as exc:
-            raise FlowError("CLI 프로세스를 실행할 수 없습니다.") from exc
+            raise FlowError(tr("CLI 프로세스를 실행할 수 없습니다.", "The CLI process could not be started.")) from exc
         start = time.monotonic()
         try:
             while process.poll() is None:
                 if cancel and cancel.is_set():
-                    raise Cancelled("사용자 요청으로 분석을 중단했습니다.")
+                    raise Cancelled(tr("사용자 요청으로 분석을 중단했습니다.", "Analysis stopped at the person's request."))
                 if time.monotonic() - start > timeout:
-                    raise FlowError("Runner timeout: 저장된 이전 결과와 추출 단계는 유지됩니다.")
+                    raise FlowError(tr("Runner timeout: 저장된 이전 결과와 추출 단계는 유지됩니다.",
+                                       "Runner timeout: saved earlier results and extraction stages are kept."))
                 if os.fstat(stdout.fileno()).st_size + os.fstat(stderr.fileno()).st_size > MAX_OUTPUT:
-                    raise FlowError("Runner 출력 한도를 초과했습니다.")
+                    raise FlowError(tr("Runner 출력 한도를 초과했습니다.", "The Runner output limit was exceeded."))
                 time.sleep(0.05)
         except BaseException:
             try:
@@ -57,7 +59,7 @@ def execute(args: list[str], *, input_text: str = "", timeout: float = 300,
                 process.wait()
             raise
         if os.fstat(stdout.fileno()).st_size + os.fstat(stderr.fileno()).st_size > MAX_OUTPUT:
-            raise FlowError("Runner 출력 한도를 초과했습니다.")
+            raise FlowError(tr("Runner 출력 한도를 초과했습니다.", "The Runner output limit was exceeded."))
         stdout.seek(0)
         stderr.seek(0)
         return process.returncode, stdout.read().decode("utf-8", "replace"), stderr.read().decode("utf-8", "replace")
@@ -91,19 +93,22 @@ def parse_codex_output(text: str, result_file: Path | None = None) -> tuple[dict
             item = json.loads(line)
         except ValueError:
             if line.strip():
-                raise FlowError("지원하지 않는 Codex JSONL 출력입니다.")
+                raise FlowError(tr("지원하지 않는 Codex JSONL 출력입니다.", "Unsupported Codex JSONL output."))
             continue
         if not isinstance(item, dict):
-            raise FlowError("지원하지 않는 Codex 이벤트 구조입니다.")
+            raise FlowError(tr("지원하지 않는 Codex 이벤트 구조입니다.", "Unsupported Codex event structure."))
         if item.get("type") in {"item.started", "item.updated", "item.completed"}:
             payload = item.get("item", {})
             if not isinstance(payload, dict):
-                raise FlowError("지원하지 않는 Codex item 구조입니다.")
+                raise FlowError(tr("지원하지 않는 Codex item 구조입니다.", "Unsupported Codex item structure."))
             if payload.get("type") not in {"agent_message", "reasoning"}:
-                raise FlowError("금지되었거나 미지원인 Codex item 이벤트입니다. 결과를 게시하지 않습니다.")
+                raise FlowError(tr("금지되었거나 미지원인 Codex item 이벤트입니다. 결과를 게시하지 않습니다.",
+                                   "A forbidden or unsupported Codex item event; the result is not published."))
         if item.get("type") in {"turn.failed", "error"}:
             reason = cli_error("codex", line)
-            raise FlowError("Codex가 분석 실패를 반환했습니다" + (f": {reason}" if reason else ". CLI 인증/계정 상태를 확인하세요."))
+            raise FlowError(tr("Codex가 분석 실패를 반환했습니다", "Codex returned an analysis failure") + (
+                f": {reason}" if reason else tr(". CLI 인증/계정 상태를 확인하세요.",
+                                                ". Check the CLI's login and account status.")))
         if item.get("type") == "turn.completed":
             usage = item.get("usage")
             completed = True
@@ -112,19 +117,22 @@ def parse_codex_output(text: str, result_file: Path | None = None) -> tuple[dict
             if payload.get("type") == "agent_message":
                 final = payload.get("text")
             elif payload.get("type") in {"command_execution", "mcp_tool_call", "web_search", "file_change"}:
-                raise FlowError("금지된 도구 실행 이벤트가 감지되었습니다. 결과를 게시하지 않습니다.")
+                raise FlowError(tr("금지된 도구 실행 이벤트가 감지되었습니다. 결과를 게시하지 않습니다.",
+                                   "A forbidden tool execution event was detected; the result is not published."))
     if not completed:
-        raise FlowError("Codex turn.completed가 없는 부분 출력입니다. 결과를 게시하지 않습니다.")
+        raise FlowError(tr("Codex turn.completed가 없는 부분 출력입니다. 결과를 게시하지 않습니다.",
+                           "Partial Codex output without turn.completed; the result is not published."))
     if result_file and result_file.is_file():
         if result_file.stat().st_size > MAX_OUTPUT:
-            raise FlowError("Codex 최종 출력 한도 초과")
+            raise FlowError(tr("Codex 최종 출력 한도 초과", "Codex final output over the limit"))
         final = result_file.read_text(encoding="utf-8")
     try:
         value = json.loads(final or "")
         if not isinstance(value, dict):
             raise ValueError("not object")
     except ValueError as exc:
-        raise FlowError("Codex의 최종 구조화 JSON을 읽을 수 없습니다.") from exc
+        raise FlowError(tr("Codex의 최종 구조화 JSON을 읽을 수 없습니다.",
+                           "Codex's final structured JSON could not be read.")) from exc
     return value, usage
 
 
@@ -142,7 +150,8 @@ def parse_claude_output(text: str) -> tuple[dict, dict | None]:
         if not isinstance(value, dict):
             raise ValueError("not object")
     except (ValueError, TypeError) as exc:
-        raise FlowError("Claude의 최종 구조화 JSON을 읽을 수 없습니다.") from exc
+        raise FlowError(tr("Claude의 최종 구조화 JSON을 읽을 수 없습니다.",
+                           "Claude's final structured JSON could not be read.")) from exc
     return value, envelope.get("usage")
 
 
@@ -171,9 +180,10 @@ class CLIRunner:
                  timeout: float = 600):
         # Integration at high effort took 200-300 s in live runs; 600 s still ends a hung call.
         if name not in {"codex", "claude"}:
-            raise FlowError("Runner는 codex 또는 claude여야 합니다.")
+            raise FlowError(tr("Runner는 codex 또는 claude여야 합니다.", "The Runner must be codex or claude."))
         if effort is not None and effort not in EFFORTS:
-            raise FlowError("추론 수준은 " + ", ".join(EFFORTS) + " 중 하나여야 합니다.")
+            raise FlowError(tr("추론 수준은 " + ", ".join(EFFORTS) + " 중 하나여야 합니다.",
+                                 "The reasoning effort must be one of " + ", ".join(EFFORTS) + "."))
         self.name, self.model, self.effort, self.timeout = name, model or DEFAULT_MODELS[name], effort, timeout
         self.adapter_version = ADAPTER_VERSION
         self.calls, self.version, self.last_usage, self.last_model = 0, "not_checked", None, None
@@ -191,8 +201,8 @@ class CLIRunner:
     def _require_executable(self) -> str:
         """`assert` is stripped under `python -O`, turning a clear failure into a TypeError."""
         if not self.executable:
-            raise FlowError(f"{self.name} CLI 실행 파일을 찾지 못했습니다. "
-                            f"PATH를 확인하거나 해당 CLI를 설치하세요.")
+            raise FlowError(tr(f"{self.name} CLI 실행 파일을 찾지 못했습니다. PATH를 확인하거나 해당 CLI를 설치하세요.",
+                               f"The {self.name} CLI executable was not found. Check PATH or install that CLI."))
         return self.executable
 
     def _runtime_roots(self) -> list[Path]:
@@ -294,14 +304,17 @@ class CLIRunner:
         if sys.platform == "darwin":
             sandbox = shutil.which("sandbox-exec")
             if not sandbox:
-                raise FlowError("macOS 실제 AI 분석에는 sandbox-exec가 필요합니다. 격리 없이 실행하지 않습니다.")
+                raise FlowError(tr("macOS 실제 AI 분석에는 sandbox-exec가 필요합니다. 격리 없이 실행하지 않습니다.",
+                                   "Real AI analysis on macOS requires sandbox-exec; it does not run without isolation."))
             home = self._macos_home(work)
             return [sandbox, "-p", self._macos_profile(work, output, home), *command]
         if sys.platform != "linux":
-            raise FlowError("이 운영체제의 실제 AI 격리 실행은 지원하지 않습니다.")
+            raise FlowError(tr("이 운영체제의 실제 AI 격리 실행은 지원하지 않습니다.",
+                             "Isolated real AI runs are not supported on this operating system."))
         bwrap = shutil.which("bwrap")
         if not bwrap:
-            raise FlowError("실제 AI 분석에는 bubblewrap(bwrap)이 필요합니다. 안전하지 않은 실행으로 전환하지 않습니다.")
+            raise FlowError(tr("실제 AI 분석에는 bubblewrap(bwrap)이 필요합니다. 안전하지 않은 실행으로 전환하지 않습니다.",
+                               "Real AI analysis requires bubblewrap (bwrap); it does not fall back to an unsafe run."))
         args = [bwrap, "--die-with-parent", "--new-session", "--unshare-all", "--share-net", "--cap-drop", "ALL"]
         for directory in ("/usr", "/bin", "/sbin", "/lib", "/lib64"):
             if Path(directory).exists():
@@ -339,14 +352,18 @@ class CLIRunner:
     def preflight(self) -> dict:
         executable = shutil.which(self.name)
         if not executable:
-            raise FlowError(f"{self.name} CLI가 PATH에 없습니다. 설치·로그인은 해당 CLI에서 진행하세요.")
+            raise FlowError(tr(f"{self.name} CLI가 PATH에 없습니다. 설치·로그인은 해당 CLI에서 진행하세요.",
+                               f"The {self.name} CLI is not on PATH. Install it and log in through that CLI."))
         self.executable = str(Path(executable).resolve())
         if sys.platform == "darwin" and not shutil.which("sandbox-exec"):
-            raise FlowError("macOS sandbox-exec가 없습니다. 실제 분석은 차단됩니다.")
+            raise FlowError(tr("macOS sandbox-exec가 없습니다. 실제 분석은 차단됩니다.",
+                               "macOS sandbox-exec is missing; real analysis is blocked."))
         if sys.platform == "linux" and not shutil.which("bwrap"):
-            raise FlowError("bubblewrap(bwrap)이 없습니다. 실제 분석은 차단되며 view/export/demo는 사용할 수 있습니다.")
+            raise FlowError(tr("bubblewrap(bwrap)이 없습니다. 실제 분석은 차단되며 view/export/demo는 사용할 수 있습니다.",
+                               "bubblewrap (bwrap) is missing; real analysis is blocked, while view/export/demo still work."))
         if sys.platform not in {"linux", "darwin"}:
-            raise FlowError("이 운영체제의 실제 AI 격리 실행은 지원하지 않습니다.")
+            raise FlowError(tr("이 운영체제의 실제 AI 격리 실행은 지원하지 않습니다.",
+                             "Isolated real AI runs are not supported on this operating system."))
         with self._temporary() as temp:
             work, output = Path(temp) / "work", Path(temp) / "out"
             work.mkdir(mode=0o700)
@@ -363,18 +380,21 @@ class CLIRunner:
                     code, _, _ = execute(self.sandbox_command(work, output, probe),
                                          timeout=15, env=env, cwd=cwd)
                     if code == 0:
-                        raise FlowError("macOS 격리가 범위 밖 파일 접근을 차단하지 못했습니다.")
+                        raise FlowError(tr("macOS 격리가 범위 밖 파일 접근을 차단하지 못했습니다.",
+                                           "macOS isolation failed to block file access outside the scope."))
                 credential, _ = self._credential()
                 if credential.is_file() and not credential.is_symlink():
                     auth_link = self._macos_home(work) / (".codex" if self.name == "codex" else ".claude") / credential.name
                     code, _, _ = execute(self.sandbox_command(work, output,
                                            ["/bin/test", "-r", str(auth_link)]), timeout=15, env=env, cwd=cwd)
                     if code:
-                        raise FlowError("macOS 격리에서 CLI 인증 파일을 읽을 수 없습니다.")
+                        raise FlowError(tr("macOS 격리에서 CLI 인증 파일을 읽을 수 없습니다.",
+                                           "The CLI auth file cannot be read inside macOS isolation."))
             code, text, _ = execute(self.sandbox_command(work, output, [self.executable, "--version"]),
                                     timeout=15, env=env, cwd=cwd)
             if code:
-                raise FlowError("격리된 CLI 시작 실패: user namespace/bubblewrap 및 CLI 설치 경로를 확인하세요.")
+                raise FlowError(tr("격리된 CLI 시작 실패: user namespace/bubblewrap 및 CLI 설치 경로를 확인하세요.",
+                                   "The isolated CLI failed to start: check user namespaces/bubblewrap and the CLI's install path."))
             self.version = text.strip()[:120]
             commands = [self.executable, "exec", "--help"] if self.name == "codex" else [self.executable, "--help"]
             code, help_text, _ = execute(self.sandbox_command(work, output, commands),
@@ -387,16 +407,19 @@ class CLIRunner:
             if self.effort and self.name == "claude":
                 required = [*required, "--effort"]
             if code or any(flag not in help_text for flag in required):
-                raise FlowError(f"{self.name} CLI에 필수 안전/구조화 옵션이 없습니다. 호환 버전을 확인하세요.")
+                raise FlowError(tr(f"{self.name} CLI에 필수 안전/구조화 옵션이 없습니다. 호환 버전을 확인하세요.",
+                                   f"The {self.name} CLI lacks the required safety/structured-output options. Check for a compatible version."))
             if self.name == "codex":
                 code, feature_text, _ = execute(self.sandbox_command(work, output,
                     [self.executable, "features", "list"]), timeout=15, env=env, cwd=cwd)
                 self.features = {line.split()[0] for line in feature_text.splitlines() if line.split()}
                 if code or not {"shell_tool", "unified_exec"} <= self.features:
-                    raise FlowError("Codex 도구 비활성화 capability를 확인할 수 없습니다.")
+                    raise FlowError(tr("Codex 도구 비활성화 capability를 확인할 수 없습니다.",
+                                       "Could not confirm Codex's capability to disable tools."))
         credential, _ = self._credential()
         if not credential.is_file() or credential.is_symlink():
-            raise FlowError("파일 기반 CLI 인증을 찾지 못했습니다. keyring 전용 인증은 이 alpha에서 미지원입니다.")
+            raise FlowError(tr("파일 기반 CLI 인증을 찾지 못했습니다. keyring 전용 인증은 이 alpha에서 미지원입니다.",
+                               "No file-based CLI auth was found. Keyring-only auth is not supported in this alpha."))
         self.ready = True
         return {"runner": self.name, "version": self.version, "adapter": ADAPTER_VERSION,
                 "auth": "credential_file_present_not_authenticated_tested",
@@ -437,7 +460,7 @@ class CLIRunner:
         if not self.ready:
             self.preflight()
         if cancel.is_set():
-            raise Cancelled("분석 중단")
+            raise Cancelled(tr("분석 중단", "Analysis stopped"))
         with self._temporary() as temp:
             work, output = Path(temp) / "work", Path(temp) / "out"
             work.mkdir(mode=0o700)
@@ -453,8 +476,9 @@ class CLIRunner:
                 env=self._sandbox_env(work, output), cwd=work if sys.platform == "darwin" else None)
             if code:
                 reason = cli_error(self.name, text)
-                raise FlowError(f"{self.name} 실행 실패(exit {code})" +
-                                (f": {reason}" if reason else ". CLI 인증·계정 한도·옵션 호환성을 확인하세요."))
+                raise FlowError(tr(f"{self.name} 실행 실패(exit {code})", f"{self.name} run failed (exit {code})") + (
+                    f": {reason}" if reason else tr(". CLI 인증·계정 한도·옵션 호환성을 확인하세요.",
+                                                    ". Check the CLI's login, account limits and option compatibility.")))
             if self.name == "codex":
                 # Codex exec events do not name the model; the requested one is recorded instead.
                 value, usage = parse_codex_output(text, output / "result.json")

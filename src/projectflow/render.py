@@ -6,19 +6,34 @@ from collections import Counter, deque
 from datetime import datetime
 from typing import Any, Callable
 
+from .i18n import Labels, tr
 from .util import FlowError, cell_slice, dumps, ellipsis, merge_focus, safe_text
 
-RELATION = {"follows": "후속", "motivates": "동기", "produces": "결과", "revises": "수정",
-            "verifies": "검증", "answers": "답변"}
-STATUS = {"proposed": "제안", "adopted": "채택", "in_progress": "진행 중", "asked": "요청", "applied": "변경 적용",
-          "reported_complete": "완료 보고·미검증", "observed_success": "관측 성공", "observed_failure": "관측 실패",
-          "withdrawn": "철회", "unknown": "미확인"}
-KIND = {"goal": "목표", "question": "요청", "proposal": "제안", "decision": "결정", "action": "변경",
-        "outcome": "결과", "revision": "수정"}
-ACTOR = {"user": "사용자", "assistant": "어시스턴트", "tool": "도구", "system": "시스템",
-         "subagent": "하위 에이전트", "git": "Git"}
-ROLE = {"user": "사용자 발화", "assistant": "어시스턴트 응답", "tool_call": "도구 호출",
-        "tool_result": "도구 결과", "metadata": "세션 정보", "git": "Git 변경"}
+# Screen labels follow the screen language at lookup time (`i18n.Labels`), so a module that
+# imports them keeps working whichever language the process chooses later.
+RELATION = Labels({"follows": "후속", "motivates": "동기", "produces": "결과", "revises": "수정",
+                   "verifies": "검증", "answers": "답변"},
+                  {"follows": "follows", "motivates": "motivates", "produces": "produces", "revises": "revises",
+                   "verifies": "verifies", "answers": "answers"})
+STATUS = Labels({"proposed": "제안", "adopted": "채택", "in_progress": "진행 중", "asked": "요청", "applied": "변경 적용",
+                 "reported_complete": "완료 보고·미검증", "observed_success": "관측 성공", "observed_failure": "관측 실패",
+                 "withdrawn": "철회", "unknown": "미확인"},
+                {"proposed": "proposed", "adopted": "adopted", "in_progress": "in progress", "asked": "asked",
+                 "applied": "applied", "reported_complete": "reported done·unverified",
+                 "observed_success": "observed success", "observed_failure": "observed failure",
+                 "withdrawn": "withdrawn", "unknown": "unknown"})
+KIND = Labels({"goal": "목표", "question": "요청", "proposal": "제안", "decision": "결정", "action": "변경",
+               "outcome": "결과", "revision": "수정"},
+              {"goal": "goal", "question": "request", "proposal": "proposal", "decision": "decision",
+               "action": "change", "outcome": "result", "revision": "fix"})
+ACTOR = Labels({"user": "사용자", "assistant": "어시스턴트", "tool": "도구", "system": "시스템",
+                "subagent": "하위 에이전트", "git": "Git"},
+               {"user": "user", "assistant": "assistant", "tool": "tool", "system": "system",
+                "subagent": "sub-agent", "git": "Git"})
+ROLE = Labels({"user": "사용자 발화", "assistant": "어시스턴트 응답", "tool_call": "도구 호출",
+               "tool_result": "도구 결과", "metadata": "세션 정보", "git": "Git 변경"},
+              {"user": "user message", "assistant": "assistant reply", "tool_call": "tool call",
+               "tool_result": "tool result", "metadata": "session info", "git": "Git change"})
 PROVIDER = {"codex": "Codex", "claude": "Claude Code", "git": "Git"}
 # One glyph per tone so a terminal list reads at a glance, with ASCII fallbacks.
 MARK = {"ok": "✓", "warn": "!", "fail": "✗", "plain": "·"}
@@ -77,22 +92,24 @@ def status_labels(graph: dict) -> dict[str, str]:
     for event in graph["events"]:
         status = event["status"]
         if event["kind"] == "question" and status == "asked":
-            labels[event["id"]] = "요청 · " + ("답변됨" if event["id"] in answered else "답변 없음")
+            labels[event["id"]] = tr("요청 · ", "request · ") + (tr("답변됨", "answered") if event["id"] in answered
+                                                            else tr("답변 없음", "no answer"))
         elif event["kind"] in ("action", "revision") and status in ("applied", "reported_complete"):
             results = checks.get(event["id"], [])
             passed = sum(item["status"] == "observed_success" for item in results)
             failed = sum(item["status"] == "observed_failure" for item in results)
-            base = "변경 적용" if status == "applied" else "완료 보고"
+            base = tr("변경 적용", "applied") if status == "applied" else tr("완료 보고", "reported done")
             if len(results) == 1:
                 # A lone check is named, so a syntax check does not read like a full run.
-                verdict = "검증" if passed else "검증 실패"
+                verdict = tr("검증", "verified") if passed else tr("검증 실패", "check failed")
                 title = safe_text(results[0]["title"], multiline=False)
                 labels[event["id"]] = f"{base} · {verdict}: {ellipsis(title, 40)}"
             else:
-                parts = ([f"검증 통과 {passed}건"] if passed else []) + ([f"검증 실패 {failed}건"] if failed else [])
-                labels[event["id"]] = base + " · " + (" · ".join(parts) or "미검증")
+                parts = (([tr(f"검증 통과 {passed}건", f"{passed} checks passed")] if passed else [])
+                         + ([tr(f"검증 실패 {failed}건", f"{failed} checks failed")] if failed else []))
+                labels[event["id"]] = base + " · " + (" · ".join(parts) or tr("미검증", "unverified"))
         elif event["id"] in unlinked:
-            labels[event["id"]] = STATUS.get(status, status) + " · 확인 대상 미연결"
+            labels[event["id"]] = STATUS.get(status, status) + tr(" · 확인 대상 미연결", " · not linked to what it checked")
         else:
             labels[event["id"]] = STATUS.get(status, status)
     return labels
@@ -165,7 +182,8 @@ def event_detail(graph: dict, event_id: str, evidence: Callable[[str], dict | No
     events = {event["id"]: event for event in graph["events"]}
     event = events.get(event_id)
     if not event:
-        return [("사건을 선택하면 설명과 원문 근거가 표시됩니다.", "dim")]
+        return [(tr("사건을 선택하면 설명과 원문 근거가 표시됩니다.",
+                    "Select an event to see its description and source evidence."), "dim")]
     numbers = {item["id"]: f"[{n:02d}]" for n, item in enumerate(graph["events"], 1)}
     labels, tones = status_labels(graph), status_tones(graph)
     marks = ASCII_MARK if ascii_only else MARK
@@ -176,7 +194,7 @@ def event_detail(graph: dict, event_id: str, evidence: Callable[[str], dict | No
         (" · ".join(part for part in (KIND.get(event["kind"], event["kind"]),
                                       ACTOR.get(event.get("actor"), clean(event.get("actor") or "")),
                                       _when(event.get("occurred_at") or event.get("recorded_at"))) if part), "dim"),
-        ("", ""), ("무슨 일이 있었나", "heading")]
+        ("", ""), (tr("무슨 일이 있었나", "What happened"), "heading")]
     lines += [("  " + clean(part), "") for part in safe_text(event["summary"]).splitlines() if part.strip()]
     active = [edge for edge in graph["edges"] if edge["active"] and
               event_id in (edge["from_event_id"], edge["to_event_id"])]
@@ -188,35 +206,38 @@ def event_detail(graph: dict, event_id: str, evidence: Callable[[str], dict | No
     checks = [edge for edge in active if edge["relation"] == "verifies"]
     if checks:
         # A change lists what checked it; a result lists what it checked.
-        heading = "검증한 결과" if event["kind"] in ("action", "revision") else "이 결과가 확인한 변경"
+        is_change = event["kind"] in ("action", "revision")
+        heading = tr("검증한 결과", "Results that checked it") if is_change else tr("이 결과가 확인한 변경",
+                                                                                 "Changes this result checked")
         lines += [("", ""), (heading, "heading")]
         for edge in checks:
             item = other(edge)
             if item:
-                tone = tones[item["id"]] if heading == "검증한 결과" else "plain"
+                tone = tones[item["id"]] if is_change else "plain"
                 lines.append((f"  {key(item)}{marks[tone]} {numbers[item['id']]} {clean(item['title'])}", tone))
     rest = [edge for edge in active if edge["relation"] != "verifies"]
     if rest:
-        lines += [("", ""), ("연결된 사건", "heading")]
+        lines += [("", ""), (tr("연결된 사건", "Linked events"), "heading")]
         for edge in rest:
             item = other(edge)
             if item:
                 arrow = ("->" if ascii_only else "→") if edge["from_event_id"] == event_id else (
                     "<-" if ascii_only else "←")
                 # A turn link is the dialog's order, not a claim the model made.
-                turn = " (대화 순서)" if edge.get("origin") == "dialog_turn" else ""
+                turn = tr(" (대화 순서)", " (dialog order)") if edge.get("origin") == "dialog_turn" else ""
                 lines.append((f"  {key(item)}{arrow} {RELATION.get(edge['relation'], edge['relation'])}{turn}  "
                               f"{numbers[item['id']]} {clean(item['title'])}", "dim" if turn else ""))
     if event["evidence_ids"]:
-        lines += [("", ""), (f"원문 근거 {len(event['evidence_ids'])}개", "heading")]
+        count = len(event["evidence_ids"])
+        lines += [("", ""), (tr(f"원문 근거 {count}개", f"Source evidence: {count}"), "heading")]
         for index, evidence_id in enumerate(event["evidence_ids"], 1):
             item = evidence(evidence_id)
             if not item:
-                lines.append((f"  {index}) 보존된 근거 없음 · {evidence_id}", "dim"))
+                lines.append((tr(f"  {index}) 보존된 근거 없음 · {evidence_id}", f"  {index}) no preserved evidence · {evidence_id}"), "dim"))
                 continue
             source = item.get("source") or {}
-            where = (f"{item.get('start_line')}번째 줄" if item.get("start_line") == item.get("end_line")
-                     else f"{item.get('start_line', '?')}–{item.get('end_line', '?')}번째 줄")
+            start, end = item.get("start_line", "?"), item.get("end_line", "?")
+            where = tr(f"{start}번째 줄", f"line {start}") if start == end else tr(f"{start}–{end}번째 줄", f"lines {start}–{end}")
             head = " · ".join(part for part in (ROLE.get(source.get("role"), source.get("role") or ""),
                                                 PROVIDER.get(source.get("provider"), source.get("provider") or ""),
                                                 _when(source.get("recorded_at")), where) if part)
@@ -230,11 +251,12 @@ def event_detail(graph: dict, event_id: str, evidence: Callable[[str], dict | No
             for part in shown[:quote_lines]:
                 lines.append(("     " + clean(part) if part.strip() else "", ""))
             if len(shown) > quote_lines:
-                lines.append((f"     … {len(shown) - quote_lines}줄 더 있음", "dim"))
+                more = len(shown) - quote_lines
+                lines.append((tr(f"     … {more}줄 더 있음", f"     … {more} more lines"), "dim"))
     open_items = [item for item in graph.get("open_items", []) if isinstance(item, dict) and
                   event_id in item.get("related_event_ids", [])]
     if open_items:
-        lines += [("", ""), ("아직 확인되지 않은 일", "heading")]
+        lines += [("", ""), (tr("아직 확인되지 않은 일", "Open items"), "heading")]
         lines += [("  • " + clean(item.get("text", "")), "") for item in open_items]
     return lines
 
@@ -278,7 +300,7 @@ def mermaid(graph: dict) -> str:
         left, right = ids[edge["from_event_id"]], ids[edge["to_event_id"]]
         inferred = edge["basis"] == "inferred"
         arrow = "-.->" if inferred else "-->"
-        label = _label(RELATION[edge["relation"]] + ("·추정" if inferred else ""))
+        label = _label(RELATION[edge["relation"]] + (tr("·추정", "·inferred") if inferred else ""))
         lines.append(f"  {left} {arrow}|{label}| {right}")
     return "\n".join(lines) + "\n"
 
@@ -288,7 +310,7 @@ def parse_safe_mermaid(text: str) -> tuple[dict[str, str], list[tuple[str, str, 
     nodes, edges = {}, []
     lines = text.splitlines()
     if not lines or lines[0] != "flowchart TB":
-        raise FlowError("지원하지 않는 Mermaid subset")
+        raise FlowError(tr("지원하지 않는 Mermaid subset", "Unsupported Mermaid subset"))
     for line in lines[1:]:
         node = re.fullmatch(r'\s*(n\d+)\["([^"\n]*)"\]', line)
         edge = re.fullmatch(r"\s*(n\d+) (-->|-\.->)\|([^|\n]*)\| (n\d+)", line)
@@ -297,9 +319,9 @@ def parse_safe_mermaid(text: str) -> tuple[dict[str, str], list[tuple[str, str, 
         elif edge:
             edges.append((edge[1], edge[4], _decode(edge[3]), edge[2] == "-.->"))
         elif line.strip():
-            raise FlowError("지원하지 않는 Mermaid 문법")
+            raise FlowError(tr("지원하지 않는 Mermaid 문법", "Unsupported Mermaid syntax"))
     if any(left not in nodes or right not in nodes for left, right, _, _ in edges):
-        raise FlowError("Mermaid의 노드 참조가 유효하지 않습니다.")
+        raise FlowError(tr("Mermaid의 노드 참조가 유효하지 않습니다.", "A Mermaid node reference is invalid."))
     return nodes, edges
 
 
@@ -324,7 +346,9 @@ def terminal_graph(graph: dict, *, ascii_only: bool = False,
     def walk(node: str, prefix: str, connector: str = "", relation: str = "", depth: int = 0) -> None:
         if node in seen:
             reference = "->" if ascii_only else "↗"
-            result.append((f"{prefix}{connector}{relation}{reference} [{int(node[1:]) + 1:02d}] (합류/되돌아감)", real_ids[node]))
+            number = f"{int(node[1:]) + 1:02d}"
+            result.append((f"{prefix}{connector}{relation}{reference} [{number}] " + tr("(합류/되돌아감)", "(join/back)"),
+                           real_ids[node]))
             return
         seen.add(node)
         label = nodes[node]
@@ -334,7 +358,8 @@ def terminal_graph(graph: dict, *, ascii_only: bool = False,
         # Iterative call depth is bounded for pathological thousand-node histories.
         if depth >= 70 and outgoing[node]:
             for child, tag, inferred in outgoing[node]:
-                result.append((f"{prefix}   -> [{int(child[1:]) + 1:02d}] {tag} (깊은 분기 참조)", real_ids[child]))
+                result.append((f"{prefix}   -> [{int(child[1:]) + 1:02d}] {tag} " + tr("(깊은 분기 참조)", "(deep branch reference)"),
+                               real_ids[child]))
             return
         children = outgoing[node]
         for n, (child, tag, inferred) in enumerate(children):
@@ -348,7 +373,7 @@ def terminal_graph(graph: dict, *, ascii_only: bool = False,
                 result.append(("", None))
             walk(node, "")
     if not result:
-        result = [("아직 저장된 사건이 없습니다.", None)]
+        result = [(tr("아직 저장된 사건이 없습니다.", "No events saved yet."), None)]
     return result
 
 
@@ -398,7 +423,7 @@ def svg(graph: dict) -> str:
         width += 120 + len(drawn_detours) * DETOUR_LANE_PITCH
     detour_index = 0
     undrawn = 0
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="프로젝트 흐름" font-family="Noto Sans CJK KR, Noto Sans KR, Malgun Gothic, Apple SD Gothic Neo, sans-serif">',
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="{tr("프로젝트 흐름", "Project flow")}" font-family="Noto Sans CJK KR, Noto Sans KR, Malgun Gothic, Apple SD Gothic Neo, sans-serif">',
            '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#778593"/></marker></defs>']
     for edge in graph["edges"]:
         if not edge["active"]:
@@ -424,7 +449,7 @@ def svg(graph: dict) -> str:
             top, bottom = y1 + 20, y2 - 20
             path = f"M{x1} {y1} V{top} H{lane} V{bottom} H{x2} V{y2 - 5}"
             label_x, label_y = lane + 5, (top + bottom) / 2
-        label = RELATION[edge["relation"]] + ("·추정" if edge["basis"] == "inferred" else "")
+        label = RELATION[edge["relation"]] + (tr("·추정", "·inferred") if edge["basis"] == "inferred" else "")
         out += [f'<path d="{path}" fill="none" stroke="#778593" stroke-width="1.7"{dashed} marker-end="url(#arrow)"/>',
                 f'<text x="{label_x}" y="{label_y}" fill="#667788" font-size="11">{html.escape(label)}</text>']
     statuses = status_labels(graph)
@@ -442,11 +467,12 @@ def svg(graph: dict) -> str:
         out.append(f'<text x="16" y="67" fill="#203343" font-size="14" font-weight="600">{html.escape(second)}</text>')
         out.append(f'<text x="16" y="92" fill="#617686" font-size="11">{html.escape(status)}</text></g>')
     if not graph["events"]:
-        out.append('<text x="32" y="70" fill="#617686" font-size="18">저장된 사건이 없습니다.</text>')
+        out.append(f'<text x="32" y="70" fill="#617686" font-size="18">{tr("저장된 사건이 없습니다.", "No saved events.")}</text>')
     if undrawn:
-        out.append(f'<text x="32" y="{height - 14}" fill="#8a97a4" font-size="11">'
-                   f'긴 연결 {undrawn}개는 선이 겹쳐 생략했습니다. 전체 목록은 '
-                   f'text 출력이나 브라우저 보기를 사용하세요.</text>')
+        note = tr(f"긴 연결 {undrawn}개는 선이 겹쳐 생략했습니다. 전체 목록은 text 출력이나 브라우저 보기를 사용하세요.",
+                  f"{undrawn} long links were left out because their lines would overlap; "
+                  f"use the text output or the browser view for the full list.")
+        out.append(f'<text x="32" y="{height - 14}" fill="#8a97a4" font-size="11">{html.escape(note)}</text>')
     return "\n".join(out) + "</svg>"
 
 
@@ -460,46 +486,55 @@ def export_text(graph: dict, evidence: dict[str, dict], fmt: str) -> str:
     if fmt == "json":
         return dumps({"format": "projectflow.export.v1", "sensitive": True, "graph": graph, "evidence": evidence}, pretty=True) + "\n"
     if fmt != "md":
-        raise FlowError("내보내기 형식은 md, mmd, json입니다.")
-    lines = ["# Project Flow", "", "> 민감한 대화·코드가 포함될 수 있습니다. 공유 전에 확인하세요.", "",
-             f"그래프 버전: {graph['version']} · 분석 기준: {_md(graph.get('analyzed_at') or '없음')}", "",
-             "```mermaid", mermaid(graph).strip(), "```", "", "## 사건과 근거"]
+        raise FlowError(tr("내보내기 형식은 md, mmd, json입니다.", "Export formats are md, mmd and json."))
+    analyzed = _md(graph.get("analyzed_at") or tr("없음", "none"))
+    lines = ["# Project Flow", "",
+             tr("> 민감한 대화·코드가 포함될 수 있습니다. 공유 전에 확인하세요.",
+                "> May contain sensitive conversation and code. Review before sharing."), "",
+             tr(f"그래프 버전: {graph['version']} · 분석 기준: {analyzed}",
+                f"Graph version: {graph['version']} · analyzed as of: {analyzed}"), "",
+             "```mermaid", mermaid(graph).strip(), "```", "", tr("## 사건과 근거", "## Events and evidence")]
     statuses = status_labels(graph)
     for number, event in enumerate(graph["events"], 1):
         lines += ["", f"### {number:02d}. {_md(event['title'])}", "", _md(event["summary"]), "",
-                  f"상태: {_md(statuses[event['id']])} · 근거 수준: {_md(event['basis'])}",
+                  tr(f"상태: {_md(statuses[event['id']])} · 근거 수준: {_md(event['basis'])}",
+                     f"Status: {_md(statuses[event['id']])} · basis: {_md(event['basis'])}"),
                   f"ID: `{event['id']}`", ""]
         for evidence_id in event["evidence_ids"]:
             item = evidence.get(evidence_id)
             if not item:
                 continue
-            lines += [f"근거 `{evidence_id}` · `{item['source_id']}` · 줄 {item['start_line']}–{item['end_line']}", ""]
+            lines += [tr(f"근거 `{evidence_id}` · `{item['source_id']}` · 줄 {item['start_line']}–{item['end_line']}",
+                         f"Evidence `{evidence_id}` · `{item['source_id']}` · lines {item['start_line']}–{item['end_line']}"), ""]
             excerpt = evidence_excerpt(item)
             if excerpt:
-                lines += [f"원문 줄 {len(item['quote'])}자 중 인용 부분 발췌 · 전체는 근거 색인 참조", ""]
+                lines += [tr(f"원문 줄 {len(item['quote'])}자 중 인용 부분 발췌 · 전체는 근거 색인 참조",
+                             f"Cited parts of a {len(item['quote'])}-character source line · see the evidence index for the whole"), ""]
             quote = safe_text(excerpt or item["quote"])
             fence = "~" * max(4, max((len(m) for m in re.findall(r"~+", quote)), default=0) + 1)
             lines += [fence + "text", quote, fence, ""]
     if graph["edges"]:
         titles = {event["id"]: event["title"] for event in graph["events"]}
-        lines += ["", "## 관계와 연결 근거", ""]
+        lines += ["", tr("## 관계와 연결 근거", "## Relations and their evidence"), ""]
         for edge in graph["edges"]:
             lines += [f"### {_md(titles[edge['from_event_id']])} → {_md(titles[edge['to_event_id']])}", "",
-                      f"관계: {_md(edge['relation'])} · {_md(edge['basis'])} · 활성: {edge['active']}",
-                      _md(edge["rationale"]), "근거: " + ", ".join(f"`{i}`" for i in edge["evidence_ids"]), ""]
+                      tr(f"관계: {_md(edge['relation'])} · {_md(edge['basis'])} · 활성: {edge['active']}",
+                         f"Relation: {_md(edge['relation'])} · {_md(edge['basis'])} · active: {edge['active']}"),
+                      _md(edge["rationale"]), tr("근거: ", "Evidence: ") + ", ".join(f"`{i}`" for i in edge["evidence_ids"]), ""]
     if graph["open_items"]:
-        lines += ["## 미해결 사항", ""]
+        lines += [tr("## 미해결 사항", "## Open items"), ""]
         for item in graph["open_items"]:
             lines += [f"[{_md(item['status'])}] {_md(item['text'])}",
-                      "근거: " + ", ".join(f"`{i}`" for i in item["evidence_ids"]), ""]
+                      tr("근거: ", "Evidence: ") + ", ".join(f"`{i}`" for i in item["evidence_ids"]), ""]
     # Relation-only citations also remain inspectable in the standalone Markdown export.
-    lines += ["## 전체 근거 색인", ""]
+    lines += [tr("## 전체 근거 색인", "## Full evidence index"), ""]
     for evidence_id, item in sorted(evidence.items()):
         lines += [f"### `{evidence_id}`", "",
-                  f"원문: `{item['source_id']}` · 줄 {item['start_line']}–{item['end_line']}",
+                  tr(f"원문: `{item['source_id']}` · 줄 {item['start_line']}–{item['end_line']}",
+                     f"Source: `{item['source_id']}` · lines {item['start_line']}–{item['end_line']}"),
                   _md(dumps(item["source"]["locator"])), ""]
         quote = safe_text(item["quote"])
         fence = "~" * max(4, max((len(m) for m in re.findall(r"~+", quote)), default=0) + 1)
         lines += [fence + "text", quote, fence, ""]
-    lines += ["## 한계", ""] + [_md(message) for message in graph["limitations"] + graph.get("input_limitations", [])]
+    lines += [tr("## 한계", "## Limitations"), ""] + [_md(message) for message in graph["limitations"] + graph.get("input_limitations", [])]
     return "\n".join(lines) + "\n"

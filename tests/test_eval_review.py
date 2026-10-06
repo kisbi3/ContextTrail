@@ -57,3 +57,20 @@ def test_eval_reports_progress_messages_while_it_runs(tmp_path):
     messages = []
     run_eval("demo", tmp_path / "eval", "mock", AnalysisConfig(), progress=messages.append)
     assert any("단위 완료" in message for message in messages)
+
+
+def test_eval_review_and_preview_read_english_when_the_screen_language_is_english(tmp_path):
+    from projectflow import i18n
+    from projectflow.input_preview import preview_eval
+
+    i18n.set_language("en")
+    output = tmp_path / "eval"
+    run_eval("demo", output, "mock", AnalysisConfig())
+    page = (output / "review.html").read_text()
+    assert "<html lang='en'>" in page and "<h1>ContextTrail eval review</h1>" in page
+    assert "Model quote" in page and "Actual source" in page and "exact line quote" in page
+    assert "모델 인용" not in page
+    preview = preview_eval("demo", tmp_path / "preview", AnalysisConfig())
+    page = Path(preview["preview"]).read_text()
+    assert "<html lang='en'>" in page and "How the input is built" in page
+    assert preview["units"][0]["boundary_reason"] == "start of the sample"

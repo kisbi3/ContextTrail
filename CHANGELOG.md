@@ -5,6 +5,7 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 ## Unreleased
 
 ### Added
+- **English screen text.** The terminal output, TUI, browser view, CLI help, `find`/`show` output, eval review and input preview are in English or Korean, chosen once per process (`i18n.resolve`): `--language`, else `CONTEXTTRAIL_LANGUAGE`, else the project's saved output language, else the locale, else English. Korean output is byte-identical to before. Text the model reads (validation messages, limitations, read denials) and text written into the graph are unchanged; the synthetic demo's content is still Korean.
 - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, root `SECURITY.md`, issue and pull-request templates.
 
 ### Changed

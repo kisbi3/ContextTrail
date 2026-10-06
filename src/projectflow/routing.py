@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable
 
+from .i18n import tr
 from .util import FlowError
 
 ROUTING_VERSION = "tiered-v2-handoff"
@@ -28,7 +29,8 @@ class CallBudget:
     def reserve(self) -> None:
         with self._lock:
             if self.started >= self.maximum:
-                raise FlowError(f"LLM 호출 상한({self.maximum})에 도달했습니다. 저장된 추출은 다음 명시적 실행에서 재사용합니다.")
+                raise FlowError(tr(f"LLM 호출 상한({self.maximum})에 도달했습니다. 저장된 추출은 다음 명시적 실행에서 재사용합니다.",
+                                   f"The LLM call cap ({self.maximum}) was reached. Saved extractions are reused by the next explicit run."))
             self.started += 1
 
 
@@ -62,19 +64,22 @@ class RunnerPool:
             runner = self.factory()
             owner = self._owners.get(id(runner))
             if owner is not None and owner != key[0]:
-                raise FlowError("병렬 Runner factory는 worker마다 독립 인스턴스를 반환해야 합니다.")
+                raise FlowError(tr("병렬 Runner factory는 worker마다 독립 인스턴스를 반환해야 합니다.",
+                                   "A parallel runner factory must return an independent instance per worker."))
             self._owners[id(runner)] = key[0]
             shared = id(runner) in {id(r) for r in self._runners.values()}
             requested = getattr(self.config, role + "_model", None)
             if requested:
                 if shared and getattr(runner, "model", None) != requested:
-                    raise FlowError("서로 다른 단계 모델에는 독립 Runner 인스턴스가 필요합니다.")
+                    raise FlowError(tr("서로 다른 단계 모델에는 독립 Runner 인스턴스가 필요합니다.",
+                                       "Different stage models need independent runner instances."))
                 runner.model = requested
             # Only CLI adapters take a reasoning effort; synthetic runners have no such knob.
             effort = getattr(self.config, role + "_effort", None)
             if effort and hasattr(runner, "effort"):
                 if shared and runner.effort != effort:
-                    raise FlowError("서로 다른 단계 추론 수준에는 독립 Runner 인스턴스가 필요합니다.")
+                    raise FlowError(tr("서로 다른 단계 추론 수준에는 독립 Runner 인스턴스가 필요합니다.",
+                                       "Different stage reasoning efforts need independent runner instances."))
                 runner.effort = effort
             self._runners[key] = runner
             self.is_mock = self.is_mock or bool(getattr(runner, "is_mock", False))

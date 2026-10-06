@@ -13,6 +13,7 @@ from typing import Callable
 from wcwidth import wcswidth
 
 from .diagram import HEAVY, Diagram, _wrap, flow_diagram, request_turns
+from .i18n import language, tr
 from .render import (ASCII_MARK, MARK, event_detail, linked_events, status_labels, status_tones,
                      terminal_graph)
 from .agent_view import reference
@@ -24,11 +25,12 @@ from .webview import LocalViewer
 
 def token_usage_label(tokens: int, known_calls: int, calls: int) -> str:
     if not calls:
-        return "분석 토큰 0"
+        return tr("분석 토큰 0", "analysis tokens 0")
     if not known_calls:
-        return f"분석 토큰 미확인 (0/{calls} 호출)"
-    suffix = f"+ ({known_calls}/{calls} 호출)" if known_calls < calls else ""
-    return f"분석 토큰 {tokens:,}{suffix}"
+        return tr(f"분석 토큰 미확인 (0/{calls} 호출)", f"analysis tokens unknown (0/{calls} calls)")
+    suffix = (tr(f"+ ({known_calls}/{calls} 호출)", f"+ ({known_calls}/{calls} calls)")
+              if known_calls < calls else "")
+    return tr(f"분석 토큰 {tokens:,}{suffix}", f"analysis tokens {tokens:,}{suffix}")
 
 
 def _wrap_cells(value: str, width: int) -> list[str]:
@@ -121,31 +123,61 @@ ENTER = ("\n", "\r", curses.KEY_ENTER)
 WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0) or curses.REPORT_MOUSE_POSITION
 CLICK = curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
 
-# The footer lists the common panel keys; `?` shows every key (HELP plus the screen's own).
-KEYS = "↑↓←→ 이동  [ ] 요청  1-9 연결  ! 확인 필요  / 검색  Tab 상세  ? 도움말"
-HELP = [
-    ("이동", [("↑ ↓   j k", "이전·다음 사건. 요청별 흐름에서는 차례 끝에서 다음 요청으로"),
-             ("← →   h l", "옆 칸의 이어진 상자로(변경 ↔ 오른쪽 결과). 가지 목록에서는 가로 스크롤"),
-             ("PgUp PgDn   Space", "한 화면씩"),
-             ("g G   Home End", "처음·마지막 사건"),
-             ("[ ]", "이전·다음 요청"),
-             ("1-9", "선택한 사건 칸의 번호 붙은 연결로"),
-             ("Backspace", "이동하기 전 사건으로"),
-             ("!", "다음 확인 필요한 곳(! ✗). 끝에서 처음으로"),
-             ("/   n N", "제목·요약·원문 근거 검색, 다음·이전 결과")]),
-    ("에이전트", [("y", "선택한 사건의 참조(contexttrail:ev_…@v12) 복사. Claude Code·Codex 대화에 붙여넣으면 "
-                       "에이전트가 근거와 함께 읽음")]),
-    ("보기", [("Tab   Enter", "흐름 칸 ↔ 선택한 사건 칸"),
-             ("J K", "칸을 옮기지 않고 선택한 사건 칸 스크롤"),
-             ("e", "원문 근거 전부 펼치기 ↔ 8줄까지"),
-             ("z", "지금 칸을 화면 전체로 ↔ 되돌리기"),
-             ("A", "전체 흐름 ↔ 요청별 흐름"),
-             ("Esc", "검색·크게 보기 닫기, 선택한 사건 칸에서 흐름 칸으로"),
-             ("?", "이 도움말")]),
-    ("마우스", [("클릭", "상자·요청·번호 붙은 연결로. 선이나 [02] 동기 ▶ 같은 표시는 이어진 상자로"),
-              ("휠", "흐름에서 사건, 요청 목록에서 요청 이동, 선택한 사건 칸 스크롤"),
-              ("--no-mouse", "마우스를 끄고 터미널의 글자 선택을 씀")]),
-]
+# The footer lists the common panel keys; `?` shows every key (`help_sections` plus the screen's own).
+def keys() -> str:
+    return tr("↑↓←→ 이동  [ ] 요청  1-9 연결  ! 확인 필요  / 검색  Tab 상세  ? 도움말",
+              "↑↓←→ move  [ ] request  1-9 link  ! needs a look  / search  Tab detail  ? help")
+
+
+def help_sections() -> list[tuple[str, list[tuple[str, str]]]]:
+    """Every panel key with what it does, by section, in the screen language."""
+    if language() == "ko":
+        return [
+            ("이동", [("↑ ↓   j k", "이전·다음 사건. 요청별 흐름에서는 차례 끝에서 다음 요청으로"),
+                     ("← →   h l", "옆 칸의 이어진 상자로(변경 ↔ 오른쪽 결과). 가지 목록에서는 가로 스크롤"),
+                     ("PgUp PgDn   Space", "한 화면씩"),
+                     ("g G   Home End", "처음·마지막 사건"),
+                     ("[ ]", "이전·다음 요청"),
+                     ("1-9", "선택한 사건 칸의 번호 붙은 연결로"),
+                     ("Backspace", "이동하기 전 사건으로"),
+                     ("!", "다음 확인 필요한 곳(! ✗). 끝에서 처음으로"),
+                     ("/   n N", "제목·요약·원문 근거 검색, 다음·이전 결과")]),
+            ("에이전트", [("y", "선택한 사건의 참조(contexttrail:ev_…@v12) 복사. Claude Code·Codex 대화에 붙여넣으면 "
+                               "에이전트가 근거와 함께 읽음")]),
+            ("보기", [("Tab   Enter", "흐름 칸 ↔ 선택한 사건 칸"),
+                     ("J K", "칸을 옮기지 않고 선택한 사건 칸 스크롤"),
+                     ("e", "원문 근거 전부 펼치기 ↔ 8줄까지"),
+                     ("z", "지금 칸을 화면 전체로 ↔ 되돌리기"),
+                     ("A", "전체 흐름 ↔ 요청별 흐름"),
+                     ("Esc", "검색·크게 보기 닫기, 선택한 사건 칸에서 흐름 칸으로"),
+                     ("?", "이 도움말")]),
+            ("마우스", [("클릭", "상자·요청·번호 붙은 연결로. 선이나 [02] 동기 ▶ 같은 표시는 이어진 상자로"),
+                      ("휠", "흐름에서 사건, 요청 목록에서 요청 이동, 선택한 사건 칸 스크롤"),
+                      ("--no-mouse", "마우스를 끄고 터미널의 글자 선택을 씀")]),
+        ]
+    return [
+        ("Moving", [("↑ ↓   j k", "previous/next event; in the per-request flow, past the end of a turn into the next request"),
+                    ("← →   h l", "to the linked box beside this one (change ↔ result on the right); in the branch list, horizontal scroll"),
+                    ("PgUp PgDn   Space", "one screen at a time"),
+                    ("g G   Home End", "first/last event"),
+                    ("[ ]", "previous/next request"),
+                    ("1-9", "to the numbered link in the selected event panel"),
+                    ("Backspace", "back to the event before the last jump"),
+                    ("!", "next place that needs a look (! ✗); wraps around at the end"),
+                    ("/   n N", "search titles, summaries and quoted evidence; next/previous match")]),
+        ("Agent", [("y", "copy a reference to the selected event (contexttrail:ev_…@v12); paste it into a Claude Code "
+                         "or Codex chat and the agent reads it with its evidence")]),
+        ("View", [("Tab   Enter", "flow panel ↔ selected event panel"),
+                  ("J K", "scroll the selected event panel without leaving the flow"),
+                  ("e", "show every quoted line ↔ up to 8 lines"),
+                  ("z", "this panel full screen ↔ back"),
+                  ("A", "whole flow ↔ one request at a time"),
+                  ("Esc", "close the search or the full-screen view; from the event panel back to the flow"),
+                  ("?", "this help")]),
+        ("Mouse", [("Click", "a box, a request or a numbered link; a line or a mark like [02] motivates ▶ goes to the linked box"),
+                   ("Wheel", "moves through events in the flow, requests in the list; scrolls the selected event panel"),
+                   ("--no-mouse", "turns the mouse off so the terminal's own text selection works")]),
+    ]
 
 
 def copy_text(text: str) -> str | None:
@@ -181,7 +213,8 @@ def latin(key):
 
 def legend(ascii_only: bool = False) -> str:
     marks = ASCII_MARK if ascii_only else MARK
-    return f"{marks['ok']} 확인됨  {marks['warn']} 확인 필요  {marks['fail']} 실패"
+    return tr(f"{marks['ok']} 확인됨  {marks['warn']} 확인 필요  {marks['fail']} 실패",
+              f"{marks['ok']} verified  {marks['warn']} needs a look  {marks['fail']} failed")
 
 
 class FlowPanels:
@@ -193,7 +226,7 @@ class FlowPanels:
     otherwise. The flow is drawn as boxes and arrows (`diagram.flow_diagram`) when the panel is
     wide enough, else as the branching text list; the selected box's links are lit and the rest
     dimmed. The detail numbers its links 1–9: a number jumps there, Backspace goes back.
-    Selection is by event, so it survives every view. `?` lists every key (HELP); the mouse
+    Selection is by event, so it survives every view. `?` lists every key (`help_sections`); the mouse
     selects what it clicks and the wheel moves or scrolls the panel under it.
     """
 
@@ -252,7 +285,7 @@ class FlowPanels:
     def status_line(self) -> str | None:
         """What the footer shows instead of the key list: the search being typed or a notice."""
         if self.typing is not None:
-            return f"/{self.typing}▌   Enter 찾기 · Esc 취소"
+            return tr(f"/{self.typing}▌   Enter 찾기 · Esc 취소", f"/{self.typing}▌   Enter find · Esc cancel")
         return self.message or None
 
     def turn(self) -> int | None:
@@ -337,7 +370,8 @@ class FlowPanels:
             linked = linked_events(self.graph, event_id) if event_id else []
             source = (event_detail(self.graph, event_id, self.evidence, ascii_only=self.ascii_only, keys=True,
                                    quote_lines=10 ** 6 if self.expand else self.QUOTE_LINES)
-                      if event_id else [("사건을 선택하면 설명과 원문 근거가 표시됩니다.", "dim")])
+                      if event_id else [(tr("사건을 선택하면 설명과 원문 근거가 표시됩니다.",
+                                             "Select an event to see its description and quoted evidence."), "dim")])
             for text, style in source:
                 indent = len(text) - len(text.lstrip(" "))
                 parts = _wrap_cells(text[indent:], max(1, width - indent)) if text.strip() else [""]
@@ -364,7 +398,8 @@ class FlowPanels:
             strong = curses.A_BOLD if here else 0
             first = len(rows)
             if request is None:
-                for part in _wrap(f"요청 기록 없는 사건 {len(keys)}개", max(1, width - 4)):
+                for part in _wrap(tr(f"요청 기록 없는 사건 {len(keys)}개", f"{len(keys)} events with no recorded request"),
+                                  max(1, width - 4)):
                     rows.append([(lead if len(rows) == first else "  ", strong), ("  " + part, self.styles["dim"] | strong)])
             else:
                 tone = self.tones[request]
@@ -402,26 +437,29 @@ class FlowPanels:
             self.graph_top = max(0, min(top, top + height - visible))
 
     def _flow_title(self, turn: int | None) -> str:
-        parts = ["사건 흐름"]
+        parts = [tr("사건 흐름", "Event flow")]
         if self.turns and turn is None:
-            parts.append("전체")
+            parts.append(tr("전체", "all"))
         elif self.turns:
             request = self.turns[turn][0]
-            where = f"요청 {sum(1 for key, _ in self.turns[:turn + 1] if key)}/{sum(1 for key, _ in self.turns if key)}"
-            parts.append(where + " " + self.numbers[request] if request else "요청 기록 없는 사건")
+            here, total = sum(1 for key, _ in self.turns[:turn + 1] if key), sum(1 for key, _ in self.turns if key)
+            where = tr(f"요청 {here}/{total}", f"request {here}/{total}")
+            parts.append(where + " " + self.numbers[request] if request
+                         else tr("요청 기록 없는 사건", "events with no recorded request"))
         if self.query:
-            parts.append(f"검색 '{self.query}' {len(self.matches)}개")
+            parts.append(tr(f"검색 '{self.query}' {len(self.matches)}개", f"search '{self.query}' {len(self.matches)} found"))
         if self.zoom:
-            parts.append("크게 보기")
+            parts.append(tr("크게 보기", "full screen"))
         return " · ".join(parts)
 
     def _help_lines(self) -> list[tuple[str, str]]:
-        sections = HELP + ([("이 화면", list(self.app_keys))] if self.app_keys else [])
+        sections = help_sections() + ([(tr("이 화면", "This screen"), list(self.app_keys))] if self.app_keys else [])
         lines: list[tuple[str, str]] = []
         for heading, keys in sections:
             lines += [(heading, "heading")] + [(f"  {key}{' ' * (18 - wcswidth(key))} {text}", "")
                                                for key, text in keys] + [("", "")]
-        lines.append(("한글 입력 상태에서도 같은 자리의 키로 동작합니다. 아무 키나 누르면 닫힙니다.", "dim"))
+        lines.append((tr("한글 입력 상태에서도 같은 자리의 키로 동작합니다. 아무 키나 누르면 닫힙니다.",
+                         "Keys work in the same place while a Korean input method is on. Any key closes this."), "dim"))
         return lines
 
     def draw(self, screen, top: int, height: int, columns: int) -> None:
@@ -449,7 +487,8 @@ class FlowPanels:
             self._shown, self.graph_top = (self.whole, turn), 0
         if list_box:
             list_y, list_x, list_h, list_w = list_box
-            self._panel(screen, *list_box, f"요청 {sum(1 for key, _ in self.turns if key)}개")
+            count = sum(1 for key, _ in self.turns if key)
+            self._panel(screen, *list_box, tr(f"요청 {count}개", f"{count} requests"))
             rows, self._list_owners, (first, last) = self._requests(list_w - 4)
             visible = max(1, list_h - 2)
             if first < self.list_top:
@@ -484,7 +523,7 @@ class FlowPanels:
                               inner, self.left)
         if detail_box:
             detail_y, detail_x, detail_h, detail_w = detail_box
-            title = "선택한 사건" + (" · 크게 보기" if self.zoom else "")
+            title = tr("선택한 사건", "Selected event") + (tr(" · 크게 보기", " · full screen") if self.zoom else "")
             self._panel(screen, *detail_box, title + (pointer if self.focus == "detail" else ""))
             detail, _ = self._detail(self.current, max(1, detail_w - 4))
             visible = max(1, detail_h - 2)
@@ -494,7 +533,7 @@ class FlowPanels:
                           max(1, detail_w - 4))
         if self.help:
             lines = self._help_lines()
-            self._panel(screen, top, 0, height, columns, "키 도움말 · 아무 키나 누르면 닫힘")
+            self._panel(screen, top, 0, height, columns, tr("키 도움말 · 아무 키나 누르면 닫힘", "Key help · any key closes"))
             visible = max(1, height - 2)
             self.help_top = min(self.help_top, max(0, len(lines) - visible))
             for offset, (line, style) in enumerate(lines[self.help_top:self.help_top + visible]):
@@ -544,13 +583,14 @@ class FlowPanels:
         """Jump to the next event that needs a look (! or ✗), wrapping around."""
         flagged = [event["id"] for event in self.graph["events"] if self.tones[event["id"]] in ("warn", "fail")]
         if not flagged:
-            self.message = "확인이 필요한 사건이 없습니다"
+            self.message = tr("확인이 필요한 사건이 없습니다", "No event needs a look")
             return
         here = self.position.get(self.current, -1)
         target = next((key for key in flagged if self.position[key] > here), flagged[0])
         self.select(target, remember=True)
-        self.message = (f"확인 필요 {flagged.index(target) + 1}/{len(flagged)} · {self.numbers[target]} "
-                        f"{safe_text(self.labels[target], multiline=False)}")
+        where, label = f"{flagged.index(target) + 1}/{len(flagged)}", safe_text(self.labels[target], multiline=False)
+        self.message = tr(f"확인 필요 {where} · {self.numbers[target]} {label}",
+                          f"needs a look {where} · {self.numbers[target]} {label}")
 
     def _search_text(self) -> dict[str, str]:
         """Each event's title, summary and quoted evidence, folded for matching."""
@@ -567,13 +607,14 @@ class FlowPanels:
         self.matches = sorted((key for key, text in self._search_text().items() if needle in text),
                               key=self.position.get) if query else []
         if query and not self.matches:
-            self.message = f"'{query}'을(를) 찾지 못했습니다"
+            self.message = tr(f"'{query}'을(를) 찾지 못했습니다", f"'{query}' not found")
         elif query:
             self._next_match(1, inclusive=True)
 
     def _next_match(self, direction: int, *, inclusive: bool = False) -> None:
         if not self.matches:
-            self.message = "/로 먼저 검색하세요" if not self.query else f"'{self.query}'을(를) 찾지 못했습니다"
+            self.message = (tr("/로 먼저 검색하세요", "Search with / first") if not self.query
+                            else tr(f"'{self.query}'을(를) 찾지 못했습니다", f"'{self.query}' not found"))
             return
         here = self.position.get(self.current, -1)
         ahead = [key for key in self.matches if (self.position[key] - here) * direction > 0
@@ -581,7 +622,8 @@ class FlowPanels:
         target = (ahead[0] if direction > 0 else ahead[-1]) if ahead else (
             self.matches[0] if direction > 0 else self.matches[-1])
         self.select(target, remember=True)
-        self.message = f"검색 '{self.query}' {self.matches.index(target) + 1}/{len(self.matches)}"
+        where = f"{self.matches.index(target) + 1}/{len(self.matches)}"
+        self.message = tr(f"검색 '{self.query}' {where}", f"search '{self.query}' {where}")
 
     def _type(self, key) -> None:
         if key == ESC:
@@ -740,16 +782,21 @@ class FlowPanels:
             self._next_match(1 if key == "n" else -1)
         elif key in ("e", "E"):
             self.expand = not self.expand
-            self.message = "원문 근거 전부 펼침" if self.expand else f"원문 근거 {self.QUOTE_LINES}줄까지"
+            self.message = (tr("원문 근거 전부 펼침", "Showing every quoted line") if self.expand
+                            else tr(f"원문 근거 {self.QUOTE_LINES}줄까지", f"Quotes up to {self.QUOTE_LINES} lines"))
         elif key in ("z", "Z"):
             self.zoom = not self.zoom
         elif key in ("y", "Y"):
             if self.current in {event["id"] for event in self.graph["events"]}:
                 ref = reference(self.graph, self.current)
                 how = copy_text(ref)
-                self.message = (f"복사함: {ref} · 대화에 붙여넣으세요" if how == "pbcopy" else
-                                f"복사 요청: {ref} · 안 되면 이 글자를 선택해 복사" if how else
-                                f"복사하지 못했습니다. 이 글자를 선택해 복사하세요: {ref}")
+                self.message = (tr(f"복사함: {ref} · 대화에 붙여넣으세요", f"Copied: {ref} · paste it into a chat")
+                                if how == "pbcopy" else
+                                tr(f"복사 요청: {ref} · 안 되면 이 글자를 선택해 복사",
+                                   f"Copy requested: {ref} · if it did not work, select this text and copy it")
+                                if how else
+                                tr(f"복사하지 못했습니다. 이 글자를 선택해 복사하세요: {ref}",
+                                   f"Could not copy. Select this text and copy it: {ref}"))
         elif key == "?":
             self.help, self.help_top = True, 0
         elif key in (curses.KEY_HOME, "g", curses.KEY_END, "G"):
@@ -790,25 +837,27 @@ class GraphApp:
     def __init__(self, graph: dict, evidence: Callable[[str], dict | None], *, title: str,
                  ascii_only: bool = False, color: bool = True, mouse: bool = True):
         self.title, self.color, self.mouse = title, color, mouse
-        self.panels = FlowPanels(graph, evidence, ascii_only=ascii_only, app_keys=(("Q", "종료"),))
+        self.panels = FlowPanels(graph, evidence, ascii_only=ascii_only, app_keys=(("Q", tr("종료", "quit")),))
 
     def draw(self, screen) -> None:
         screen.erase()
         rows, cols = screen.getmaxyx()
         graph, styles = self.panels.graph, self.panels.styles
         _put_runs(screen, 0, 1, [("◆ CONTEXTTRAIL", curses.A_BOLD | styles["frame"])], cols)
-        _put_runs(screen, 1, 1, [(f"{self.title}   v{graph['version']}   ·   {len(graph['events'])} 사건   ·   "
-                                  f"{sum(edge['active'] for edge in graph['edges'])} 관계   ·   "
-                                  f"{graph['analysis_status']}", 0)], cols)
+        events, relations = len(graph["events"]), sum(edge["active"] for edge in graph["edges"])
+        _put_runs(screen, 1, 1, [(f"{self.title}   v{graph['version']}   ·   "
+                                  + tr(f"{events} 사건   ·   {relations} 관계", f"{events} events   ·   {relations} relations")
+                                  + f"   ·   {graph['analysis_status']}", 0)], cols)
         if rows < 14 or cols < 36:
-            _put_runs(screen, 3, 1, [("터미널을 넓혀 주세요. Q 종료", 0)], cols)
+            _put_runs(screen, 3, 1, [(tr("터미널을 넓혀 주세요. Q 종료", "Please widen the terminal. Q quits"), 0)], cols)
             screen.refresh()
             return
         self.panels.draw(screen, 3, rows - 5, cols)
         status = self.panels.status_line()
-        _put_runs(screen, rows - 2, 1, [(status, 0) if status else (KEYS + "  Q 종료", styles["dim"])], cols)
-        _put_runs(screen, rows - 1, 1, [(legend(self.panels.ascii_only) + "   ·   저장된 결과만 표시", styles["dim"])],
+        _put_runs(screen, rows - 2, 1, [(status, 0) if status else (keys() + tr("  Q 종료", "  Q quit"), styles["dim"])],
                   cols)
+        _put_runs(screen, rows - 1, 1, [(legend(self.panels.ascii_only)
+                                         + tr("   ·   저장된 결과만 표시", "   ·   saved results only"), styles["dim"])], cols)
         screen.refresh()
 
     def _run(self, screen) -> None:
@@ -828,7 +877,8 @@ class GraphApp:
             locale.setlocale(locale.LC_ALL, "")
             curses.wrapper(self._run)
         except curses.error as exc:
-            raise FlowError("그래프 화면을 열 수 없습니다. TERM과 터미널 크기를 확인하세요.") from exc
+            raise FlowError(tr("그래프 화면을 열 수 없습니다. TERM과 터미널 크기를 확인하세요.",
+                               "Could not open the graph screen. Check TERM and the terminal size.")) from exc
 
 
 class TerminalApp:
@@ -844,15 +894,21 @@ class TerminalApp:
         self.messages = queue.Queue()
         self.worker = None
         self.viewer = None
-        self.notice = "저장된 결과 열람 · 자동 분석 없음"
+        self.notice = self._idle_notice()
         self.panels = FlowPanels(store.graph(), lambda key: self._read(lambda: store.evidence(key), None),
                                  ascii_only=ascii_only,
-                                 app_keys=(("R", "변경분 분석(이전 그림 유지)"), ("B", "브라우저 주소와 SSH 안내"),
-                                           ("Q", "종료. 분석 중이면 취소 확인")))
+                                 app_keys=(("R", tr("변경분 분석(이전 그림 유지)", "analyze what changed (keeps the current picture)")),
+                                           ("B", tr("브라우저 주소와 SSH 안내", "browser address and SSH instructions")),
+                                           ("Q", tr("종료. 분석 중이면 취소 확인", "quit; asks before cancelling an analysis"))))
         self.quit_pending = False
         self._token_checked_at = 0.0
         self._token_totals = (0, 0, 0)
         self._check = {}
+
+    @staticmethod
+    def _idle_notice() -> str:
+        """The notice before anything happens in a session: saved results, no analysis running."""
+        return tr("저장된 결과 열람 · 자동 분석 없음", "Showing saved results · no automatic analysis")
 
     def _read(self, read: Callable, fallback):
         """A read the analysis writer holds up keeps what the screen already shows; it never ends the app."""
@@ -890,14 +946,14 @@ class TerminalApp:
 
     def start_analysis(self, screen):
         if self.busy():
-            self.notice = "이미 분석이 진행 중입니다. 중복 실행하지 않습니다."
+            self.notice = tr("이미 분석이 진행 중입니다. 중복 실행하지 않습니다.", "An analysis is already running; not starting another.")
             return
         if self.authorize and not self.authorize(lambda question, choices: self.ask(screen, question, choices)):
-            self.notice = "분석을 시작하지 않았습니다."
+            self.notice = tr("분석을 시작하지 않았습니다.", "Analysis not started.")
             return
         self.cancel.clear()
         self.quit_pending = False
-        self.notice = "입력 변화 확인 중 · 이전 그림 유지"
+        self.notice = tr("입력 변화 확인 중 · 이전 그림 유지", "Checking inputs for changes · keeping the current picture")
         def run():
             try:
                 result = self.analyze(self.cancel, lambda msg: self.messages.put(("status", msg)), self.confirm)
@@ -914,9 +970,10 @@ class TerminalApp:
             rows, columns = screen.getmaxyx()
             # Wrapped, never cut: the plan, the choices, then the answer being typed, above the legend.
             lines = [(line, curses.A_BOLD) for line in _wrap(plan_text(plan), columns - 1)]
-            lines += [(line, 0) for line in _wrap("선택지: " + plan_choices_text(plan), columns - 1)]
+            lines += [(line, 0) for line in _wrap(tr("선택지: ", "Choices: ") + plan_choices_text(plan), columns - 1)]
             lines += [(line, curses.A_REVERSE) for line in _wrap(
-                f"처리할 작업 단위 수를 입력하고 Enter [Enter={plan['units_this_run']}개 · n 취소]: {typed}_",
+                tr(f"처리할 작업 단위 수를 입력하고 Enter [Enter={plan['units_this_run']}개 · n 취소]: {typed}_",
+                   f"Type the number of work units to run, then Enter [Enter={plan['units_this_run']} · n cancels]: {typed}_"),
                 columns - 1)]
             top = max(3, rows - 1 - len(lines))
             for offset, (line, attr) in enumerate(lines[-(rows - 1 - top):]):
@@ -956,26 +1013,31 @@ class TerminalApp:
         rows, columns = screen.getmaxyx()
         graph, styles = self.graph, self.panels.styles
         check = self._check = self._read(lambda: self.store.get_meta("last_check", {}), self._check)
+        events, relations = len(graph["events"]), sum(e["active"] for e in graph["edges"])
         self._put(screen, 0, 1, f"◆ CONTEXTTRAIL   {self.title}   v{graph['version']}   ·   "
-                  f"{len(graph['events'])} 사건 · {sum(e['active'] for e in graph['edges'])} 관계",
+                  + tr(f"{events} 사건 · {relations} 관계", f"{events} events · {relations} relations"),
                   curses.A_BOLD | styles["frame"])
-        self._put(screen, 1, 1, f"분석 기준 {graph.get('analyzed_at') or '없음'}   ·   마지막 확인 "
-                  f"{check.get('at', '없음')} ({check.get('status', 'no_data')})", styles["dim"])
+        none = tr("없음", "none")
+        analyzed, checked, state = graph.get("analyzed_at") or none, check.get("at", none), check.get("status", "no_data")
+        self._put(screen, 1, 1, tr(f"분석 기준 {analyzed}   ·   마지막 확인 {checked} ({state})",
+                                   f"analyzed as of {analyzed}   ·   last check {checked} ({state})"), styles["dim"])
         # Before anything happens in this session, a failed last check says why.
-        idle = not self.busy() and self.notice.startswith("저장된 결과")
-        self._put(screen, 2, 1, "마지막 확인 오류: " + check["error"] if idle and check.get("error") else self.notice)
+        idle = not self.busy() and self.notice == self._idle_notice()
+        self._put(screen, 2, 1, tr("마지막 확인 오류: ", "Last check error: ") + check["error"]
+                  if idle and check.get("error") else self.notice)
         if rows < 12 or columns < 36:
-            self._put(screen, 4, 0, "화면을 넓히거나 --no-tui 사용. Q 종료")
+            self._put(screen, 4, 0, tr("화면을 넓히거나 --no-tui 사용. Q 종료", "Widen the screen or use --no-tui. Q quits"))
             screen.refresh()
             return
         self.panels.draw(screen, 3, rows - 5, columns)
         status = self.panels.status_line()
-        self._put(screen, rows - 2, 1, status or KEYS + "  R 분석  B 브라우저  Q 종료", 0 if status else styles["dim"])
+        self._put(screen, rows - 2, 1, status or keys() + tr("  R 분석  B 브라우저  Q 종료", "  R analyze  B browser  Q quit"),
+                  0 if status else styles["dim"])
         if time.monotonic() - self._token_checked_at >= 1:
             self._token_totals = self._read(self.store.llm_token_totals, self._token_totals)
             self._token_checked_at = time.monotonic()
         self._put(screen, rows - 1, 1, f"{legend(self.ascii_only)}   ·   {token_usage_label(*self._token_totals)}"
-                  "   ·   자동 감시 없음", styles["dim"])
+                  + tr("   ·   자동 감시 없음", "   ·   no automatic watching"), styles["dim"])
         screen.refresh()
 
     def show_browser(self, screen):
@@ -984,12 +1046,15 @@ class TerminalApp:
         address = self.viewer.url(self.graph["version"], self.selected_id())
         rows, cols = screen.getmaxyx()
         screen.erase()
-        self._put(screen, 0, 0, "브라우저 상세 보기 · 현재 그래프 버전 고정", curses.A_BOLD)
-        self._put(screen, 2, 0, "PC에서 SSH 포트 포워딩 후 아래 주소로 접속하세요.")
+        self._put(screen, 0, 0, tr("브라우저 상세 보기 · 현재 그래프 버전 고정", "Browser detail view · pinned to the current graph version"),
+                  curses.A_BOLD)
+        self._put(screen, 2, 0, tr("PC에서 SSH 포트 포워딩 후 아래 주소로 접속하세요.",
+                                   "Forward the port over SSH from your PC, then open the address below."))
         self._put(screen, 4, 0, f"ssh -L 127.0.0.1:{self.viewer.port}:127.0.0.1:{self.viewer.port} user@server")
         for n in range(0, len(address), max(1, cols - 2)):
             self._put(screen, 6 + n // max(1, cols - 2), 0, address[n:n + cols - 2])
-        self._put(screen, rows - 2, 0, "접근 주소는 비밀정보입니다. 외부에 공유하지 마세요. 아무 키로 돌아갑니다.")
+        self._put(screen, rows - 2, 0, tr("접근 주소는 비밀정보입니다. 외부에 공유하지 마세요. 아무 키로 돌아갑니다.",
+                                          "The access address is a secret. Do not share it. Any key goes back."))
         screen.refresh()
         while True:
             try:
@@ -1012,12 +1077,14 @@ class TerminalApp:
                     reply["answer"] = self.ask_units(screen, plan)
                     reply["done"].set()
                     if not reply["answer"]:
-                        self.notice = "분석을 시작하지 않았습니다."
+                        self.notice = tr("분석을 시작하지 않았습니다.", "Analysis not started.")
                 elif kind in ("status", "error"):
                     self.notice = payload
                 else:
                     self.panels.set_graph(payload["graph"])
-                    self.notice = f"{payload['status']} · AI 호출 {payload.get('runner_calls',0)} · " + payload.get("error", "저장된 결과 표시")
+                    calls = payload.get("runner_calls", 0)
+                    self.notice = (tr(f"{payload['status']} · AI 호출 {calls} · ", f"{payload['status']} · AI calls {calls} · ")
+                                   + payload.get("error", tr("저장된 결과 표시", "showing saved results")))
             # Another explicit refresh (browser/second terminal) may publish a graph.
             # This reads the local DB only; it never scans sources or calls a model.
             if not self.busy():
@@ -1037,10 +1104,10 @@ class TerminalApp:
             key = latin(key)
             if key in ("q", "Q"):
                 if self.busy():
-                    if self.ask(screen, "분석을 취소하고 종료할까요? [y/n]", "yn") == "y":
+                    if self.ask(screen, tr("분석을 취소하고 종료할까요? [y/n]", "Cancel the analysis and quit? [y/n]"), "yn") == "y":
                         self.cancel.set()
                         self.quit_pending = True
-                        self.notice = "분석 취소·자식 프로세스 정리 중"
+                        self.notice = tr("분석 취소·자식 프로세스 정리 중", "Cancelling the analysis · cleaning up child processes")
                 else:
                     break
             elif key in ("r", "R"):
@@ -1058,7 +1125,8 @@ class TerminalApp:
         try:
             curses.wrapper(self._run)
         except curses.error as exc:
-            raise FlowError("터미널 초기화/화면 처리 실패. TERM 설정을 확인하거나 --no-tui 또는 --ascii로 실행하세요.") from exc
+            raise FlowError(tr("터미널 초기화/화면 처리 실패. TERM 설정을 확인하거나 --no-tui 또는 --ascii로 실행하세요.",
+                               "Terminal setup or drawing failed. Check TERM, or run with --no-tui or --ascii.")) from exc
         finally:
             self.cancel.set()
             if self.worker:

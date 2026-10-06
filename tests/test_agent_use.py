@@ -10,7 +10,7 @@ import pytest
 
 from projectflow import ui
 from projectflow.agent_commands import install_agent_commands
-from projectflow.agent_view import DATA_NOTE, find, find_text, reference, show, show_text, short_id
+from projectflow.agent_view import data_note, find, find_text, reference, show, show_text, short_id
 from projectflow.analysis import _estimated_tokens, calibration, plan_summary, plan_text, unit_cost
 from projectflow.cli import _options, _session
 from projectflow.demo import CASES, FixtureRunner
@@ -141,7 +141,7 @@ def test_show_gives_one_event_with_its_links_and_quotes_fenced_as_data(analysed)
     result = show(reference(graph, event["id"]), graph, analysed.evidence, analysed.graph)
     assert result["state"] == "current" and result["ai_calls"] == 0
     text = "\n".join(show_text(result))
-    assert DATA_NOTE in text and "--- 원문 근거 1" in text and "--- 끝 ---" in text
+    assert data_note() in text and "--- 원문 근거 1" in text and "--- 끝 ---" in text
     quote = analysed.evidence(event["evidence_ids"][0])["quote"].splitlines()[0]
     assert "> " + quote in text
     assert show(event["id"][:11], graph, analysed.evidence, analysed.graph)["event"]["id"] == event["id"]

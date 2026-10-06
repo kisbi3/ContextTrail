@@ -131,6 +131,22 @@ def test_zoom_help_and_escape():
     assert not panels.help
 
 
+def test_english_screen_language_renders_help_titles_and_footer():
+    from projectflow import i18n
+    i18n.set_language("en")
+    from projectflow.diagram import flow_diagram
+    panels = FlowPanels(story(), lambda _: None, app_keys=(("Q", "quit"),))
+    text = drawn(panels).text()
+    assert "Event flow" in text and "Selected event" in text
+    boxes = "\n".join(flow_diagram(story(), 110).lines())
+    assert "[04] ↑ up" in boxes and "no linked events" in boxes.split("[07]")[1]
+    assert ui.keys().startswith("↑↓←→ move") and "verified" in ui.legend()
+    panels.handle("?")
+    text = drawn(panels).text()
+    assert "Key help" in text and "next place that needs a look" in text and "This screen" in text
+    assert ui.token_usage_label(150, 1, 2) == "analysis tokens 150+ (1/2 calls)"
+
+
 def test_keys_typed_in_korean_input_mode_act_as_their_latin_key():
     panels = FlowPanels(story(), lambda _: None)
     drawn(panels)
