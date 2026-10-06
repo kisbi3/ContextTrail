@@ -22,11 +22,15 @@ from .util import FlowError, digest, dumps, ident, private_dir
 
 
 def error_kinds(message: str) -> set[str]:
-    """The code-written part of a validation error: the Korean text before each ':' (never model text)."""
+    """The code-written part of a validation error: the English category before each ':' (never model text).
+
+    A head is a short sentence of plain words, at least two of them; a bare id, path or quoted model text
+    is not a kind."""
     kinds = set()
     for part in message.split("; "):
         head = part.split(":", 1)[0].strip()
-        if head and len(head) <= 80 and re.search("[가-힣]", head) and not re.search(r"[{}\"'`]", head):
+        if (head and len(head) <= 80 and len(head.split()) >= 2
+                and re.fullmatch(r"[A-Za-z][A-Za-z0-9 ,./()_-]*", head)):
             kinds.add(head)
     return kinds
 

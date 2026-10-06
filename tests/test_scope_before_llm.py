@@ -98,7 +98,7 @@ def test_invalid_turn_cwd_clears_stale_scope(tmp_path):
     write(path,[meta(root),msg('yes'),{'type':'turn_context','payload':{'cwd':'relative-unknown'}},msg('NO')])
     snap=parse_codex(path,Scope.resolve(root))
     assert [r.content for r in snap.records] == ['yes']
-    assert any('귀속 불명확' in s for s in snap.limitations)
+    assert any('attribution unclear' in s for s in snap.limitations)
 
 
 def test_subfolder_does_not_expand_to_whole_repository(tmp_path):

@@ -62,7 +62,7 @@ def test_append_and_incomplete_json_boundary(tmp_path):
     rows = codex_rows(folder)
     write(path, rows, '{"type":"response_item"')
     first = parse_codex(path, Scope.resolve(folder))
-    assert len(first.records) == 1 and any("마지막" in x for x in first.limitations)
+    assert len(first.records) == 1 and any("last JSONL record still being written" in x for x in first.limitations)
     with path.open("a") as stream:
         stream.write(',"payload":{"type":"function_call_output","call_id":"c","output":"OK"}}\n')
     second = parse_codex(path, Scope.resolve(folder))
@@ -105,7 +105,7 @@ def test_unknown_record_is_reported(tmp_path):
     folder.mkdir()
     path = tmp_path / "input.jsonl"
     write(path, codex_rows(folder) + [{"type": "future_v99", "payload": {}}])
-    assert any("미지원" in x for x in parse_codex(path, Scope.resolve(folder)).limitations)
+    assert any("unsupported record" in x for x in parse_codex(path, Scope.resolve(folder)).limitations)
 
 
 def test_private_reasoning_not_collected(tmp_path):
@@ -141,7 +141,7 @@ def test_claude_sidecar_outside_session_is_denied(tmp_path):
                   "message": {"content": [{"type": "tool_result", "tool_use_id": "t", "content": f"Full output saved to: {secret}"}]}}])
     result = parse_claude(path, Scope.resolve(folder))
     assert all("NEVER_READ_THIS" not in r.content for r in result.records)
-    assert any("허용 범위" in x for x in result.limitations)
+    assert any("outside the allowed directory" in x for x in result.limitations)
 
 
 def test_claude_allowed_sidecar(tmp_path):

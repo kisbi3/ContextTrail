@@ -24,30 +24,30 @@ SEGMENT_CHARS = 32_000
 IGNORED_NO_ANALYSIS_VALUE = {
     # Billing only. ContextTrail tracks analysis cost in its own LLM call ledger
     # (store.llm_calls), not from transcript usage records.
-    "token_usage_record": "과금 정보 — 분석 비용은 로컬 호출 ledger에서 따로 집계한다",
+    "token_usage_record": "billing data — analysis cost is tallied separately in the local call ledger",
     # Session configuration (model, provider, approval policy, cwd). Describes
     # how the coding agent was configured, not what it decided or why.
-    "event_msg:thread_settings_applied": "세션 설정 — 의사결정 서사에 기여하지 않는다",
+    "event_msg:thread_settings_applied": "session settings — no part in the decision narrative",
     # Claude telemetry and session metadata. Counts verified against real logs.
-    "system:turn_duration": "턴 소요 시간·메시지 수 — 성능 지표",
-    "system:away_summary": "자리 비움 요약 — 의사결정과 무관",
+    "system:turn_duration": "turn duration and message count — a performance metric",
+    "system:away_summary": "away summary — unrelated to decisions",
     # `system:compact_boundary` is deliberately absent: it becomes a record
     # below and marks a work-unit boundary, so it is not "unread".
-    "file-history-snapshot": "파일 백업 스냅샷 목록 — 서사 없음",
-    "last-prompt": "현재 리프 UUID 포인터 — 내용 없음",
-    "custom-title": "사용자가 붙인 세션 제목",
-    "ai-title": "Claude가 붙인 세션 제목 — 사건 제목은 추출 단계에서 새로 만든다",
-    "atis-latch": "빈 상태 비트",
-    "mode": "세션 모드(normal 등)",
-    "permission-mode": "세션 권한 모드(auto 등)",
-    "agent-name": "세션 표시 이름",
+    "file-history-snapshot": "file backup snapshot list — no narrative",
+    "last-prompt": "current leaf UUID pointer — no content",
+    "custom-title": "session title given by the person",
+    "ai-title": "session title given by Claude — event titles are written anew in the extract stage",
+    "atis-latch": "empty state bit",
+    "mode": "session mode (normal etc.)",
+    "permission-mode": "session permission mode (auto etc.)",
+    "agent-name": "session display name",
     # Carries ownerAccountUuid / ownerOrganizationId. Ignored, and deliberately
     # never forwarded: this is an account identifier, not project history.
-    "bridge-session": "계정 식별자(소유 계정·조직 ID)를 담고 있어 분석 대상이 아니다",
-    "bridge-config": "브리지 설정",
-    "pr-link": "PR 링크 메타데이터",
-    "progress": "진행 표시",
-    "tag": "태그",
+    "bridge-session": "holds account identifiers (owner account and organization IDs) — not analysis input",
+    "bridge-config": "bridge settings",
+    "pr-link": "PR link metadata",
+    "progress": "progress indicator",
+    "tag": "tag",
 }
 
 # Record types that may hold decision-relevant context but are not parsed yet.
@@ -58,17 +58,17 @@ KNOWN_UNPARSED = {
     # done this way" frequently answers "because AGENTS.md said so", so this is
     # analysis-relevant. It is not parsed because it duplicates the repository
     # file and re-sends it on every turn; deciding how to model that is open.
-    "world_state": "프로젝트 지시문(AGENTS.md 등) 전문을 담고 있으나 아직 분석에 보내지 않는다",
+    "world_state": "holds the full project instructions (AGENTS.md etc.) but is not sent to analysis yet",
     # 473 enqueue records across 22 of 40 real Claude files, each carrying the
     # full text of a prompt the person queued. If a queued prompt never also
     # appears as a `user` record, the request is invisible to the graph.
-    "queue-operation": "사용자가 대기시킨 요청문 전문을 담고 있으나 아직 분석에 보내지 않는다",
+    "queue-operation": "holds the full text of a request the person queued but is not sent to analysis yet",
     # 91 records in real logs. A stop hook that ran checks is direct evidence of
     # verification, and a failing one is direct evidence of a failed attempt.
-    "system:stop_hook_summary": "stop hook 실행 결과 요약 — 검증/실패 근거가 될 수 있으나 아직 분석에 보내지 않는다",
+    "system:stop_hook_summary": "stop hook result summary — could ground a check or a failure, but is not sent to analysis yet",
     # 14 records in real logs; records which slash command a person invoked,
     # which is part of intent.
-    "system:local_command": "사용자가 실행한 슬래시 명령 — 의도 일부이나 아직 분석에 보내지 않는다",
+    "system:local_command": "slash command the person ran — part of the intent, but not sent to analysis yet",
 }
 
 
@@ -96,7 +96,7 @@ def _flush_deferred(deferred: dict[str, int], warnings: list[str], label: str, p
     into a single warning and one file's gap would go unreported.
     """
     for record_type, count in sorted(deferred.items()):
-        warnings.append(f"{label} 분석 미전달 레코드 {record_type} {count}개 ({_warning_path(path)}): "
+        warnings.append(f"{label} unparsed record type {record_type}, {count} records not sent to analysis ({_warning_path(path)}): "
                         f"{KNOWN_UNPARSED[record_type]}")
 
 
@@ -135,15 +135,15 @@ def _jsonl(path: Path) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
                 raise FlowError(tr(f"로그를 읽는 동안 재작성/축소됨: {path.name}",
                                    f"Log rewritten or truncated while being read: {path.name}"))
     except (OSError, FlowError) as exc:
-        return [], [f"로그 읽기 보류: {path.name} ({type(exc).__name__})"], {}
+        return [], [f"log file not read: {path.name} ({type(exc).__name__})"], {}
     boundary = data.rfind(b"\n") + 1
     if boundary != len(data):
-        warnings.append(f"작성 중인 JSONL 마지막 레코드 보류: {path.name}")
+        warnings.append(f"last JSONL record still being written, skipped: {path.name}")
     for line_no, raw in enumerate(data[:boundary].splitlines(), 1):
         if not raw.strip():
             continue
         if len(raw) > MAX_LINE_BYTES:
-            warnings.append(f"JSONL 레코드 한도 초과: {path.name}:{line_no}")
+            warnings.append(f"JSONL record over the size limit: {path.name}:{line_no}")
             continue
         try:
             value = json.loads(raw)
@@ -151,7 +151,7 @@ def _jsonl(path: Path) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
                 raise ValueError("object required")
             rows.append((line_no, value, digest(raw)))
         except (UnicodeError, ValueError):
-            warnings.append(f"손상된 JSONL 레코드: {path.name}:{line_no}")
+            warnings.append(f"corrupt JSONL record: {path.name}:{line_no}")
     return rows, warnings, {"path": str(path), "bytes": before.st_size,
                             "complete_bytes": boundary, "digest": digest(data[:boundary])}
 
@@ -276,7 +276,7 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
     unknown: set[str] = set()
     deferred: dict[str, int] = {}
     if not metadata.get("id"):
-        warnings.append(f"Codex native session ID 없음; 파일 이름 기반 식별: {path.name}")
+        warnings.append(f"Codex native session ID missing; identified by file name: {path.name}")
     if metadata.get("source") == "projectflow" or (cwd and Path(cwd).name.startswith("projectflow-run-")):
         decisions["self_generated"] = 1
         return finish([], [])
@@ -412,13 +412,13 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
         # Keep only local audit metadata. Do not send unrelated bodies to any LLM.
         return finish([], warnings if decisions["unattributed"] or not rows else [])
     if decisions["unattributed"]:
-        warnings.append(f"Codex 경로 귀속 불명확 레코드 {decisions['unattributed']}개 제외: {path.name}")
+        warnings.append(f"Codex path attribution unclear, {decisions['unattributed']} records excluded: {path.name}")
     if unknown:
-        warnings.append(f"Codex 미지원 레코드 {path.name}: {', '.join(sorted(unknown))}")
+        warnings.append(f"Codex unsupported record types {path.name}: {', '.join(sorted(unknown))}")
     _flush_deferred(deferred, warnings, "Codex", path)
     if not any(r.role in {"user", "assistant"} for r in result) and any(            d.get("type") == "event_msg" and d.get("payload", {}).get("type") in {"user_message", "agent_message"}
             for _, d, _ in rows):
-        warnings.append(f"response_item 없는 Codex UI 메시지 형식은 아직 미지원: {path.name}")
+        warnings.append(f"Codex UI message format without response_item is not supported yet: {path.name}")
     return finish(_segments(result), warnings)
 
 
@@ -544,7 +544,7 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
             cwd = data.get("cwd", cwd)
             relevant |= scope.includes(cwd)
         if relevant:
-            warnings.append(f"부모 연결을 검증하지 못한 Claude subagent 범위 제외: {path.name}")
+            warnings.append(f"Claude subagent excluded from scope, parent link unverified: {path.name}")
         return Snapshot([], warnings, [manifest] if manifest else [])
     lineage = dict(subagent_link or {})
     for line, data, raw_hash in rows:
@@ -656,7 +656,7 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
                     sidecar = _portable_sidecar(reference, path, str(session))
                     allowed = _claude_session_root(path, str(session)) / "tool-results"
                     if sidecar is None or sidecar.is_symlink() or not within(sidecar, allowed):
-                        warnings.append(f"허용 범위 밖 Claude tool sidecar를 읽지 않았습니다: {path.name}")
+                        warnings.append(f"Claude tool sidecar outside the allowed directory not read: {path.name}")
                         continue
                     try:
                         before = sidecar.stat()
@@ -667,7 +667,7 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
                         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                             raise OSError("changed")
                     except (OSError, UnicodeError):
-                        warnings.append(f"Claude tool sidecar 부재/읽기 보류: {sidecar.name}")
+                        warnings.append(f"Claude tool sidecar missing or not read: {sidecar.name}")
                         continue
                     result.append(SourceRecord(ident("src_", rec.source_id, "sidecar"), "claude", session,
                         "tool_result", content, {"kind": "sidecar", "path": str(sidecar), "raw_hash": digest(content),
@@ -677,7 +677,7 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
     if not relevant:
         return Snapshot([])
     if unknown:
-        warnings.append(f"Claude 미지원 레코드 {path.name}: {', '.join(sorted(unknown))}")
+        warnings.append(f"Claude unsupported record types {path.name}: {', '.join(sorted(unknown))}")
     _flush_deferred(deferred, warnings, "Claude", path)
     return Snapshot(_segments(result), list(dict.fromkeys(warnings)), [manifest] if manifest else [])
 
@@ -706,7 +706,7 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
             for record in snapshot.records:
                 previous = result.get(record.source_id)
                 if previous and previous.content_hash != record.content_hash:
-                    warnings.append(f"같은 native ID의 다른 내용 감지: {record.source_id}; 뒤에 발견한 현행본을 선택했습니다.")
+                    warnings.append(f"different content under the same native ID: {record.source_id}; the copy found later was kept.")
                 result[record.source_id] = record
     ordered = sorted(result.values(), key=lambda r: (r.recorded_at or "", r.provider, r.session_id or "",
                                                     r.locator.get("line", 0), r.locator.get("fragment_index", 0), r.source_id))

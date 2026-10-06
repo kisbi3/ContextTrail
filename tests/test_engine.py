@@ -187,7 +187,7 @@ def test_stored_unpaid_units_are_regrouped_and_paid_ones_are_kept(laboratory):
     assert sorted(i for u in plans if u["id"] != "unit_paid" for i in u["sources"]) == ids[:4]
     assert all(len(u["sources"]) <= 2 for u in plans if u["id"] != "unit_paid")
     assert {u["id"]: u["status"] for u in store.units()}["unit_old"] == "superseded"
-    assert any("다시 묶었습니다" in i for i in issues)
+    assert any("regrouped" in i and "under the current rule" in i for i in issues)
     # A preview never writes.
     store.save_unit("unit_old", ids[:4], {}, "parsed")
     engine._plan_units(snapshot, [])
@@ -291,7 +291,8 @@ def test_changed_context_alone_does_not_reanalyse_an_integrated_unit(laboratory)
     result = engine.analyze(lambda: runner)
     assigned = [i for t in runner.tasks if t["stage"] == "extract" for i in t["data"]["assigned_source_ids"]]
     assert assigned == ["s1"]
-    assert any("다시 분석합니다" in note and "s1" in note for note in result["limitations"])
+    assert any("re-analyzing an already integrated work unit" in note and "s1" in note
+               for note in result["limitations"])
 
 
 def test_a_lost_processed_mark_does_not_resend_an_integrated_unit(laboratory):
@@ -463,7 +464,7 @@ def test_unmatched_partial_quote_repair_receives_exact_source_lines(laboratory):
     runner = BadQuote()
     engine.analyze(lambda: runner)
     repair = runner.tasks[1]["repair"]
-    assert "유일하게 일치하지 않습니다" in repair["instruction"]
+    assert "quote not found uniquely in the cited lines" in repair["instruction"]
     assert repair["exact_source_lines"][0]["lines"][0]["text"] == CASES[0][0].splitlines()[0]
 
 
@@ -747,7 +748,7 @@ def test_review_patch_rejects_removing_an_item_the_proposal_never_had(laboratory
 
     result = engine.analyze(UnknownRemove)
     assert result["status"] == "failed"
-    assert "제안된 변경에 없는 항목은 제거할 수 없습니다" in result["error"]
+    assert "cannot remove an item that is not in the proposed delta" in result["error"]
     assert [call["status"] for call in _review_calls(store)] == ["validation_error", "validation_error"]
     assert store.graph()["version"] == 0
     # The one repair round asks for the same patch and sees the patch the model wrote, not the merge.
@@ -774,7 +775,7 @@ def test_review_patch_leaving_a_candidate_unresolved_is_rejected(laboratory):
     assert result["status"] == "complete", result  # the repair round put the candidate back
     assert _review_statuses(store) == [("reviewed", ["resolved"])]
     failures = [call["details"]["error"] for call in _review_calls(store) if call["status"] == "validation_error"]
-    assert ["change attribution 후보의 처리 대상이 귀속 GraphDelta 변경과 연결되지 않습니다(" in error
+    assert ["change attribution not linked to its GraphDelta change (" in error
             for error in failures] == [True]
     # The merged delta is what got published, so the event the review disowned is not there twice.
     assert [event["title"] for event in store.graph()["events"]] == ["JSON 저장 채택", "SQLite로 전환 결정"]
@@ -810,9 +811,9 @@ def test_merge_review_patch_replaces_adds_and_removes_items():
     assert merged["limitations"] == ["kept", "added"]
     assert proposed["events_to_add"][0]["title"] == "old"  # the proposal itself is never edited
     assert review_patch_audit(proposed, answer) == {"replaced": 2, "added": 1, "removed": 1}
-    with pytest.raises(FlowError, match="제안된 변경에 없는 항목은 제거할 수 없습니다"):
+    with pytest.raises(FlowError, match="cannot remove an item that is not in the proposed delta"):
         merge_review_patch(proposed, {**answer, "remove": [{"operation": "edges_to_add", "item_id": "tmp:none"}]})
-    with pytest.raises(FlowError, match="다른 종류의 제안 항목"):
+    with pytest.raises(FlowError, match="names a proposed item of another kind"):
         merge_review_patch(proposed, {**answer, "patch": {**answer["patch"],
                                                            "edges_to_add": [{"id": "tmp:a"}]}})
 

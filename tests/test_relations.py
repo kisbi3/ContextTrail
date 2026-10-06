@@ -68,9 +68,9 @@ def test_applied_status_needs_a_recorded_change(laboratory):
 def test_user_question_is_asked_not_proposed(laboratory):
     _, _, _, _, make = laboratory
     pool = records(make)
-    with pytest.raises(FlowError, match="question 사건의 상태"):
+    with pytest.raises(FlowError, match="question event status must be"):
         validator(pool).event(event("tmp:q", pool["question"], "question", "proposed"))
-    with pytest.raises(FlowError, match="asked 상태는"):
+    with pytest.raises(FlowError, match="asked status is only for question events"):
         validator(pool).event(event("tmp:q", pool["question"], "goal", "asked"))
     validator(pool).event(event("tmp:q", pool["question"], "question", "asked"))
 
@@ -90,11 +90,11 @@ def test_verifies_joins_a_change_to_the_run_that_exercised_it(laboratory):
     assert (turned["edge_candidates"][0]["from_event_id"], turned["edge_candidates"][0]["to_event_id"]) == (
         "tmp:change", "tmp:run")
     assert [n["mode"] for n in checker.normalizations].count("relation_direction_corrected") == 1
-    with pytest.raises(FlowError, match="verifies 관계는 변경 사건.*tmp:e"):
+    with pytest.raises(FlowError, match="verifies must link a change.*tmp:e"):
         check([edge("tmp:e", "tmp:change", "tmp:report", "verifies", pool["answer"])])
-    with pytest.raises(FlowError, match="verifies 관계는 변경 사건.*tmp:e"):
+    with pytest.raises(FlowError, match="verifies must link a change.*tmp:e"):
         check([edge("tmp:e", "tmp:report", "tmp:change", "verifies", pool["answer"])])
-    with pytest.raises(FlowError, match="추정"):
+    with pytest.raises(FlowError, match="not inferred"):
         check([edge("tmp:e", "tmp:change", "tmp:run", "verifies", pool["run"], basis="inferred")])
 
 
@@ -108,7 +108,7 @@ def test_answers_starts_at_the_question(laboratory):
     turned = extraction(events, [edge("tmp:e", "tmp:a", "tmp:q", "answers", pool["answer"])])
     validator(pool).check_extraction(turned, "unit", "snap", store.graph())
     assert turned["edge_candidates"][0]["from_event_id"] == "tmp:q"
-    with pytest.raises(FlowError, match="answers 관계는"):
+    with pytest.raises(FlowError, match="answers must lead from a question event"):
         check([edge("tmp:e", "tmp:a", "tmp:a", "answers", pool["answer"])])
 
 
@@ -123,7 +123,7 @@ def test_later_update_cannot_leave_a_verification_pointing_at_an_unobserved_resu
     run_id = next(e["id"] for e in first["events"] if e["title"] == "tmp:run")
     changes = {key: None for key in EVENT_FIELDS} | {"status": "reported_complete"}
     downgrade = {"id": run_id, "reason": "test", "evidence": cite(pool["run"]), "changes": changes}
-    with pytest.raises(FlowError, match="verifies 관계는"):
+    with pytest.raises(FlowError, match="verifies must link a change"):
         validator(pool).apply_delta(delta(first, updates=[downgrade]), first, "snap", "run-2")
 
 
@@ -165,7 +165,7 @@ def test_every_claim_error_is_reported_in_one_round(laboratory):
         with pytest.raises(FlowError) as raised:
             check()
         message = str(raised.value)
-        assert all(name in message for name in ("tmp:change", "tmp:fix", "asked 상태는", "answers 관계는"))
+        assert all(name in message for name in ("tmp:change", "tmp:fix", "asked status is only", "answers must lead"))
 
 
 def test_new_observed_result_without_a_relation_is_signalled_for_review():
@@ -249,7 +249,7 @@ def test_locator_slips_are_corrected_but_unseen_or_ambiguous_quotes_are_not(labo
     assert [n["mode"] for n in checker.normalizations].count("relocated_within_provided_lines") == 2
     with pytest.raises(FlowError):  # line 5 was never shown to the model
         EvidenceValidator({log.source_id: log}, {log.source_id: [(1, 3)]}).citations(cite_at(1, 1, "repeat phrase"))
-    with pytest.raises(FlowError, match="일치"):  # shown twice on different lines
+    with pytest.raises(FlowError, match="not found uniquely"):  # shown twice on different lines
         EvidenceValidator({log.source_id: log}, {log.source_id: [(1, 5)]}).citations(cite_at(1, 1, "repeat phrase"))
     with pytest.raises(FlowError):  # quote not in the record at all
         checker.citations(cite_at(1, 1, "not written anywhere"))

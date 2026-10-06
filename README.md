@@ -37,7 +37,7 @@ Version: `0.1.0a4` · 2026-09-23 · Linux / SSH primary, macOS experimental · n
 
 **Additional features:** [model tiering, project filters, and test usage](docs/guides/TIERED_ANALYSIS.md). Before opening the UI, run `project scan .` to review input selection, and `project eval --fixture demo --runner mock --output /tmp/pf-eval` to exercise the execution path without account calls.
 
-**Languages:** the terminal, TUI, browser view and CLI help are in English or Korean, chosen from `--language`, `CONTEXTTRAIL_LANGUAGE`, the project's saved output language, or the locale. Event titles and summaries are written in the language of your own messages (`--language` overrides). Validation messages exchanged with the model are still Korean. A Korean README is not written yet.
+**Languages:** the terminal, TUI, browser view and CLI help are in English or Korean, chosen from `--language`, `CONTEXTTRAIL_LANGUAGE`, the project's saved output language, or the locale. Event titles and summaries are written in the language of your own messages (`--language` overrides). Everything the model reads, including validation messages, is English. A Korean README is not written yet.
 
 ---
 

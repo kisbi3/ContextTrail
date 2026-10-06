@@ -23,6 +23,9 @@ OBSERVED = {"observed_success", "observed_failure"}
 QUESTION_STATUSES = {"asked", "withdrawn", "unknown"}
 # Quotes shorter than this are accepted only where they cannot mean two places.
 SHORT_QUOTE_CHARS = 8
+# The two quote errors the repair round answers with the exact source lines; the mismatch audit
+# and `Harness` match these heads.
+QUOTE_MISMATCH_HEADS = ("quote differs from the frozen source: ", "quote not found uniquely in the cited lines: ")
 STR = {"type": "string"}
 NULLSTR = {"type": ["string", "null"]}
 STRS = {"type": "array", "items": STR}
@@ -155,7 +158,7 @@ def merge_review_patch(proposed: dict, answer: dict) -> dict:
     for request in answer["remove"]:
         operation, item_id = request["operation"], request["item_id"]
         if (operation, (item_id,)) not in proposed_keys:
-            raise FlowError(f"제안된 변경에 없는 항목은 제거할 수 없습니다: {operation} {item_id}")
+            raise FlowError(f"cannot remove an item that is not in the proposed delta: {operation} {item_id}")
         drops.setdefault(operation, set()).add((item_id,))
         # A dropped item takes the change attribution that names it.
         drops.setdefault("change_attributions", set()).add((operation, item_id))
@@ -168,7 +171,7 @@ def merge_review_patch(proposed: dict, answer: dict) -> dict:
                 kept[position[key]] = copy.deepcopy(item)
             elif key in kinds and array not in kinds[key]:
                 # One id must name one kind of item, or a replace says nothing about what it replaces.
-                raise FlowError(f"같은 ID가 다른 종류의 제안 항목에도 있습니다: {array} {' '.join(key)}")
+                raise FlowError(f"the same ID names a proposed item of another kind: {array} {' '.join(key)}")
             else:
                 kept.append(copy.deepcopy(item))  # new, or the one `remove` had dropped
         merged[array] = kept
@@ -177,8 +180,8 @@ def merge_review_patch(proposed: dict, answer: dict) -> dict:
     return merged
 
 
-REVIEW_REMOVED_REASON = "리뷰가 이 후보로 만든 항목을 지웠습니다"
-REVIEW_ATTRIBUTION_REASON = "리뷰가 추가한 항목을, 그 항목을 대상으로 한 후보 처리에서 귀속했습니다"
+REVIEW_REMOVED_REASON = "the review removed the item made from this candidate"
+REVIEW_ATTRIBUTION_REASON = "the review added this item; attributed from the candidate resolution that targets it"
 
 
 def reconcile_review_patch(merged: dict, proposed: dict, candidates: dict | None) -> dict:
@@ -224,9 +227,9 @@ def review_patch_audit(proposed: dict, answer: dict) -> dict:
                            for request in answer["remove"])}
 
 
-DRAFT_ADDED_REASON = "추출 후보를 그대로 추가했습니다"
-DRAFT_DUPLICATE_REASON = "추출 단계가 이 후보를 기존 사건과 같다고 대응시켰습니다"
-DRAFT_SELF_EDGE_REASON = "기존 사건 대응 뒤 양 끝이 같은 사건이 되었습니다"
+DRAFT_ADDED_REASON = "extraction candidate added as is"
+DRAFT_DUPLICATE_REASON = "the extract stage matched this candidate to an existing event"
+DRAFT_SELF_EDGE_REASON = "both ends became the same event after the existing-event match"
 
 
 def draft_delta(candidates: dict, graph_version: int, snapshot_id: str) -> dict:
@@ -474,7 +477,8 @@ def resolve_quote_slips(region: str, quote: str) -> tuple[list[tuple[int, int]],
     return None
 
 
-DOC_VERIFIES_REASON = "문서만 바꾼 변경을 그 문서를 다루지 않는 실행이 확인했다는 근거가 없어 verifies 관계를 뺐습니다"
+DOC_VERIFIES_REASON = ("dropped a verifies relation between a documentation-only change and a run "
+                       "whose command never names that document (no evidence it checked the change)")
 EDIT_TOOL_NAMES = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
 DOC_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".adoc")
 
@@ -556,20 +560,20 @@ def check_relation(edge: dict, events: dict[str, dict]) -> None:
     source, target = events[edge["from_event_id"]], events[edge["to_event_id"]]
     if edge["relation"] == "verifies":
         if source["kind"] not in CHANGE_KINDS or target["kind"] != "outcome" or target["status"] not in OBSERVED:
-            raise FlowError("verifies 관계는 변경 사건(action/revision)에서 그 변경을 실제로 실행·시험한 "
-                            f"관측 결과(kind=outcome, observed 상태)로 이어야 합니다: {edge['id']}")
+            raise FlowError("verifies must link a change (action/revision) to an observed outcome that ran it: "
+                            f"{edge['id']} (kind=outcome, observed status)")
         if edge["basis"] == "inferred":
-            raise FlowError("verifies 관계는 추정(inferred)으로 만들 수 없습니다. 실행 대상이 그 변경을 포함한다는 "
-                            f"근거가 없으면 연결하지 않습니다: {edge['id']}")
+            raise FlowError("verifies must be explicit or structural, not inferred: "
+                            f"{edge['id']} (leave it unlinked without evidence that the run covers the change)")
     elif edge["relation"] == "answers" and (source["kind"] != "question" or target["kind"] == "question"):
-        raise FlowError(f"answers 관계는 question 사건에서 그 질문에 답한 사건으로 이어야 합니다: {edge['id']}")
+        raise FlowError(f"answers must lead from a question event to the event that answered it: {edge['id']}")
 
 
 def validate_shape(value: dict, schema: dict) -> None:
     errors = list(Draft202012Validator(schema).iter_errors(value))
     if errors:
         messages = ["/".join(map(str, e.absolute_path)) + ": " + e.message[:220] for e in errors[:8]]
-        raise FlowError("JSON schema 오류: " + "; ".join(messages))
+        raise FlowError("JSON schema error: " + "; ".join(messages))
 
 
 class EvidenceValidator:
@@ -661,12 +665,12 @@ class EvidenceValidator:
         source_id, start, end = citation["source_id"], citation["start_line"], citation["end_line"]
         record = self.records.get(source_id)
         if not record:
-            raise FlowError(f"존재하지 않는 source ID: {source_id}")
+            raise FlowError(f"unknown source ID: {source_id}")
         lines = record.content.splitlines()
         if not (1 <= start <= end <= len(lines)):
-            raise FlowError(f"인용 범위 불일치: {source_id}:{start}-{end}")
+            raise FlowError(f"cited line range is outside the source: {source_id}:{start}-{end}")
         if not any(lo <= start and end <= hi for lo, hi in self.provided.get(source_id, [])):
-            raise FlowError(f"모델에 제공하지 않은 원문 인용: {source_id}")
+            raise FlowError(f"cited source lines were not provided to the model: {source_id}")
         quote = "\n".join(lines[start - 1:end])
         focus = None
         if quote != citation["quote"]:
@@ -691,9 +695,9 @@ class EvidenceValidator:
                 if len(requested_quote) < SHORT_QUOTE_CHARS and (
                         not requested_quote.strip() or resolved[0] is None or
                         resolved[3] != "unique_exact_substring_expanded_to_lines"):
-                    raise FlowError(f"인용문이 고정 원문과 다릅니다: {source_id}:{start}-{end} "
-                                    f"({SHORT_QUOTE_CHARS}자 미만 조각은 인용한 줄 범위에 정확히 한 번 나올 때만 "
-                                    "쓸 수 있습니다. 그 조각을 포함한 더 긴 부분을 원문 그대로 인용하세요)")
+                    raise FlowError(f"quote differs from the frozen source: {source_id}:{start}-{end} "
+                                    f"(a fragment under {SHORT_QUOTE_CHARS} chars is accepted only where it appears "
+                                    "exactly once in the cited lines. Quote a longer piece containing it, exactly as written)")
                 if len(requested_quote) < SHORT_QUOTE_CHARS:
                     resolved = (*resolved[:3], "short_unique_substring_expanded_to_lines")
                 # One reading of one slip left: the exact and escape views found nothing, and
@@ -706,17 +710,17 @@ class EvidenceValidator:
                     count = resolved[1]
                     rows = sorted({start + bisect.bisect_right(line_offsets(region), found) - 1
                                    for found in occurrences(region, requested_quote)}) if count > 1 else []
-                    where = f", 서로 다른 줄: {', '.join(map(str, rows[:8]))}번 줄 중 하나만 인용" if rows else (
-                        ", 서로 다른 줄" if count > 1 else "")
-                    raise FlowError(f"인용문이 제공된 원문 범위에서 유일하게 일치하지 않습니다: "
-                                    f"{source_id}:{start}-{end} (일치 {count}건{where})")
+                    where = f", on different lines: cite one of lines {', '.join(map(str, rows[:8]))}" if rows else (
+                        ", on different lines" if count > 1 else "")
+                    raise FlowError(f"quote not found uniquely in the cited lines: "
+                                    f"{source_id}:{start}-{end} ({count} matches{where})")
                 spans, first, last, mode = resolved
                 corrected_start, corrected_end = start + first, start + last
                 quote = "\n".join(lines[corrected_start - 1:corrected_end])
                 base = len("\n".join(lines[start - 1:corrected_start - 1])) + (1 if first else 0)
                 relative = [[s - base, e - base] for s, e in spans]
                 if any(quote[a:b] != region[s:e] for (a, b), (s, e) in zip(relative, spans)):
-                    raise FlowError(f"인용문 정규화가 원문 부분 문자열을 보존하지 않습니다: {source_id}")
+                    raise FlowError(f"quote normalization did not preserve a source substring: {source_id}")
                 focus = relative if len(relative) <= FOCUS_MAX_SPANS else None
                 if track:
                     self.normalizations.append({"source_id": source_id, "requested_lines": [start, end],
@@ -756,7 +760,7 @@ class EvidenceValidator:
         record = self.records.get(citation["source_id"])
         source_id, quote = citation["source_id"], citation["quote"]
         start, end = citation["start_line"], citation["end_line"]
-        if not str(error).startswith("인용문이") or not record:
+        if not str(error).startswith(QUOTE_MISMATCH_HEADS) or not record:
             return
         if not 1 <= start <= end <= len(record.content.splitlines()):
             return
@@ -819,21 +823,21 @@ class EvidenceValidator:
         kind, status, label = result["kind"], result["status"], result.get("id", result["title"])
         if status in OBSERVED and not any(
             s["role"] == "tool_result" and s["derivation"] == "original" for s in sources):
-            raise FlowError("observed 상태에는 원래 tool_result 근거가 필요합니다.")
+            raise FlowError("observed status needs original tool_result evidence.")
         if status in OBSERVED and kind != "outcome":
-            raise FlowError("observed 상태는 실행 결과 사건(kind=outcome)에만 씁니다. 변경의 확인 결과는 별도 "
-                            f"outcome 사건으로 나누고 verifies 관계로 잇습니다: {label}")
+            raise FlowError(f"observed status is only for outcome events (kind=outcome): {label} "
+                            "(split the check of a change into its own outcome event linked by verifies)")
         if status == "applied" and (kind not in CHANGE_KINDS or not any(
                 s["role"] in {"tool_call", "tool_result"} or s["provider"] == "git" for s in sources)):
-            raise FlowError(f"applied 상태는 패치·diff 등 변경 기록을 인용한 action/revision 사건에만 씁니다: {label}")
+            raise FlowError(f"applied status is only for action/revision events citing a patch or diff: {label}")
         if kind == "question" and status not in QUESTION_STATUSES:
-            raise FlowError(f"question 사건의 상태는 asked·withdrawn·unknown 중 하나입니다: {label}")
+            raise FlowError(f"question event status must be asked, withdrawn or unknown: {label}")
         if status == "asked" and kind != "question":
-            raise FlowError(f"asked 상태는 question 사건에만 씁니다: {label}")
+            raise FlowError(f"asked status is only for question events: {label}")
         if result["basis"] == "tool_record" and not any(s["role"] in {"tool_call", "tool_result"} for s in sources):
-            raise FlowError("tool_record basis에 실행 기록이 없습니다.")
+            raise FlowError("tool_record basis cites no tool call or result.")
         if result["basis"] == "git_artifact" and not any(s["provider"] == "git" for s in sources):
-            raise FlowError("git_artifact basis에 Git 근거가 없습니다.")
+            raise FlowError("git_artifact basis cites no Git evidence.")
         # Where and when an event was recorded is read off its citations, not trusted from the
         # model: a copying slip here is corrected (and audited) instead of failing the unit.
         trees = sorted({s["worktree_id"] for s in sources if s.get("worktree_id")})
@@ -854,11 +858,11 @@ class EvidenceValidator:
     def check_extraction(self, output: dict, unit_id: str, snapshot_id: str, graph: dict) -> None:
         validate_shape(output, EXTRACT_SCHEMA)
         if output["unit_id"] != unit_id or output["snapshot_id"] != snapshot_id:
-            raise FlowError("추출 작업의 unit/snapshot 식별자가 다릅니다.")
+            raise FlowError("extraction unit/snapshot identifiers differ from the task.")
         if output["status"] != "complete" or output["read_requests"]:
-            raise FlowError("완료하지 않은 근거 요청 응답을 추출 결과로 사용할 수 없습니다.")
+            raise FlowError("an unfinished evidence-request reply cannot be used as the extraction result.")
         if output["unprocessed_record_ids"]:
-            raise FlowError("미처리 record가 있어 이 단위의 게시를 보류했습니다.")
+            raise FlowError("unit not published because it still has unprocessed records.")
         for event_id in retype_answered_user_goals(output["event_candidates"], output["edge_candidates"], self.records):
             self.normalizations.append({"mode": "user_goal_as_answered_question", "event": event_id})
         # Quote, status and relation errors are reported together: there is only one repair round.
@@ -871,10 +875,10 @@ class EvidenceValidator:
         claim_errors: list[str] = [quoted] if quoted else []
         for item in output["event_candidates"]:
             if not item["id"].startswith("tmp:") or item["id"] in candidates:
-                raise FlowError("사건 후보 ID는 고유한 tmp: ID여야 합니다.")
+                raise FlowError("event candidate IDs must be unique tmp: IDs.")
             if self.assigned_source_ids is not None and not any(
                     citation["source_id"] in self.assigned_source_ids for citation in item["evidence"]):
-                raise FlowError("새 사건 후보에는 이번 작업 단위의 원문 근거가 필요합니다.")
+                raise FlowError("a new event candidate needs evidence from the sources of this work unit.")
             candidates.add(item["id"])
             try:
                 self.event(item)
@@ -885,7 +889,7 @@ class EvidenceValidator:
         endpoints = {e["id"]: e for e in graph["events"]} | {e["id"]: e for e in output["event_candidates"]}
         for edge in output["edge_candidates"]:
             if edge["from_event_id"] not in candidates | existing or edge["to_event_id"] not in candidates | existing:
-                raise FlowError("추출 관계가 없는 사건을 참조합니다.")
+                raise FlowError("an extracted relation refers to an event that does not exist.")
             if orient_relation(edge, endpoints):
                 self.normalizations.append({"mode": "relation_direction_corrected", "relation": edge["relation"]})
             try:
@@ -902,18 +906,18 @@ class EvidenceValidator:
         uncovered = [f"{call}({label})" for call, (label, result) in self.required_citations.items()
                      if call not in cited and result not in cited]
         if uncovered:
-            claim_errors.append("파일을 바꾼 도구 호출이 어떤 사건의 근거에도 없습니다: " + ", ".join(uncovered[:6]) +
-                                ". 변경 사건(action/revision)을 만들거나 알맞은 기존 후보의 근거에 넣습니다.")
+            claim_errors.append("tool call that changed a file is cited by no event: " + ", ".join(uncovered[:6]) +
+                                ". Make a change event (action/revision) or add it to the evidence of the fitting candidate.")
         if claim_errors:
             raise FlowError("; ".join(claim_errors[:8]))
         for match in output["existing_event_matches"]:
             if match["candidate_id"] not in candidates or match["existing_event_id"] not in existing:
-                raise FlowError("기존 사건 대응의 ID가 없습니다.")
+                raise FlowError("existing event match names an unknown candidate or event ID.")
             self.citations(match["evidence"])
         for item in output["open_items"]:
             self.citations(item["evidence"])
             if not set(item["related_event_ids"]) <= candidates | existing:
-                raise FlowError("미해결 사항이 없는 사건을 참조합니다.")
+                raise FlowError("open item refers to an event that does not exist.")
 
     def salvage_extraction(self, output: dict, unit_id: str, snapshot_id: str,
                            graph: dict) -> tuple[dict, list[str], list[str]]:
@@ -928,7 +932,7 @@ class EvidenceValidator:
         validate_shape(output, EXTRACT_SCHEMA)
         if (output["unit_id"] != unit_id or output["snapshot_id"] != snapshot_id or output["status"] != "complete"
                 or output["read_requests"] or output["unprocessed_record_ids"]):
-            raise FlowError("살릴 수 있는 추출 결과가 아닙니다.")
+            raise FlowError("extraction result cannot be salvaged.")
         retype_answered_user_goals(output["event_candidates"], output["edge_candidates"], self.records)
         existing = {event["id"]: event for event in graph["events"]}
         kept: dict[str, dict] = {}
@@ -959,7 +963,7 @@ class EvidenceValidator:
                  valid(edge, lambda edge=edge: (orient_relation(edge, endpoints), check_relation(edge, endpoints)))]
         dropped_edges = len(output["edge_candidates"]) - len(edges)
         if not kept or not (dropped or dropped_edges):
-            raise FlowError("살릴 후보가 없습니다.")
+            raise FlowError("no candidates to salvage.")
         matches = [match for match in output["existing_event_matches"]
                    if match["candidate_id"] in kept and match["existing_event_id"] in existing and valid(match)]
         items = [item for item in output["open_items"]
@@ -968,8 +972,8 @@ class EvidenceValidator:
         described = {citation["source_id"] for item in dropped for citation in item["evidence"]}
         waived = sorted(call for call, (_, result) in self.required_citations.items()
                         if call not in cited and result not in cited and ({call, result} & described))
-        notes = [*(f"근거 검증을 통과하지 못해 제외한 사건 후보: {item['title']}" for item in dropped),
-                 *([f"근거 검증을 통과하지 못해 제외한 관계 후보 {dropped_edges}개"] if dropped_edges else [])]
+        notes = [*(f"event candidate dropped for failing evidence checks: {item['title']}" for item in dropped),
+                 *([f"relation candidates dropped for failing evidence checks: {dropped_edges}"] if dropped_edges else [])]
         output.update(event_candidates=list(kept.values()), edge_candidates=edges,
                       existing_event_matches=matches, open_items=items,
                       limitations=[*output["limitations"], *notes])
@@ -1016,8 +1020,8 @@ class EvidenceValidator:
             if item["evidence"]:
                 return
             if not citations:
-                raise FlowError(f"근거를 비워 둔 항목에 대신 쓸 후보 근거가 없습니다: {label}. 입력 후보가 이미 "
-                                f"인용한 원문을 그대로 인용하거나, 근거를 직접 써 주세요 ({section}).")
+                raise FlowError(f"no candidate evidence to fill an item left without evidence: {label}. Quote the "
+                                f"source the input candidate already cited, or write the evidence yourself ({section}).")
             item["evidence"] = citations
             filled += 1
         for section in REUSABLE_EVIDENCE_SECTIONS:
@@ -1080,7 +1084,7 @@ class EvidenceValidator:
                 if not row["target_ids"]:
                     row["disposition"] = "excluded"
                     row["reason"] = DOC_VERIFIES_REASON
-        output["limitations"] = [*output["limitations"], f"{DOC_VERIFIES_REASON} ({len(dropped)}건)"]
+        output["limitations"] = [*output["limitations"], f"{DOC_VERIFIES_REASON} ({len(dropped)} relations)"]
         self.normalizations.append({"mode": "doc_verifies_dropped", "edges": len(dropped)})
         return len(dropped)
 
@@ -1146,9 +1150,9 @@ class EvidenceValidator:
             self.reuse_candidate_evidence(output, candidates)
         validate_shape(output, DELTA_SCHEMA)
         if output["status"] != "complete" or output["read_requests"]:
-            raise FlowError("완료되지 않은 GraphDelta입니다.")
+            raise FlowError("GraphDelta is not complete.")
         if output["base_graph_version"] != graph["version"] or output["snapshot_id"] != snapshot_id:
-            raise FlowError("GraphDelta의 기준 graph version 또는 snapshot이 다릅니다.")
+            raise FlowError("GraphDelta base graph version or snapshot differs from the task.")
         self.settle_in_delta_duplicates(output)
         self.restore_tool_evidence(output, candidates)
         self.drop_unchecked_doc_verifies(output, graph)
@@ -1156,7 +1160,7 @@ class EvidenceValidator:
         review_issues = output["review_issues"]
         issue_ids = [item["id"] for item in review_issues]
         if len(issue_ids) != len(set(issue_ids)):
-            raise FlowError("review_issues ID는 고유해야 합니다.")
+            raise FlowError("review_issues IDs must be unique.")
         candidate_kind = {"event_candidate": "event", "edge_candidate": "edge",
                           "open_item_candidate": "open_item"}
         for issue in review_issues:
@@ -1165,23 +1169,23 @@ class EvidenceValidator:
                 if candidates is None or target not in {x["id"] for x in candidates[
                         {"event": "event_candidates", "edge": "edge_candidates",
                          "open_item": "open_items"}[candidate_kind[issue["target_kind"]]]]}:
-                    raise FlowError("review issue가 입력에 없는 후보를 대상으로 합니다.")
+                    raise FlowError("review issue targets a candidate that is not in the input.")
             else:
                 key = {"event": "events", "edge": "edges", "open_item": "open_items"}[issue["target_kind"]]
                 delta_key = {"event": "events_to_add", "edge": "edges_to_add",
                              "open_item": "open_items_to_upsert"}[issue["target_kind"]]
                 if target not in ({x["id"] for x in graph[key]} | {x["id"] for x in output[delta_key]}):
-                    raise FlowError("review issue가 기존 그래프에 없는 항목을 대상으로 합니다.")
+                    raise FlowError("review issue targets an item that is not in the existing graph.")
             self.citations(issue["evidence"])
         review_resolutions = output["review_resolutions"]
         if expected_review_issues is None:
             if review_resolutions:
-                raise FlowError("검토 호출이 아닌데 review_resolutions를 반환했습니다.")
+                raise FlowError("review_resolutions returned outside a review call.")
         else:
             expected_issue_ids = {item["id"] for item in expected_review_issues}
             returned_issue_ids = [item["issue_id"] for item in review_resolutions]
             if len(returned_issue_ids) != len(set(returned_issue_ids)) or set(returned_issue_ids) != expected_issue_ids:
-                raise FlowError("review_resolutions는 전달된 모든 이슈를 정확히 한 번 처리해야 합니다.")
+                raise FlowError("review_resolutions must resolve every issue sent exactly once.")
             for item in review_resolutions:
                 self.citations(item["evidence"])
         if candidates is not None:
@@ -1191,7 +1195,7 @@ class EvidenceValidator:
             resolutions = output["candidate_resolutions"]
             actual = [(item["candidate_id"], item["candidate_kind"]) for item in resolutions]
             if len(actual) != len(set(actual)) or set(actual) != expected:
-                raise FlowError("candidate_resolutions가 후보를 빠짐없이 정확히 한 번 처리해야 합니다.")
+                raise FlowError("candidate_resolutions must resolve every candidate exactly once.")
             targets_by_kind = {
                 "event": ({e["id"] for e in graph["events"]} | {e["id"] for e in output["events_to_add"]}),
                 "edge": ({e["id"] for e in graph["edges"]} | {e["id"] for e in output["edges_to_add"]}),
@@ -1208,22 +1212,22 @@ class EvidenceValidator:
             for item in resolutions:
                 if item["disposition"] == "excluded":
                     if item["target_ids"]:
-                        raise FlowError("excluded 후보에는 대상 ID를 지정할 수 없습니다.")
+                        raise FlowError("an excluded candidate cannot name target IDs.")
                 elif not item["target_ids"] or not set(item["target_ids"]) <= targets_by_kind[item["candidate_kind"]]:
                     missing = sorted(set(item["target_ids"]) - targets_by_kind[item["candidate_kind"]])
                     other = any(t in ids for t in missing for kind, ids in targets_by_kind.items()
                                 if kind != item["candidate_kind"])
-                    why = "대상 없음" if not item["target_ids"] else "다른 종류 항목" if other else "없는 ID"
-                    raise FlowError(f"candidate resolution 대상이 GraphDelta 또는 기존 그래프에 없습니다"
+                    why = "no target" if not item["target_ids"] else "other kind" if other else "unknown ID"
+                    raise FlowError(f"candidate resolution target not in GraphDelta or graph "
                                     f"({item['candidate_kind']}, {why}): {item['candidate_id']} → {', '.join(missing)}")
                 if item["disposition"] == "added" and not set(item["target_ids"]) <= added_by_kind[item["candidate_kind"]]:
-                    raise FlowError("added 후보 처리는 같은 종류의 새 GraphDelta 항목을 가리켜야 합니다.")
+                    raise FlowError("an added resolution must point at a new GraphDelta item of the same kind.")
                 if item["disposition"] in {"duplicate", "updated"} and any(i.startswith("tmp:") for i in item["target_ids"]):
-                    raise FlowError("기존 항목 처리는 기존 그래프 ID를 가리켜야 합니다.")
+                    raise FlowError("a duplicate or updated resolution must point at existing graph IDs.")
                 if item["disposition"] == "duplicate" and not set(item["target_ids"]) <= existing_by_kind[item["candidate_kind"]]:
-                    raise FlowError("duplicate 처리는 실제 기존 그래프 항목을 가리켜야 합니다.")
+                    raise FlowError("a duplicate resolution must point at an existing graph item.")
                 if item["disposition"] == "updated" and not set(item["target_ids"]) <= updated_by_kind[item["candidate_kind"]]:
-                    raise FlowError("updated 처리는 같은 종류의 GraphDelta 갱신을 가리켜야 합니다.")
+                    raise FlowError("an updated resolution must point at a GraphDelta update of the same kind.")
                 self.citations(item["evidence"])
             operations = {"events_to_add": [x["id"] for x in output["events_to_add"]],
                 "events_to_update": [x["id"] for x in output["events_to_update"]],
@@ -1236,7 +1240,7 @@ class EvidenceValidator:
             actual_ops = [(x["operation"], x["item_id"]) for x in attributions]
             valid_candidate_ids = {cid for cid, _ in expected}
             if len(actual_ops) != len(set(actual_ops)) or set(actual_ops) != expected_ops:
-                raise FlowError("change_attributions가 모든 GraphDelta 변경을 정확히 한 번 귀속해야 합니다.")
+                raise FlowError("change_attributions must attribute every GraphDelta change exactly once.")
             resolution_by_id = {row["candidate_id"]: row for row in resolutions}
 
             def linked_ends(item: dict) -> set[str]:
@@ -1268,7 +1272,7 @@ class EvidenceValidator:
 
             for item in attributions:
                 if not item["candidate_ids"] or not set(item["candidate_ids"]) <= valid_candidate_ids:
-                    raise FlowError("변경 귀속이 추출 후보에 없는 ID를 참조합니다.")
+                    raise FlowError("change attribution refers to an ID that is not an extraction candidate.")
                 if not attribution_linked(item):
                     direct = sorted(row["candidate_id"] for row in resolutions if item["item_id"] in row["target_ids"])
                     if direct:
@@ -1285,11 +1289,11 @@ class EvidenceValidator:
                         self.normalizations.append({"mode": "attribution_candidates_from_endpoints",
                                                     "operation": item["operation"], "item_id": item["item_id"]})
                 if not attribution_linked(item):
-                    raise FlowError(f"change attribution 후보의 처리 대상이 귀속 GraphDelta 변경과 연결되지 않습니다"
+                    raise FlowError(f"change attribution not linked to its GraphDelta change "
                                     f"({item['operation']}): {item['item_id']}")
                 if item["operation"] == "events_to_add" and self.assigned_source_ids is not None and not any(
                         quote["source_id"] in self.assigned_source_ids for quote in item["evidence"]):
-                    raise FlowError("새 사건 귀속에는 이번 WorkUnit의 인용이 필요합니다.")
+                    raise FlowError("attribution of a new event needs a citation from this WorkUnit.")
                 self.citations(item["evidence"])
         else:
             attributions = output["change_attributions"]
@@ -1303,7 +1307,7 @@ class EvidenceValidator:
         for item in output["events_to_add"]:
             temp_id = item["id"]
             if not temp_id.startswith("tmp:") or temp_id in local_ids:
-                raise FlowError("새 사건에는 고유한 tmp: ID를 사용해야 합니다.")
+                raise FlowError("a new event must use a unique tmp: ID.")
             try:
                 event = self.event(item)
             except FlowError as exc:
@@ -1319,7 +1323,7 @@ class EvidenceValidator:
         for update in output["events_to_update"]:
             event_id = update["id"]
             if event_id not in event_map or event_id in updated:
-                raise FlowError("수정 대상이 없거나 중복 수정입니다.")
+                raise FlowError("event update targets an unknown event or updates it twice.")
             updated.add(event_id)
             current = event_map[event_id]
             merged = {k: copy.deepcopy(current[k]) for k in EVENT_FIELDS}
@@ -1340,7 +1344,7 @@ class EvidenceValidator:
         def mapped(value: str) -> str:
             target = local_ids.get(value, value)
             if target not in event_map:
-                raise FlowError("관계가 존재하지 않는 사건을 참조합니다: " + value)
+                raise FlowError("relation refers to an event that does not exist: " + value)
             return target
         edge_map = {e["id"]: e for e in result["edges"]}
         edge_tmp = set()
@@ -1348,7 +1352,7 @@ class EvidenceValidator:
         for original in output["edges_to_add"]:
             edge = copy.deepcopy(original)
             if not edge["id"].startswith("tmp:") or edge["id"] in edge_tmp:
-                raise FlowError("새 관계에는 고유한 tmp: ID가 필요합니다.")
+                raise FlowError("a new relation needs a unique tmp: ID.")
             edge_tmp.add(edge["id"])
             edge["evidence_ids"] = self.citations(edge.pop("evidence"))
             edge["from_event_id"] = mapped(edge["from_event_id"])
@@ -1363,7 +1367,7 @@ class EvidenceValidator:
         for invalidation in output["edges_to_invalidate"]:
             edge = edge_map.get(invalidation["id"])
             if not edge:
-                raise FlowError("무효화할 관계가 없습니다.")
+                raise FlowError("relation to invalidate does not exist.")
             edge["active"] = False
             edge["invalidation"] = {"reason": invalidation["reason"],
                                     "evidence_ids": self.citations(invalidation["evidence"]), "run_id": run_id}
@@ -1387,12 +1391,12 @@ class EvidenceValidator:
                 open_local_ids[item["id"]] = ident("open_", run_id, graph["version"], item["id"])
                 item["id"] = open_local_ids[item["id"]]
             elif item["id"] not in items:
-                raise FlowError("기존 미해결 사항 ID가 없습니다.")
+                raise FlowError("existing open item ID does not exist.")
             items[item["id"]] = item
         for resolution in output["open_items_to_resolve"]:
             item = items.get(resolution["id"])
             if not item:
-                raise FlowError("해결할 미해결 사항이 없습니다.")
+                raise FlowError("open item to resolve does not exist.")
             item["status"] = "resolved"
             item["resolution"] = {"reason": resolution["reason"],
                                   "evidence_ids": self.citations(resolution["evidence"])}

@@ -112,9 +112,9 @@ def test_valid_extraction_is_reused_without_preintegration_review(laboratory):
     assert len(store.llm_calls('run2'))==0
 
 
-@pytest.mark.parametrize('message', ['손상된 JSONL 레코드: fixture.jsonl:2',
-                                    'Codex 경로 귀속 불명확 레코드 1개 제외: fixture.jsonl',
-                                    'JSONL 레코드 한도 초과: fixture.jsonl:2'])
+@pytest.mark.parametrize('message', ['corrupt JSONL record: fixture.jsonl:2',
+                                    'Codex path attribution unclear, 1 records excluded: fixture.jsonl',
+                                    'JSONL record over the size limit: fixture.jsonl:2'])
 def test_incomplete_input_remains_partial_on_first_and_repeat(laboratory,message):
     _,store,engine,records,make=laboratory
     records.append(make(CASES[0][0]))
@@ -205,7 +205,7 @@ def test_reply_over_budget_does_not_authorize_unsent_citation(laboratory):
     data={'unit_id':'budget-unit','snapshot_id':'snapshot-budget',
           'new_records':[h.provide(target.source_id)], **context}
     checker=EvidenceValidator(h.pool,h.provided)
-    with pytest.raises(FlowError,match='제공하지 않은'):
+    with pytest.raises(FlowError,match='not provided to the model'):
         h.task('extract',data,lambda o:checker.check_extraction(o,'budget-unit','snapshot-budget',store.graph()))
     assert 'other' not in h.provided
 

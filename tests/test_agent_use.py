@@ -239,7 +239,7 @@ def test_update_runs_only_when_asked_and_context_reads_quotes_as_data(tmp_path):
 def test_a_brief_run_report_counts_limitations_instead_of_listing_them(capsys):
     from projectflow.cli import _brief
     _brief({"status": "partial", "completed_units": 2, "runner_calls": 9, "graph_version": 7,
-            "pending_records": 51_234, "limitations": [f"원문 크기 한도로 미처리: s{n}" for n in range(500)],
+            "pending_records": 51_234, "limitations": [f"record over the size limit, not processed: s{n}" for n in range(500)],
             "graph": {"version": 7}})
     out = capsys.readouterr().out
     assert "상태 partial · 처리한 작업 단위 2 · AI 호출 9 · 그래프 v7" in out

@@ -55,12 +55,12 @@ def test_oversized_commit_does_not_hide_later_commits_or_current_diff(tmp_path, 
 
     def limited(path, *args, **kwargs):
         if args[0] == "diff" and args[-3] == skipped_oid:
-            raise FlowError("Git 출력이 안전한 입력 한도를 초과했습니다. 해당 범위는 미처리입니다.")
+            raise FlowError("Git output exceeds the safe input limit. That range is not processed.")
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(git_context, "git", limited)
     result = collect_git(Scope.resolve(folder))
-    assert any("diff를 보류" in warning and skipped_oid[:12] in warning
+    assert any("diff skipped" in warning and skipped_oid[:12] in warning
                for warning in result.limitations)
     assert any(r.locator.get("commit") == run(folder, "rev-parse", "HEAD")
                for r in result.records)

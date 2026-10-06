@@ -105,8 +105,8 @@ def test_ignored_types_are_dropped_without_warned(tmp_path):
     folder.mkdir()
     snapshot = parse_with(folder, [UNPARSED_FIXTURES["token_usage_record"],
                                    UNPARSED_FIXTURES["event_msg:thread_settings_applied"]])
-    assert not any("미지원" in w for w in snapshot.limitations), snapshot.limitations
-    assert not any("미전달" in w for w in snapshot.limitations), snapshot.limitations
+    assert not any("unsupported record" in w for w in snapshot.limitations), snapshot.limitations
+    assert not any("not sent to analysis" in w for w in snapshot.limitations), snapshot.limitations
 
 
 def test_every_ignored_type_has_a_written_reason():
@@ -128,8 +128,8 @@ def test_world_state_is_reported_once_with_a_count(tmp_path):
                                    UNPARSED_FIXTURES["world_state"]])
     reported = [w for w in snapshot.limitations if "world_state" in w]
     assert len(reported) == 1, snapshot.limitations
-    assert "2개" in reported[0]
-    assert "미전달" in reported[0]
+    assert "2 records" in reported[0]
+    assert "not sent to analysis" in reported[0]
 
 
 def test_an_unknown_type_still_warns_as_unsupported(tmp_path):
@@ -137,7 +137,7 @@ def test_an_unknown_type_still_warns_as_unsupported(tmp_path):
     folder = tmp_path / "app"
     folder.mkdir()
     snapshot = parse_with(folder, [{"type": "brand_new_upstream_type", "payload": {"x": 1}}])
-    unsupported = [w for w in snapshot.limitations if "미지원" in w]
+    unsupported = [w for w in snapshot.limitations if "unsupported record" in w]
     assert len(unsupported) == 1, snapshot.limitations
     assert "brand_new_upstream_type" in unsupported[0]
 
@@ -189,7 +189,7 @@ def test_no_record_type_is_silently_dropped(tmp_path):
     cpath = tmp_path / "rollout.jsonl"
     write(cpath, base_rows(folder) + list(codex_types.values()))
     codex_snapshot = parse_codex(cpath, Scope.resolve(folder))
-    unsupported = [w for w in codex_snapshot.limitations if "미지원" in w]
+    unsupported = [w for w in codex_snapshot.limitations if "unsupported record" in w]
     assert not unsupported, f"classified types must not warn as unsupported: {unsupported}"
     # The user message from base_rows must survive; dropping it silently is the
     # failure this assertion exists to catch.
@@ -200,7 +200,7 @@ def test_no_record_type_is_silently_dropped(tmp_path):
                    "message": {"role": "user", "content": "고쳐줘."}}]
            + list(claude_types.values()))
     claude_snapshot = parse_claude(apath, Scope.resolve(folder))
-    unsupported = [w for w in claude_snapshot.limitations if "미지원" in w]
+    unsupported = [w for w in claude_snapshot.limitations if "unsupported record" in w]
     assert not unsupported, f"classified types must not warn as unsupported: {unsupported}"
     assert len(claude_snapshot.records) == 1, [r.content for r in claude_snapshot.records]
 
@@ -221,7 +221,7 @@ def test_a_malformed_attachment_is_reported_not_raised(tmp_path, malformed):
                  {"type": "attachment", "cwd": str(folder), "uuid": "u2",
                   "attachment": malformed}])
     snapshot = parse_claude(path, Scope.resolve(folder))   # must not raise
-    assert any("attachment:" in w and "미지원" in w for w in snapshot.limitations), \
+    assert any("attachment:" in w and "unsupported record" in w for w in snapshot.limitations), \
         f"{malformed!r} should be reported: {snapshot.limitations}"
     # A warning alone is not enough: the unread shape must also not have become
     # a record carrying the raw payload.
@@ -320,8 +320,8 @@ def test_claude_ignored_types_are_dropped_without_warned(tmp_path):
                   ("system:turn_duration", "file-history-snapshot", "permission-mode",
                    "bridge-session", "ai-title")])
     snapshot = parse_claude(path, Scope.resolve(folder))
-    assert not any("미지원" in w for w in snapshot.limitations), snapshot.limitations
-    assert not any("미전달" in w for w in snapshot.limitations), snapshot.limitations
+    assert not any("unsupported record" in w for w in snapshot.limitations), snapshot.limitations
+    assert not any("not sent to analysis" in w for w in snapshot.limitations), snapshot.limitations
     # The account identifier must never become a record we could send anywhere.
     assert all("acct" not in r.content for r in snapshot.records)
 
@@ -338,7 +338,7 @@ def test_claude_queue_operation_and_stop_hook_are_reported(tmp_path):
                   UNPARSED_FIXTURES["system:local_command"]])
     snapshot = parse_claude(path, Scope.resolve(folder))
     for name in ("queue-operation", "stop_hook_summary", "local_command"):
-        assert any(name in w and "미전달" in w for w in snapshot.limitations), \
+        assert any(name in w and "not sent to analysis" in w for w in snapshot.limitations), \
             f"{name} must be reported: {snapshot.limitations}"
 
 

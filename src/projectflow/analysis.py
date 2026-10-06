@@ -210,12 +210,12 @@ def _incomplete_input(issues: list[str]) -> bool:
     Keep this single classification path consistent for first run and no-op.
     """
     informational = (
-        r"Git 저장소가 아니므로 Git 근거는 없습니다\.",
-        r"Git 입력은 선택한 커밋과 tracked staged/unstaged diff입니다\. untracked 파일 내용은 읽지 않습니다\.",
-        r"Git 과거 커밋은 worktree별 최근 \d+개만 선택했습니다\.",
-        r"병합 커밋 [0-9a-f]+은 첫 parent 대비 diff만 선택했습니다\.",
-        r"이미 통합된 작업 단위를 다시 분석합니다: .+",
-        r"이미 통합된 원문 \d+개의 처리 기록을 바로잡았습니다\(다시 보내지 않음\)\.",
+        r"Not a Git repository, so there is no Git evidence\.",
+        r"Git input is the selected commits and the tracked staged/unstaged diff\. Untracked file content is not read\.",
+        r"Git history is limited to the latest \d+ commits per worktree\.",
+        r"Merge commit [0-9a-f]+ is read as its diff against the first parent only\.",
+        r"re-analyzing an already integrated work unit: .+",
+        r"corrected the processed ledger of \d+ already integrated records \(not resent\)\.",
     )
     return any(not any(re.fullmatch(pattern, message) for pattern in informational) for message in issues)
 
@@ -768,7 +768,7 @@ def link_request_turns(graph: dict, base: dict, pool: dict[str, SourceRecord], u
             continue
         first = min(cited, key=position.get)
         before = [r for r in by_session.get(pool[first].session_id, []) if position[r.source_id] <= position[first]]
-        rationale = "같은 세션에서 이 사용자 발화 다음에 한 작업(대화 구조, 인과 주장 아님)"
+        rationale = "work done after this user message in the same session (dialog structure, not a causal claim)"
         spawned_by = (pool[first].lineage or {}).get("parent_session_id")
         stamp = _record_timestamp(pool[first].recorded_at)
         if not before and spawned_by and stamp is not None:
@@ -776,7 +776,8 @@ def link_request_turns(graph: dict, base: dict, pool: dict[str, SourceRecord], u
             # of its parent session in which it ran, i.e. the parent's last message before it.
             before = [r for r in by_session.get(spawned_by, [])
                       if (_record_timestamp(r.recorded_at) or float("inf")) <= stamp]
-            rationale = "이 사용자 발화 다음에 부모 세션이 띄운 하위 에이전트의 작업(대화 구조, 인과 주장 아님)"
+            rationale = ("work of a sub-agent the parent session spawned after this user message "
+                         "(dialog structure, not a causal claim)")
         if not before or before[-1].source_id not in nodes:
             continue
         node, evidence_id = nodes[before[-1].source_id]
@@ -898,7 +899,7 @@ def _session_unit_chunks(records: list[SourceRecord], config: AnalysisConfig,
                 else:
                     end = max(candidates, default=limit)
                 if end not in safe:
-                    warning = "작업 단위 크기 한도 때문에 연결된 도구 호출·결과 또는 원문 조각을 나눴습니다."
+                    warning = "the work unit size limit split a linked tool call and result or the fragments of one record."
                     if warning not in issues:
                         issues.append(warning)
             chunks.append((entries[start][0], ordered[start:end]))
@@ -997,13 +998,13 @@ class Harness:
         lines = record.content.splitlines()
         start, end = start or 1, end or len(lines)
         if not (1 <= start <= end <= len(lines)):
-            raise FlowError("추가 원문 요청의 줄 범위가 잘못되었습니다.")
+            raise FlowError("requested line range is outside the record.")
         if record.locator.get("preserved_only") and not any(
                 lo <= start and end <= hi for lo, hi in self.provided.get(source_id, [])):
-            raise FlowError("보존된 인용 범위 밖의 원문은 확인할 수 없습니다.")
+            raise FlowError("only the preserved cited lines of this record are readable.")
         text = "\n".join(lines[start - 1:end])
         if len(text) > max(self.config.record_chars, self.config.read_chars):
-            raise FlowError("요청한 원문이 한도를 초과했습니다. 더 작은 줄 범위가 필요합니다.")
+            raise FlowError("requested text exceeds the limit. Request a smaller line range.")
         self.provided.setdefault(source_id, []).append((start, end))
         self.dependencies[source_id] = record.content_hash
         result = record.metadata()
@@ -1274,7 +1275,7 @@ class Harness:
             "files_at_revision": [{"id": i, "revision": v[1], "path": v[2]}
                                   for i, v in list(self.file_manifest.items())
                                   if i in self.allowed_file_ids][:LEAN_INDEX_FILES if lean else 100],
-            "limits": "과거 사건 색인 200개, 원문 색인 250개, 고정 revision 파일 색인 100개. 무제한 전체 검색이 아닙니다."}
+            "limits": "index of 200 past events, 250 records and 100 files at fixed revisions. Not an unlimited full search."}
         delivered_parts = {"context_only": previous, "existing_events": selected,
                            "existing_evidence": _prompt_evidence(related_evidence, previous),
                            "existing_edges": existing_edges, "existing_open_items": selected_open,
@@ -1306,21 +1307,21 @@ class Harness:
     def read(self, request: dict) -> list[dict]:
         required = {"kind", "ids", "start_line", "end_line", "query", "unit_id"}
         if set(request) != required:
-            raise FlowError("추가 근거 요청은 schema의 단일 객체 필드를 모두 포함해야 합니다.")
+            raise FlowError("an evidence request must carry every field of the schema's single object.")
         if request["kind"] == "search_events":
             if (request["ids"] != [] or not isinstance(request["query"], str) or
                     not request["query"].strip() or len(request["query"]) > 500 or
                     request["unit_id"] != self.unit_id or
                     request["start_line"] is not None or request["end_line"] is not None):
-                return [{"denied": "search_events는 query·현재 unit_id만 사용하며 ids와 줄 범위는 비워야 합니다."}]
+                return [{"denied": "search_events takes only query and the current unit_id; ids and the line range must be empty."}]
         else:
             if (request["kind"] not in {"read_records", "read_existing_event", "read_diff", "read_file_at_revision"} or
                     not isinstance(request["ids"], list) or not 1 <= len(request["ids"]) <= 4 or
                     request["query"] is not None or request["unit_id"] is not None):
-                return [{"denied": "읽기 요청의 kind, ID 또는 검색 전용 필드가 올바르지 않습니다."}]
+                return [{"denied": "read request has an invalid kind or IDs, or sets a search-only field."}]
             start, end = request["start_line"], request["end_line"]
             if (start is None) != (end is None) or (start is not None and start > end):
-                return [{"denied": "줄 범위는 양쪽 모두 지정하거나 모두 비워야 합니다."}]
+                return [{"denied": "line range needs both ends or neither."}]
         if request["kind"] == "search_events":
             tokens = set(re.findall(r"[\w가-힣]{2,}", request["query"].casefold()))
             matches = []
@@ -1335,14 +1336,14 @@ class Harness:
             matches.sort(key=lambda item: (item[0], item[1].get("recorded_at") or ""), reverse=True)
             return [{"id": event["id"], "title": event["title"],
                      "description": event.get("summary", "")[:240],
-                     "reason": "검색어 일치: " + ", ".join(sorted(overlap))}
+                     "reason": "query terms matched: " + ", ".join(sorted(overlap))}
                     for _, event, overlap in matches[:8]]
         outputs = []
         for value in request["ids"]:
             try:
                 if request["kind"] == "read_existing_event":
                     if value not in self.allowed_event_ids:
-                        raise FlowError("허용된 사건 manifest 밖의 ID")
+                        raise FlowError("ID outside the allowed event manifest")
                     event = next(e for e in self.graph["events"] if e["id"] == value)
                     preserved = self.store.evidence_many(event["evidence_ids"])
                     _rehydrate(self.pool, self.provided, preserved)
@@ -1368,19 +1369,19 @@ class Harness:
                                          if i in self.allowed_file_ids)
                     allowed_files = dict(list(allowed_files.items())[:100])
                     if value not in allowed_files:
-                        raise FlowError("허용된 revision/file manifest 밖의 ID")
+                        raise FlowError("ID outside the allowed revision/file manifest")
                     root, oid, filename = allowed_files[value]
                     content = git(Path(root), "show", f"{oid}:{filename}", cap=1_000_000)
                     if "\x00" in content:
-                        raise FlowError("binary 파일 원문은 제공하지 않습니다.")
+                        raise FlowError("binary file content is not provided.")
                     self.pool[value] = SourceRecord(value, "git", None, "git", content,
                         {"kind": "file_at_revision", "root": root, "commit": oid, "file": filename}, git={"head": oid})
                     outputs.append(self.provide(value, request["start_line"], request["end_line"]))
                 else:
                     if value not in self.allowed_record_ids:
-                        raise FlowError("허용된 snapshot 원문 manifest 밖의 ID")
+                        raise FlowError("ID outside the allowed snapshot record manifest")
                     if request["kind"] == "read_diff" and self.pool[value].provider != "git":
-                        raise FlowError("diff가 아닌 ID")
+                        raise FlowError("ID is not a diff")
                     outputs.append(self.provide(value, request["start_line"], request["end_line"]))
             except (FlowError, StopIteration, KeyError) as exc:
                 outputs.append({"id": value, "denied": str(exc)[:300]})
@@ -1505,7 +1506,7 @@ class Harness:
                     if output["snapshot_id"] != data["snapshot_id"] or (
                             stage == "extract" and output["unit_id"] != data["unit_id"]) or (
                             stage == "integrate" and output["base_graph_version"] != data["base_graph_version"]):
-                        raise FlowError("응답의 작업/snapshot/graph 기준이 요청과 다릅니다.")
+                        raise FlowError("reply unit/snapshot/graph base differs from the request.")
                     return {"schema": "passed", "snapshot_and_base_ids": "passed",
                             "response_status": output["status"]}
                 _trace_operation(self.detailed_trace, f"validate_{stage}_contract",
@@ -1518,9 +1519,9 @@ class Harness:
                     }, submitted)
                     response_finalized = True
                     if read_count >= self.config.read_rounds or not output["read_requests"]:
-                        raise FlowError("추가 근거 요청 한도를 초과했거나 빈 요청입니다.")
+                        raise FlowError("evidence request limit exceeded or empty request.")
                     if len(output["read_requests"]) > 3:
-                        raise FlowError("한 라운드의 근거 요청은 최대 3개입니다.")
+                        raise FlowError("at most 3 evidence requests per round.")
                     before_provided, before_dependencies = copy.deepcopy(self.provided), dict(self.dependencies)
                     before_pool = dict(self.pool)
                     try:
@@ -1530,7 +1531,7 @@ class Harness:
                             lambda: [{"request": request, "results": self.read(request)}
                                      for request in output["read_requests"]], run_type="tool")
                         if len(dumps(replies)) > self.config.read_chars * 2:
-                            raise FlowError("추가 근거 응답 예산을 초과했습니다.")
+                            raise FlowError("evidence reply budget exceeded.")
                     except BaseException:
                         self.provided.clear(); self.provided.update(before_provided)
                         self.dependencies.clear(); self.dependencies.update(before_dependencies)
@@ -1584,7 +1585,7 @@ class Harness:
                                       "previous_output": submitted}
                     exact_lines = []
                     for mismatch in list(re.finditer(
-                            r"인용문이 (?:고정 원문과 다릅니다|제공된 원문 범위에서 유일하게 일치하지 않습니다): "
+                            r"quote (?:differs from the frozen source|not found uniquely in the cited lines): "
                             r"([^:]+):(\d+)-(\d+)", str(exc)))[:8]:
                         source_id, start, end = mismatch.group(1), int(mismatch.group(2)), int(mismatch.group(3))
                         if source_id in self.pool and any(lo <= start and end <= hi
@@ -1642,12 +1643,14 @@ def unlinked_revisions(delta: dict | None) -> list[dict]:
 # (operation, signal, question). Quotes are already checked in code, so a new observed
 # result alone is not flagged; what code cannot tell is whether a link is missing.
 REVIEW_SIGNALS = (
-    ("events_to_update", "existing_claim_or_status_update", "실제 상태 변화인가, 같은 내용을 다시 말한 것인가?"),
-    ("edges_to_invalidate", "existing_relation_invalidation", "원문이 기존 관계의 무효화를 직접 뒷받침하는가?"),
+    ("events_to_update", "existing_claim_or_status_update", "Is this a real status change, or the same content restated?"),
+    ("edges_to_invalidate", "existing_relation_invalidation", "Does the source directly support invalidating the existing relation?"),
     ("events_to_add", "unlinked_observed_outcome",
-     "이 실행 결과가 확인한 변경이 원문에 있다면 verifies로 이어야 하지 않는가? 없다면 그 이유가 한계에 있는가?"),
+     "If the change this run result checked is in the source, should it be linked with verifies? "
+     "If not, is the reason in limitations?"),
     ("events_to_add", "unlinked_revision",
-     "이 수정이 고친 이전 사건(시도·변경·결과)이 원문에 있다면 revises로 이어야 하지 않는가? 없다면 그 이유가 한계에 있는가?"),
+     "If the earlier event (attempt, change or result) this revision fixed is in the source, should it be linked "
+     "with revises? If not, is the reason in limitations?"),
 )
 
 
@@ -1855,7 +1858,8 @@ class Engine:
                             "reused": reuse, "escalation_pending": True}
             h.runner, h.routing_role, h.routing_reasons = runners.get("escalation"), "escalation", reasons
             reviewed_data = {**data, "review_trigger": reasons,
-                             "review_instruction": "원문과 대조해 후보를 재추출하라. 아래 draft는 정답이 아니다. 빈 결과도 누락 여부를 확인하라.",
+                             "review_instruction": "Re-extract the candidates against the source. The draft below is not the answer. "
+                                                   "Check an empty result for omissions too.",
                              "draft_candidates": draft,
                              "inherited_evidence_rounds": copy.deepcopy(h.read_history)}
             try:
@@ -2045,7 +2049,7 @@ class Engine:
         source_rows = self.store.sources()
         missing = [i for i, row in source_rows.items() if not row["available"]]
         if missing:
-            issues.append(f"원본 {len(missing)}개가 현재 snapshot에 없습니다. 보존 근거는 유지하며 사실을 철회하지 않습니다.")
+            issues.append(f"{len(missing)} sources are missing from the current snapshot. Preserved evidence is kept; no fact is retracted.")
         pending = {i for i, row in source_rows.items()
                    if i in pool and row["processed_hash"] != pool[i].content_hash}
         plans, scheduled, settled, regrouped = [], set(), {}, {}
@@ -2062,8 +2066,8 @@ class Engine:
                     settled.update({i: pool[i].content_hash for i in seen
                                     if source_rows[i]["processed_hash"] != pool[i].content_hash})
                     continue
-                issues.append(f"이미 통합된 작업 단위를 다시 분석합니다: {unit['id']} "
-                              f"(원문 {len(changed)}개 변경: {', '.join(changed[:3])}{' 외' if len(changed) > 3 else ''})")
+                issues.append(f"re-analyzing an already integrated work unit: {unit['id']} "
+                              f"({len(changed)} records changed: {', '.join(changed[:3])}{' and more' if len(changed) > 3 else ''})")
                 deps_changed, sources_changed = False, True
             else:
                 deps_changed = any(i in pool and pool[i].content_hash != h
@@ -2074,7 +2078,7 @@ class Engine:
             ids = unit["sources"]
             if not all(i in pool for i in ids):
                 if unit["status"] != "integrated":
-                    issues.append("보류된 작업 단위의 원본 일부가 없어 재시도를 보류했습니다.")
+                    issues.append("retry of a pending work unit held back because some of its sources are missing.")
                 continue
             if scheduled.intersection(ids):
                 continue
@@ -2090,7 +2094,7 @@ class Engine:
             scheduled.update(ids)
         if settled:
             # Records an unchanged integrated unit already covers are not pending, whatever the ledger says.
-            issues.append(f"이미 통합된 원문 {len(settled)}개의 처리 기록을 바로잡았습니다(다시 보내지 않음).")
+            issues.append(f"corrected the processed ledger of {len(settled)} already integrated records (not resent).")
             pending -= set(settled)
             if repair:
                 self.store.mark_processed(settled)
@@ -2099,7 +2103,7 @@ class Engine:
             if record.source_id not in waiting:
                 continue
             if len(record.content) > self.config.record_chars:
-                issues.append(f"원문 크기 한도로 미처리: {record.source_id} ({len(record.content)} chars)")
+                issues.append(f"record over the size limit, not processed: {record.source_id} ({len(record.content)} chars)")
                 continue
             remaining.append(record)
         for chunk in _session_unit_chunks(remaining, self.config, issues):
@@ -2114,7 +2118,7 @@ class Engine:
         replaced = [unit for uid, unit in regrouped.items()
                     if uid not in {p["id"] for p in plans} and in_scope(unit)]
         if replaced:
-            issues.append(f"저장된 미처리 작업 단위 {len(replaced)}개를 현재 규칙으로 다시 묶었습니다.")
+            issues.append(f"regrouped {len(replaced)} stored unprocessed work units under the current rule.")
             if repair:
                 for unit in replaced:
                     self.store.save_unit(unit["id"], unit["sources"], unit["dependencies"], "superseded")

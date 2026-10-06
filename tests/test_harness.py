@@ -24,7 +24,7 @@ def test_read_range_and_dependency(laboratory):
     assert h.dependencies['s1']==records[0].content_hash
     validator=EvidenceValidator(h.pool,h.provided)
     validator.citations([{'source_id':'s1','start_line':2,'end_line':2,'quote':'two'}])
-    with pytest.raises(FlowError,match='제공하지 않은'):
+    with pytest.raises(FlowError,match='not provided to the model'):
         validator.citations([{'source_id':'s1','start_line':1,'end_line':1,'quote':'one'}])
 
 
@@ -44,7 +44,7 @@ def test_search_events_is_bounded_to_visible_event_manifest_and_unit(laboratory)
     assert all("id" in item and "reason" in item and "description" in item for item in found)
     assert h.read({"kind": "search_events", "ids": [], "query": "SQLite",
                    "unit_id": "another-unit", "start_line": None, "end_line": None}) == [
-                       {"denied": "search_events는 query·현재 unit_id만 사용하며 ids와 줄 범위는 비워야 합니다."}]
+                       {"denied": "search_events takes only query and the current unit_id; ids and the line range must be empty."}]
     malformed = {"kind": "search_events", "ids": ["ev_1"], "query": "SQLite",
                  "unit_id": "unit-test", "start_line": None, "end_line": None}
     assert "denied" in h.read(malformed)[0]
@@ -111,10 +111,10 @@ def test_unique_substring_citation_rejects_duplicate_or_invented_text(laboratory
     _, _, _, _, make = laboratory
     record = make("prefix exact phrase appears\nfiller one\nfiller two\nexact phrase appears suffix")
     validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 4)]})
-    with pytest.raises(FlowError, match="유일하게 일치.*1, 4번 줄 중 하나만 인용"):
+    with pytest.raises(FlowError, match="not found uniquely.*cite one of lines 1, 4"):
         validator.citations([{"source_id": record.source_id, "start_line": 1,
                               "end_line": 4, "quote": "exact phrase appears"}])
-    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):
+    with pytest.raises(FlowError, match="not found uniquely in the cited lines"):
         validator.citations([{"source_id": record.source_id, "start_line": 1,
                               "end_line": 4, "quote": "invented phrase that is long enough"}])
 
@@ -129,7 +129,7 @@ def test_repeats_a_few_lines_apart_are_cited_as_the_lines_that_hold_them(laborat
     assert (saved["start_line"], saved["end_line"]) == (2, 3) and len(saved["focus"]) == 2
     assert validator.normalizations[0]["mode"] == "repeats_within_few_lines_expanded"
     # Only inside the lines the model named: a quote cited at the wrong line is not moved onto repeats.
-    with pytest.raises(FlowError, match="인용문"):
+    with pytest.raises(FlowError, match="quote "):
         validator.citations([{"source_id": record.source_id, "start_line": 1,
                               "end_line": 1, "quote": "exact phrase appears"}])
 
@@ -138,9 +138,9 @@ def test_quote_normalization_rejects_ambiguous_or_partial_text(laboratory):
     _, _, _, _, make = laboratory
     record = make("same\nsame\nother")
     validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 3)]})
-    with pytest.raises(FlowError, match='인용문이'):
+    with pytest.raises(FlowError, match='quote '):
         validator.citations([{'source_id':record.source_id,'start_line':1,'end_line':2,'quote':'same'}])
-    with pytest.raises(FlowError, match='인용문이'):
+    with pytest.raises(FlowError, match='quote '):
         validator.citations([{'source_id':record.source_id,'start_line':3,'end_line':3,'quote':'otter'}])
     # A short fragment found once is kept, as its whole line.
     [kept] = validator.citations([{'source_id':record.source_id,'start_line':3,'end_line':3,'quote':'othe'}])
@@ -165,7 +165,7 @@ def test_whitespace_that_two_lines_share_is_not_read_back(laboratory):
     _, _, _, _, make = laboratory
     record = make("one aa  bb cc line here\ntwo aa  bb cc line here")
     validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 2)]})
-    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):
+    with pytest.raises(FlowError, match="not found uniquely in the cited lines"):
         validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 2, "quote": "aa bb cc"}])
 
 
@@ -186,12 +186,12 @@ def test_ellipsis_pieces_out_of_order_or_under_eight_chars_are_not_read_back(lab
     _, _, _, _, make = laboratory
     record = make("aaa second line here now\nbbb first line here now\nccc third line here now")
     validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 3)]})
-    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):
+    with pytest.raises(FlowError, match="not found uniquely in the cited lines"):
         validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 3,
                               "quote": "first line here now ... second line here now"}])
     shorter = make("first line of the request\nsecond line\nthird line of the request", key="short")
     strict = EvidenceValidator({shorter.source_id: shorter}, {shorter.source_id: [(1, 3)]})
-    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):
+    with pytest.raises(FlowError, match="not found uniquely in the cited lines"):
         strict.citations([{"source_id": shorter.source_id, "start_line": 1, "end_line": 3,
                            "quote": "first line of the request ... second"}])
 
@@ -212,12 +212,12 @@ def test_quote_past_the_line_end_is_rejected_under_eighty_percent_or_inside_a_li
     _, _, _, _, make = laboratory
     record = make("intro line\nthe distinctive result line is here\ntail line")
     validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 3)]})
-    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):  # too much past the line end
+    with pytest.raises(FlowError, match="not found uniquely in the cited lines"):  # too much past the line end
         validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 2,
                               "quote": "the distinctive result line is here and the model kept going"}])
     longer = make("intro line\nthe distinctive result line is here and then some more text here", key="mid")
     strict = EvidenceValidator({longer.source_id: longer}, {longer.source_id: [(1, 2)]})
-    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):  # the copy stops inside the line
+    with pytest.raises(FlowError, match="not found uniquely in the cited lines"):  # the copy stops inside the line
         strict.citations([{"source_id": longer.source_id, "start_line": 1, "end_line": 2,
                            "quote": "the distinctive result line is here more text here"}])
 
@@ -226,12 +226,12 @@ def test_a_translated_quote_and_a_short_fragment_are_never_read_back(laboratory)
     _, _, _, _, make = laboratory
     record = make("header line\nthe user decided to keep the sqlite file in the state directory", key="ko")
     validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 2)]})
-    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):
+    with pytest.raises(FlowError, match="not found uniquely in the cited lines"):
         validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 2,
                               "quote": "사용자는 상태 디렉터리에 sqlite 파일을 두기로 결정했다"}])
     tabbed = make("same\twords here now", key="tab")
     strict = EvidenceValidator({tabbed.source_id: tabbed}, {tabbed.source_id: [(1, 1)]})
-    with pytest.raises(FlowError, match="고정 원문과 다릅니다"):  # a fragment under 8 chars stays strict
+    with pytest.raises(FlowError, match="differs from the frozen source"):  # a fragment under 8 chars stays strict
         strict.citations([{"source_id": tabbed.source_id, "start_line": 1, "end_line": 1, "quote": "same w"}])
 
 
@@ -247,7 +247,7 @@ def test_a_failed_quote_is_classified_by_where_it_went(laboratory, text, start, 
     record = make(text)
     last = len(text.splitlines())
     validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, last)]})
-    with pytest.raises(FlowError, match="인용문"):
+    with pytest.raises(FlowError, match="quote "):
         validator.citations([{"source_id": record.source_id, "start_line": start, "end_line": end, "quote": quote}])
     [item] = validator.mismatch_audit()
     assert {k: v for k, v in item.items() if k != "shape"} == {
@@ -260,7 +260,7 @@ def test_a_short_quote_found_twice_is_counted_as_two_matches(laboratory):
     _, _, _, _, make = laboratory
     record = make("ab cd ab cd here")
     validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 1)]})
-    with pytest.raises(FlowError, match="고정 원문과 다릅니다"):
+    with pytest.raises(FlowError, match="differs from the frozen source"):
         validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 1, "quote": "ab cd"}])
     assert validator.mismatches[0]["matches"] == 2
 
@@ -270,7 +270,7 @@ def test_a_quote_written_for_another_record_is_classified_as_such(laboratory):
     here, other = make("intro line here", key="here"), make("an invented phrase that is long enough", key="other")
     validator = EvidenceValidator({r.source_id: r for r in (here, other)},
                                   {here.source_id: [(1, 1)], other.source_id: [(1, 1)]})
-    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다"):
+    with pytest.raises(FlowError, match="not found uniquely in the cited lines"):
         validator.citations([{"source_id": here.source_id, "start_line": 1, "end_line": 1,
                               "quote": "an invented phrase that is long"}])
     assert [item["category"] for item in validator.mismatch_audit()] == ["other_record"]
@@ -300,7 +300,7 @@ def test_validation_lists_multiple_bad_citations(laboratory):
             {'evidence': [{'source_id':record.source_id,'start_line':1,'end_line':1,'quote':'wrong'}]},
             {'evidence': [{'source_id':record.source_id,'start_line':2,'end_line':2,'quote':'also wrong'}]},
         ]})
-    assert failure.value.args[0].count('인용문이') == 2
+    assert failure.value.args[0].count('quote ') == 2
 
 
 @pytest.mark.parametrize('kind,value',[('read_records','/etc/passwd'),('read_records','../../outside'),('read_diff','s1'),('read_file_at_revision','HEAD:/etc/passwd'),('read_existing_event','unknown')])
@@ -318,7 +318,7 @@ def test_preserved_excerpt_cannot_read_gap(laboratory):
     h=Harness(FixtureRunner(),pool,store.graph(),store,AnalysisConfig(),threading.Event())
     h.provided=provided
     assert h.provide('s1',2,2)['lines'][0]['text']=='two'
-    with pytest.raises(FlowError,match='보존된 인용'):
+    with pytest.raises(FlowError,match='preserved cited lines'):
         h.provide('s1',1,2)
 
 
@@ -471,7 +471,7 @@ def test_context_only_record_cannot_be_the_only_source_of_new_event(laboratory):
             "unit_id": "unit_test", "new_records": [record]}}, {}, threading.Event())
     validator = EvidenceValidator(h.pool, h.provided, assigned_source_ids={"assigned"})
     validator.check_extraction(extract(assigned_input), "unit_test", "snap_test", store.graph())
-    with pytest.raises(FlowError, match="이번 작업 단위"):
+    with pytest.raises(FlowError, match="sources of this work unit"):
         validator.check_extraction(extract(context_input), "unit_test", "snap_test", store.graph())
 
 
@@ -523,7 +523,7 @@ def test_a_repeated_quote_records_where_its_repeats_sit_without_text(laboratory)
     _, _, _, _, make = laboratory
     record = make("intro\nsame words here now\nmiddle\nmore\nsame words here now\nouter")
     validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 6)]})
-    with pytest.raises(FlowError, match="일치 2건, 서로 다른 줄"):
+    with pytest.raises(FlowError, match="2 matches, on different lines"):
         validator.citations([{"source_id": record.source_id, "start_line": 2, "end_line": 5,
                               "quote": "same words here now"}])
     [item] = validator.mismatch_audit()
@@ -545,10 +545,10 @@ def test_escape_decoded_quote_rejects_ambiguous_or_invented_text(laboratory):
     _, _, _, _, make = laboratory
     record = make('say(\\"same phrase\\")\nx\ny\nsay(\\"same phrase\\") again', role="tool_call")
     validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 4)]})
-    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다.*일치 2건, 서로 다른 줄"):
+    with pytest.raises(FlowError, match="not found uniquely in the cited lines.*2 matches, on different lines"):
         validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 4,
                               "quote": 'say("same phrase")'}])
-    with pytest.raises(FlowError, match="유일하게 일치하지 않습니다.*일치 0건"):
+    with pytest.raises(FlowError, match="not found uniquely in the cited lines.*0 matches"):
         validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 4,
                               "quote": 'say("other phrase")'}])
 
@@ -566,7 +566,7 @@ def test_over_escaped_quote_matches_plain_source_text_once(laboratory):
     start, end = saved["focus"][0]
     assert line[start:end] == 'content_included": false'
     assert validator.normalizations[0]["mode"] == "quote_unescaped_substring_expanded_to_lines"
-    with pytest.raises(FlowError, match="일치 0건"):  # unescaping never licenses different words
+    with pytest.raises(FlowError, match="0 matches"):  # unescaping never licenses different words
         validator.citations([{"source_id": record.source_id, "start_line": 2, "end_line": 2,
                               "quote": 'content_included\\": true'}])
 
@@ -625,13 +625,13 @@ def test_diff_matches_across_hunks_or_plain_lines_are_still_ambiguous(laboratory
     _, _, _, _, make = laboratory
     record = make(GIT_DIFF, role="git", provider="git")
     validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 9)]})
-    with pytest.raises(FlowError, match="일치 3건, 서로 다른 줄"):
+    with pytest.raises(FlowError, match="3 matches, on different lines"):
         validator.citations([{"source_id": record.source_id, "start_line": 1, "end_line": 9,
                               "quote": "Existing command was preserved"}])
     far = make("-shared phrase here\n" + "\n".join(f" context {i}" for i in range(25)) + "\n+shared phrase here",
                key="far", role="git", provider="git")
     validator = EvidenceValidator({far.source_id: far}, {far.source_id: [(1, 27)]})
-    with pytest.raises(FlowError, match="일치 2건, 서로 다른 줄"):
+    with pytest.raises(FlowError, match="2 matches, on different lines"):
         validator.citations([{"source_id": far.source_id, "start_line": 1, "end_line": 27,
                               "quote": "shared phrase here"}])
 
@@ -785,7 +785,7 @@ def test_reuse_still_verifies_the_quote_the_model_did_write(laboratory):
     validator, delta, candidates, graph, _ = _reuse_case(laboratory)
     delta["events_to_add"][0]["evidence"] = [{"source_id": "s1", "start_line": 1, "end_line": 1,
                                               "quote": "원문에 없는 다른 문장입니다"}]
-    with pytest.raises(FlowError, match="인용문"):
+    with pytest.raises(FlowError, match="quote "):
         validator.apply_delta(delta, graph, "snap", "run", candidates, evidence_reuse=True)
 
 

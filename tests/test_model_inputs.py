@@ -45,11 +45,11 @@ def test_aliases_replace_whole_ids_only():
     source, event = ident("src_", "a"), ident("ev_", "b")
     task = {"data": {"source_id": source, "ids": [source, event],
                      "lines": [{"line": 1, "text": f"error at {source}:2"}]},
-            "repair": {"instruction": f"인용문 불일치: {source}:2-2"}}
+            "repair": {"instruction": f"quote mismatch: {source}:2-2"}}
     sent = aliases.wire(task)
     assert sent["data"]["source_id"] == "S1" and sent["data"]["ids"] == ["S1", "E1"]
     assert sent["data"]["lines"][0]["text"] == f"error at {source}:2"  # source text is sent as it is
-    assert sent["repair"]["instruction"] == "인용문 불일치: S1:2-2"  # host-written text is shortened
+    assert sent["repair"]["instruction"] == "quote mismatch: S1:2-2"  # host-written text is shortened
     reply = {"evidence": [{"source_id": "S1", "quote": "S1 is not an ID here"}], "to": "E1", "made_up": "S9"}
     assert aliases.expand(reply) == {"evidence": [{"source_id": source, "quote": "S1 is not an ID here"}],
                                      "to": event, "made_up": "S9"}
@@ -176,7 +176,7 @@ def test_every_file_edit_must_back_an_extracted_event():
               "limitations": [], "unprocessed_record_ids": []}
     required = {"edit": ("Edit docs/NOTES.md", "done")}
     validator = EvidenceValidator(records, provided, required_citations=required)
-    with pytest.raises(FlowError, match=r"파일을 바꾼 도구 호출이 어떤 사건의 근거에도 없습니다: edit\(Edit docs/NOTES.md\)"):
+    with pytest.raises(FlowError, match=r"tool call that changed a file is cited by no event: edit\(Edit docs/NOTES.md\)"):
         validator.check_extraction(output, "unit", "snap", {"events": []})
     output["event_candidates"].append({
         "id": "tmp:notes", "kind": "action", "title": "노트 갱신", "summary": "", "actor": "assistant",
@@ -233,8 +233,8 @@ def test_one_repair_round_hears_about_a_bad_quote_and_a_bad_relation_together():
     with pytest.raises(FlowError) as caught:
         EvidenceValidator(records, provided).check_extraction(output, "unit", "snap", {"events": []})
     message = str(caught.value)
-    assert "인용문이 제공된 원문 범위에서 유일하게 일치하지 않습니다: ran:1-1" in message
-    assert "verifies 관계는" in message and "tmp:e1" in message
+    assert "quote not found uniquely in the cited lines: ran:1-1" in message
+    assert "verifies must link a change" in message and "tmp:e1" in message
 
 
 def test_an_output_whose_end_cannot_be_shown_is_sent_whole():

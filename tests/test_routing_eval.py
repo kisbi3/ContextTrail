@@ -500,16 +500,18 @@ def test_event_expectation_can_accept_any_of_several_sources(monkeypatch, tmp_pa
 
 def test_validation_error_kinds_keep_only_the_code_written_prefix():
     from projectflow.evaluation import error_kinds
-    message = ("인용문이 제공된 원문 범위에서 유일하게 일치하지 않습니다: src_1:2-2 (일치 0건); "
-               "JSON schema 오류: events_to_add/0/title: '모델이 쓴 제목' is too long; "
-               "근거를 비워 둔 항목에 대신 쓸 후보 근거가 없습니다: edges_to_add tmp:e1")
-    assert error_kinds(message) == {"인용문이 제공된 원문 범위에서 유일하게 일치하지 않습니다", "JSON schema 오류",
-                                    "근거를 비워 둔 항목에 대신 쓸 후보 근거가 없습니다"}
+    message = ("quote not found uniquely in the cited lines: src_1:2-2 (0 matches); "
+               "JSON schema error: events_to_add/0/title: '모델이 쓴 제목' is too long; "
+               "no candidate evidence to fill an item left without evidence: edges_to_add tmp:e1")
+    assert error_kinds(message) == {"quote not found uniquely in the cited lines", "JSON schema error",
+                                    "no candidate evidence to fill an item left without evidence"}
     assert error_kinds("'모델이 쓴 제목' is too long") == set()
+    assert error_kinds("events_to_add/0/title: 'a title' is too long") == set()  # a path is not a kind
+    assert error_kinds("src_1:2-2") == set()
     call = {'stage': 'integrate', 'status': 'validation_error', 'metadata': {'routing_role': 'integrate'},
-            'details': {'error': 'tool_record basis에 실행 기록이 없습니다.'}}
+            'details': {'error': 'tool_record basis cites no tool call or result.'}}
     report = summarize_calls([call])
-    assert report['by_role']['integrate']['validation_error_kinds'] == {'tool_record basis에 실행 기록이 없습니다.': 1}
+    assert report['by_role']['integrate']['validation_error_kinds'] == {'tool_record basis cites no tool call or result.': 1}
     call = {'stage': 'integrate', 'status': 'complete', 'metadata': {'routing_role': 'integrate'},
             'details': {'citation_normalization_audit': [
                 {'mode': 'tool_evidence_restored_from_candidates', 'events': 1},

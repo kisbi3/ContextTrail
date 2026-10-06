@@ -93,4 +93,4 @@ def test_sub_agent_work_hangs_from_the_parent_message_it_ran_under():
     asked = next(e for e in result["events"] if e["title"] == "리뷰해 줘")
     [link] = [edge for edge in result["edges"] if edge["to_event_id"] == "review"]
     assert (link["from_event_id"], link["origin"]) == (asked["id"], "dialog_turn")
-    assert "하위 에이전트" in link["rationale"]
+    assert "sub-agent" in link["rationale"]
