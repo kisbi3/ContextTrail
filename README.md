@@ -1,43 +1,174 @@
-> **⚠️ Development alpha — `0.1.0a4`.** Both real CLIs have now been measured end to end on fixtures and on this repository's own logs, but analysis quality is still a draft to check, not a record. Below is every number we have actually measured. Nothing on this page is an estimate presented as a result.
-
-## Measured so far
-
-| | Measured | Not yet done |
-| --- | --- | --- |
-| Real model calls | **Codex CLI 12 analysis calls** (8 on this repository's own logs, 4 on the Linux external project, both `gpt-6-sol`) plus 2 `doctor --smoke` round-trips; **20 calls** across the 6 scored fixture runs ([Linux](docs/reports/artifacts/linux-live-eval-2026-09-28.json) · [table](docs/plans/NEXT_STEPS.md)). **Claude Code CLI: 42 eval runs** on macOS with `claude-sonnet-5-5` (2 installer smoke runs, 40 scored runs on the `repairfix-v2` fixture), 3–4 calls each ([record](docs/plans/PERFORMANCE_PLAN.md) §9–14) | Claude Runner on Linux: 0 calls (that host has no Claude CLI). No Claude run on an external project yet |
-| Real analysis scale | Linux: 5,282 in-scope records → 8 events / 9 edges, 4 runner calls, read-only check passed. macOS self-analysis: 4,199 records → 17 events / 15 edges ([Linux](docs/reports/artifacts/linux-live-eval-2026-09-28.json) · [macOS](docs/reports/artifacts/self-analysis-a4.json)) | — |
-| Cost per work unit | Claude Sonnet, `repairfix-v2` (26–34 records per unit): **1.5–2.4 minutes per run of 2 units**, 130k–240k cached input tokens and 12k–21k output tokens, after the integration step was changed to publish a code-built draft and ask the model only for its changes ([§12–14](docs/plans/PERFORMANCE_PLAN.md)). The first Claude baseline was 2.7 minutes and about twice the tokens for 1 unit | Codex cost after the same change: not measured |
-| Archive parse audit | **156 files** (Claude 40, Codex 116), **31,748 records** selected, `limitations: 0` as of the a4 parser ([audit](docs/reports/artifacts/archive-audit-a4.json) · [report](docs/reports/PRELIVE_AUDIT.md)) | **Stale for this parser.** The record-type split in `sources/local.py` now reports types that audit did not. Re-run needed |
-| Semantic quality | Codex: **79/111 expectations met (71%)** across 6 runs of 2 fixtures. Claude Sonnet on `repairfix-v2`: **11.8/18 mean** over the latest 5 runs (11, 11, 13, 13, 11), two work units, integration against an existing graph, 0 bookkeeping rejections ([§14](docs/plans/PERFORMANCE_PLAN.md)) | **2** human-checked WorkUnits total (14 records on macOS, 1 unit on Linux). Not a rate. The three expectations that fail in every Claude run are two-hop `verifies` judgements (a test run covering the code it calls) |
-| Reproducibility | **Characterized for one configuration.** Five same-configuration Claude Sonnet runs of `repairfix-v2` scored 11, 11, 13, 13, 11; the per-item breakdown shows the spread comes from events being split or merged differently between runs, not from relations ([§11, §14](docs/plans/PERFORMANCE_PLAN.md)). Codex `installer` scored 8/18 and 16/18 on consecutive runs, confounded by different integration effort | No same-configuration repeat with Codex |
-| Platform validation | **Linux/Ubuntu 24.04 + bubblewrap: 1 end-to-end run on an external project** ([report](docs/reports/LINUX_LIVE_EVAL_2026-09-28.md)) · macOS: `sandbox-exec` + Codex smoke + self-analysis + the 42 Claude eval runs above | Claude Runner under bubblewrap: 0 calls (no Claude CLI on the Linux host) |
-| Tool-denial tests | Canary escape probe at startup on both macOS and Linux ([SECURITY](docs/SECURITY.md)) | `~`, `.ssh`, project tree, and real credential write-blocking unverified on both |
-| Tests | **437** in the suite, all passing (2026-10-06; [a4 results](docs/reports/artifacts/tests-a4.txt) · [state](docs/reports/artifacts/self-analysis-a4.json)); CI runs them on Linux + macOS × Python 3.11–3.13 | 0 real model calls in CI, by design |
-
-Evidence behind these numbers is published, not summarized: [design & evaluation history](docs/DECISIONS.md) · [performance plan and Claude measurements](docs/plans/PERFORMANCE_PLAN.md) · [pre-live audit](docs/reports/PRELIVE_AUDIT.md) · [real-CLI evaluation](docs/reports/TWO_CALL_LIVE_EVAL_2026-09-25.md) · [a3 validation](docs/reports/A3_VALIDATION.md) · [what is left](docs/plans/NEXT_STEPS.md).
-
-Redaction in those files: real project names, native session UUIDs, source snapshot IDs, and machine-specific absolute paths are replaced with placeholders. What is deliberately **kept** is the aggregate evidence — record and session counts, work-unit counts, token totals, durations, and the archive SHA-256 digests, because a digest is what proves the audit did not modify the archive. The `LICENSE` copyright name is unchanged, and so is the GitHub account in the badge above.
-
-> The quality row is the honest one: extraction is good enough to be useful on a project you remember well, and there is no measurement showing it is stable across repeated runs. Treat a reconstructed flow as a draft to check, not a record.
-
-A zero-real-model walkthrough is available after installation: `python scripts/prelive_walkthrough.py --output /tmp/pf-prelive-walkthrough`
-
----
-
-# Project Flow · ContextTrail
+# ContextTrail
 
 [![test](https://github.com/kisbi3/ContextTrail/actions/workflows/test.yml/badge.svg)](https://github.com/kisbi3/ContextTrail/actions/workflows/test.yml)
 
-**Reads local Codex and Claude Code conversation/tool logs and Git changes to reconstruct a project's goals, attempts, failures, and decisions as an evidence-linked flow.**
+**Turns the Codex and Claude Code sessions already on your machine into an evidence-linked history of a project: what was tried, what failed, what was decided, and what was actually verified.**
 
-Version: `0.1.0a4` · 2026-09-23 · Linux / SSH primary, macOS experimental · names are provisional.
+ContextTrail reads the transcripts the two CLIs keep locally, plus the project's Git history, and asks the CLI you already have installed (sandboxed, read-only) to reconstruct the flow. Every event and every arrow carries a quote from the source, and the code checks each quote against the record before anything is stored. You get a terminal view, a local browser view, `find`/`show` commands, and two agent skills so Codex and Claude Code can answer "why did we drop X?" from the saved graph instead of from memory.
 
-> **Development alpha — not a finished MVP release.**
-> a3 added model routing, a bounded worker pool, selective re-review, and local eval/ops. a4 strengthens inter-stage evidence passing, source isolation, failure states, and runner output inspection. Since 2026-10-02 the Claude Runner is measured on macOS alongside Codex, and the pipeline was reworked so a cheap model (Claude Sonnet) finishes a work unit in about a minute: the integration step publishes a code-built draft and asks the model only for its changes, and single-reading slips in model output (quote placement, provenance, bookkeeping) are corrected in code and audited instead of costing a repair call. Full semantic reconstruction on a large real project is still not validated.
+Development alpha `0.1.0a4`. Linux and macOS, Python 3.11+. [What has been measured](#6-what-has-been-measured) is further down; nothing on this page is an estimate presented as a result.
 
-**Additional features:** [model tiering, project filters, and test usage](docs/guides/TIERED_ANALYSIS.md). Before opening the UI, run `project scan .` to review input selection, and `project eval --fixture demo --runner mock --output /tmp/pf-eval` to exercise the execution path without account calls.
+![The terminal view on the synthetic demo: the event flow on top, the selected event with its links and quoted evidence below](docs/images/tui-demo-en.png)
 
-**Languages:** the terminal, TUI, browser view and CLI help are in English or Korean, chosen from `--language`, `CONTEXTTRAIL_LANGUAGE`, the project's saved output language, or the locale. Event titles and summaries are written in the language of your own messages (`--language` overrides). Everything the model reads, including validation messages, is English. A Korean README is not written yet.
+## Try it in a minute, without an AI account
+
+```bash
+git clone https://github.com/kisbi3/ContextTrail.git && cd ContextTrail && ./install.sh
+contexttrail demo --path /tmp/contexttrail-demo        # synthetic logs + a deterministic mock runner
+```
+
+The demo writes a small Codex log and a small Claude Code log for one folder, runs the whole pipeline with a mock in place of the model, and opens the result. It shows what the tool builds and how it reads; it says nothing about real model accuracy.
+
+## What goes in, what comes out
+
+The demo's input is six records in two logs, the kind of thing the CLIs write all day:
+
+| Source | Role | Record |
+| --- | --- | --- |
+| Codex session | user | Let's store it as a JSON file for now. |
+| Codex session | assistant | SQLite is also worth considering. |
+| Codex session | tool result | Patch applied: JSON storage code. |
+| Codex session | tool result | concurrent write test: FAILED — JSONDecodeError |
+| Claude Code session | user | Concurrent writes break it, so let's switch to SQLite. |
+| Claude Code session | assistant | Switched to SQLite and the tests pass too. |
+
+Out of that, the pipeline (extract events with quotes → integrate them into the existing graph → check every claim in code) publishes six events and seven relations. The terminal shows them as a flow:
+
+```text
+ ┌─ [01] decision ─────────────────┐
+ │ JSON file storage adopted       │
+ │ · adopted                       │
+ └─────────────────────────────────┘
+    │ follows
+    ▼
+ ┌─ [02] proposal ─────────────────┐
+ │ SQLite proposed as an           │
+ │ alternative                     │
+ │ · proposed                      │
+ └─────────────────────────────────┘
+
+ ┌─ [03] change ───────────────────┐      ◀ [01] follows
+ │ JSON storage implemented        │
+ │ ✗ applied                       │
+ │   · check failed: Concurrent    │
+ │     write test failed           │
+ └─────────────────────────────────┘
+    │ verifies
+    ▼
+ ┌─ [04] result ───────────────────┐
+ │ Concurrent write test failed    │
+ │ ✗ observed failure              │
+ └─────────────────────────────────┘
+    │ motivates
+    ▼
+ ┌─ [05] fix ──────────────────────┐      ◀ [01] revises   ◀ [02] follows
+ │ Switch to SQLite decided        │
+ │ · adopted                       │
+ └─────────────────────────────────┘
+    │ follows
+    ▼
+ ┌─ [06] result ───────────────────┐
+ │ SQLite change reported done     │
+ │ ! reported done·unverified      │
+ └─────────────────────────────────┘
+```
+
+Three things in that picture are the point of the tool:
+
+- **A change never gets a success badge of its own.** Event 03 is `applied`, and it is marked ✗ only because a run that *verifies* it failed. Verification is an arrow to a result, never a word in a summary.
+- **Words are not results.** Event 06, "Switched to SQLite and the tests pass too", is `reported done·unverified` (!) because no test output in the records backs it. The flag goes away only when a run result is linked.
+- **Every arrow has a basis.** `motivates` from 04 to 05 is explicit: the person said "Concurrent writes break it". Links the model merely infers are drawn dotted and labelled, or left out.
+
+Any event can be opened with its quotes, in the terminal or by an agent:
+
+```text
+$ contexttrail show ev_53ee4e0e
+ContextTrail event · current graph v2 · saved result · no AI calls
+ev_53ee4e0e  JSON storage implemented
+  status: applied · check failed: Concurrent write test failed
+  change · tool · 2026-09-22 19:02
+  reference: contexttrail:ev_53ee4e0e@v2
+
+What happened
+  Patch applied: JSON storage code.
+
+Linked events
+  ← follows  ev_bedb4f79  JSON file storage adopted [adopted]
+  → verifies  ev_eb72c0aa  Concurrent write test failed [observed failure]
+
+--- source evidence 1 (Codex · tool result · 2026-09-22 19:02 · session demo-cod · line 1) ---
+> Patch applied: JSON storage code.
+--- end ---
+```
+
+The `contexttrail:ev_…@v2` reference can be pasted into a Codex or Claude Code chat, and the installed `contexttrail-context` skill reads that event with its evidence.
+
+## The same thing on a real project
+
+On a real project the records are thousands of lines of conversation, tool calls, diffs and test output, and the model does the reading; the checks are the same. This is the tail of what Claude Sonnet reconstructed from three work units of this repository's own Codex logs (the afternoon macOS sandbox support was added), in 8 calls, about 1.5 minutes and no repair round:
+
+```text
+ ┌─ [19] change ─────────────────┐               ┌─ [20] result ─────────────────┐
+ │ cli_runner.py gets macOS      ├────verifies──▶│ test_runner: 1 failed, 11     │
+ │ Seatbelt sandbox              │               │ passed; codex doctor fails    │
+ │ ✗ applied                     │               │ ✗ observed failure            │
+ │   · check failed:             │               └───────────────────────────────┘
+ │     test_runner: 1 failed, 11 │
+ │     passed; codex doctor…     │
+ └───────────────────────────────┘
+
+ ┌─ [21] fix ────────────────────┐               ┌─ [22] result ─────────────────┐
+ │ Resolve home path and add     ├────verifies──▶│ codex doctor passes on        │
+ │ /etc,/var,/tmp literals       │               │ Seatbelt                      │
+ │ ✓ applied                     │               │ ✓ observed success            │
+ │   · verified: codex doctor    │               └───────────────────────────────┘
+ │     passes on Seatbelt        │
+ └───────────────────────────────┘
+```
+
+Opening the fix shows why it is marked verified: the patch itself, the error it answered, and the run that checked it are all quoted from the log.
+
+```text
+$ contexttrail show ev_cf348e54
+ev_cf348e54  Resolve home path and add /etc,/var,/tmp literals
+  status: applied · verified: codex doctor passes on Seatbelt
+  fix · assistant · 2026-09-23 16:52
+
+What happened
+  Two follow-up patches to cli_runner.py: resolved home/TMPDIR paths after CODEX_HOME read
+  failures, then allowed literal traversal of /etc, /var, /tmp after codex failed to read
+  /etc/codex/requirements.toml.
+
+Linked events
+  → verifies  ev_233a98c0  codex doctor passes on Seatbelt [observed success]
+
+--- source evidence 1 (Codex · tool call · 2026-09-23 16:52 · line 2) ---
+> - return home
+> + return home.resolve()
+--- source evidence 2 (Codex · tool call · 2026-09-23 16:52 · line 2) ---
+> + literals = sorted(ancestors | {str(credential), "/etc", "/var", "/tmp"})
+--- source evidence 3 (Codex · tool result · 2026-09-23 16:52 · line 5) ---
+> Failed to read requirements file /etc/codex/requirements.toml: Operation not permitted (os error 1)
+--- end ---
+```
+
+Earlier in the same flow a change is `applied · unverified` because its tests were never run in the log, a `request · no answer` marks a question the assistant never answered, and an open item records that a pytest run was aborted with no result. Those are the states the tool is for.
+
+## What it does and does not do
+
+- **Reads only.** It never modifies the project, the transcripts, or Git refs, index or config. Its own state lives under `.git/projectflow/` (or `.projectflow/` without Git).
+- **Calls a model only when you ask.** Viewing, exporting, the browser page and node selection make zero calls. Analysis runs on `analyze`, on `R` in the terminal view, or when an agent runs the `contexttrail-update` skill with a unit count you gave it; before sending it shows what it will send and asks.
+- **Runs your CLI in a sandbox.** The Codex or Claude CLI runs under bubblewrap (Linux) or a deny-default `sandbox-exec` profile (macOS) with its credential file bind-mounted read-only. If the sandbox is unavailable it refuses to run; there is no unsandboxed fallback, and it never reads or copies credential contents.
+- **Sends only this project's records.** A record is attributed to the project by the working directory the CLI recorded, never by keyword guessing. Out-of-scope conversations never reach the model.
+- **Checks before it stores.** Every quote must exist in the source at the cited lines. Slips with one possible reading (a quote at the wrong line, an extra escape) are corrected in code and audited; everything else goes back to the model for one repair round, and what still fails is dropped and named in the graph's limitations.
+- **Costs tokens from your own account.** The pipeline is tuned so a cheap model does the work: on the measured fixture, Claude Sonnet finishes a work unit in about a minute. The plan shown before a run estimates calls, tokens and minutes.
+- **Is incremental.** Finished work units are never re-sent. Re-running with no new records makes zero calls.
+
+Version: `0.1.0a4` · Linux / SSH primary, macOS measured · names are provisional.
+
+**Languages:** the terminal, TUI, browser view and CLI help are in English or Korean, chosen from `--language`, `CONTEXTTRAIL_LANGUAGE`, the project's saved output language, or the locale. Event titles and summaries are written in the language of your own messages (`--language` overrides). Everything the model reads is English. A Korean README is not written yet.
+
+**More:** [model tiering, project filters, and test usage](docs/guides/TIERED_ANALYSIS.md). Before opening the UI on a real project, run `project scan .` to review input selection.
 
 ---
 
@@ -327,7 +458,31 @@ Permissions: state directory `0700`, DB and new exports `0600`. This does not im
 
 ---
 
-## 6. Explicit Limitations of This Alpha
+## 6. What has been measured
+
+Both real CLIs have been measured end to end on fixtures and on this repository's own logs. Analysis quality is still a draft to check, not a record. Below is every number actually measured.
+
+| | Measured | Not yet done |
+| --- | --- | --- |
+| Real model calls | **Codex CLI 12 analysis calls** (8 on this repository's own logs, 4 on the Linux external project, both `gpt-6-sol`) plus 2 `doctor --smoke` round-trips; **20 calls** across the 6 scored fixture runs ([Linux](docs/reports/artifacts/linux-live-eval-2026-09-28.json) · [table](docs/plans/NEXT_STEPS.md)). **Claude Code CLI: 42 eval runs** on macOS with `claude-sonnet-5-5` (2 installer smoke runs, 40 scored runs on the `repairfix-v2` fixture), 3–4 calls each ([record](docs/plans/PERFORMANCE_PLAN.md) §9–14) | Claude Runner on Linux: 0 calls (that host has no Claude CLI). No Claude run on an external project yet |
+| Real analysis scale | Linux: 5,282 in-scope records → 8 events / 9 edges, 4 runner calls, read-only check passed. macOS self-analysis: 4,199 records → 17 events / 15 edges ([Linux](docs/reports/artifacts/linux-live-eval-2026-09-28.json) · [macOS](docs/reports/artifacts/self-analysis-a4.json)) | — |
+| Cost per work unit | Claude Sonnet, `repairfix-v2` (26–34 records per unit): **1.5–2.4 minutes per run of 2 units**, 130k–240k cached input tokens and 12k–21k output tokens, after the integration step was changed to publish a code-built draft and ask the model only for its changes ([§12–14](docs/plans/PERFORMANCE_PLAN.md)). The first Claude baseline was 2.7 minutes and about twice the tokens for 1 unit | Codex cost after the same change: not measured |
+| Archive parse audit | **156 files** (Claude 40, Codex 116), **31,748 records** selected, `limitations: 0` as of the a4 parser ([audit](docs/reports/artifacts/archive-audit-a4.json) · [report](docs/reports/PRELIVE_AUDIT.md)) | **Stale for this parser.** The record-type split in `sources/local.py` now reports types that audit did not. Re-run needed |
+| Semantic quality | Codex: **79/111 expectations met (71%)** across 6 runs of 2 fixtures. Claude Sonnet on `repairfix-v2`: **11.8/18 mean** over the latest 5 runs (11, 11, 13, 13, 11), two work units, integration against an existing graph, 0 bookkeeping rejections ([§14](docs/plans/PERFORMANCE_PLAN.md)) | **2** human-checked WorkUnits total (14 records on macOS, 1 unit on Linux). Not a rate. The three expectations that fail in every Claude run are two-hop `verifies` judgements (a test run covering the code it calls) |
+| Reproducibility | **Characterized for one configuration.** Five same-configuration Claude Sonnet runs of `repairfix-v2` scored 11, 11, 13, 13, 11; the per-item breakdown shows the spread comes from events being split or merged differently between runs, not from relations ([§11, §14](docs/plans/PERFORMANCE_PLAN.md)). Codex `installer` scored 8/18 and 16/18 on consecutive runs, confounded by different integration effort | No same-configuration repeat with Codex |
+| Platform validation | **Linux/Ubuntu 24.04 + bubblewrap: 1 end-to-end run on an external project** ([report](docs/reports/LINUX_LIVE_EVAL_2026-09-28.md)) · macOS: `sandbox-exec` + Codex smoke + self-analysis + the 42 Claude eval runs above | Claude Runner under bubblewrap: 0 calls (no Claude CLI on the Linux host) |
+| Tool-denial tests | Canary escape probe at startup on both macOS and Linux ([SECURITY](docs/SECURITY.md)) | `~`, `.ssh`, project tree, and real credential write-blocking unverified on both |
+| Tests | **437** in the suite, all passing (2026-10-06; [a4 results](docs/reports/artifacts/tests-a4.txt) · [state](docs/reports/artifacts/self-analysis-a4.json)); CI runs them on Linux + macOS × Python 3.11–3.13 | 0 real model calls in CI, by design |
+
+Evidence behind these numbers is published, not summarized: [design & evaluation history](docs/DECISIONS.md) · [performance plan and Claude measurements](docs/plans/PERFORMANCE_PLAN.md) · [pre-live audit](docs/reports/PRELIVE_AUDIT.md) · [real-CLI evaluation](docs/reports/TWO_CALL_LIVE_EVAL_2026-09-25.md) · [a3 validation](docs/reports/A3_VALIDATION.md) · [what is left](docs/plans/NEXT_STEPS.md).
+
+Redaction in those files: real project names, native session UUIDs, source snapshot IDs, and machine-specific absolute paths are replaced with placeholders. What is deliberately **kept** is the aggregate evidence — record and session counts, work-unit counts, token totals, durations, and the archive SHA-256 digests, because a digest is what proves the audit did not modify the archive. The `LICENSE` copyright name is unchanged, and so is the GitHub account in the badge above.
+
+> The quality row is the honest one: extraction is good enough to be useful on a project you remember well, and there is no measurement showing it is stable across repeated runs. Treat a reconstructed flow as a draft to check, not a record.
+
+A zero-real-model walkthrough is available after installation: `python scripts/prelive_walkthrough.py --output /tmp/pf-prelive-walkthrough`
+
+## 7. Explicit Limitations of This Alpha
 
 1. **Analysis quality is measured only on two small fixtures and this repository's own logs.** Both CLIs have run end to end (Codex on Linux and macOS, Claude on macOS), but a reconstruction of a large, unfamiliar project has not been checked by a person. The known failure modes are events split or merged differently between runs, and two-hop `verifies` links (a test run that covers the code it calls) that cheap models do not draw.
 2. **Not all historical records and files are read without limit.** The default Git commit scope is the 50 most recent per worktree, plus tracked staged/unstaged diffs. Untracked content, all merge parents, and an arbitrary-revision comparison UI are out of scope. Sub-agents whose parent linkage cannot be verified are excluded.
@@ -346,7 +501,7 @@ The constraint `record_chars ≤ unit_chars < task_chars` must hold. `task_chars
 
 ---
 
-## 7. Development and Regression Testing
+## 8. Development and Regression Testing
 
 ```bash
 python3 -m venv .venv && .venv/bin/python -m pip install -e '.[dev]'

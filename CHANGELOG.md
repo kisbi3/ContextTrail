@@ -6,6 +6,8 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 
 ### Added
 - **English screen text.** The terminal output, TUI, browser view, CLI help, `find`/`show` output, eval review and input preview are in English or Korean, chosen once per process (`i18n.resolve`): `--language`, else `CONTEXTTRAIL_LANGUAGE`, else the project's saved output language, else the locale, else English. Korean output is byte-identical to before. Text the model reads is now English in one language, no switch: validation messages returned for repair, the input-scope limitations and log-parser warnings that enter the extract input, read-request denials, review questions, and the text code writes into the graph (dialog-turn rationales, unit warnings, dropped-candidate notes). Message shapes and the matchers over them (`QUOTE_MISMATCH_HEADS`, the `informational` tuple, `error_kinds`) changed together. This is a model-input change; the owner's evaluation is pending. The synthetic demo's content is still Korean.
+- The synthetic demo has an English story, chosen by the screen language (`demo.cases()`); the mock runner recognises both.
+- README rewritten for a first-time reader: what goes in and what comes out on the demo, the same on a real stretch of this repository's own logs, what the tool does and does not do, then install; the measured-numbers table moved to its own section. A TUI screenshot (`docs/images/tui-demo-en.png`) is drawn without a terminal by `scripts/tui_screenshot.py`.
 - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, root `SECURITY.md`, issue and pull-request templates.
 
 ### Changed
