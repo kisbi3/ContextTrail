@@ -286,3 +286,12 @@
 - 이유: GitHub 저장소, 에이전트 스킬(`contexttrail-update`/`-context`), 참조 형식(`contexttrail:ev_…`)이 이미 이 이름이고, PyPI에서 `contexttrail`이 비어 있다. 배포 뒤에 바꾸면 설치와 import가 모두 깨진다.
 - 호환으로 남긴 것: 기존 `.git/projectflow/`·`.projectflow/` 상태 폴더는 새 폴더가 없을 때 그대로 쓴다(`git_context._state_dir`), `projectflow-eval-v1` fixture와 `projectflow-eval-report-v1` 보고서는 계속 읽는다, 도구 자신의 `projectflow-run-` 실행 세션은 계속 분석에서 뺀다. 이전 보고서·계획 문서의 옛 이름은 기록이므로 그대로 둔다.
 
+## 2026-10-06: 세 도구가 같이 쓰는 프로젝트 기억
+
+소유자의 방향: ContextTrail은 Claude Code·Codex·opencode 중 무엇으로 프로젝트를 열든 같은 그래프를 읽고, 세 도구의 기록이 모두 그 그래프에 들어가는 "프로젝트를 따라다니는 기억"이다. 계획은 `docs/plans/SHARED_CONTEXT_STORE.md`. 이때 정한 원칙:
+
+- **쓰는 손은 하나.** 그래프에 쓰는 경로는 분석(모델이 트랜스크립트를 읽고 인용으로 뒷받침한 결과)뿐이다. 에이전트가 그래프에 직접 메모를 쓰는 두 번째 경로는 만들지 않는다. 에이전트가 말한 것은 트랜스크립트에 남아 다음 분석에 들어간다. "모든 항목에 증거가 있다"를 지키기 위해서다.
+- **분석은 명시적 요청에만.** 훅으로 돌리는 자동 갱신(계획 B2)은 사용자가 프로젝트마다 켜는 선택 사항이고, 켜지 않은 프로젝트에서 훅은 아무것도 하지 않으며 호스트 도구를 막지 않는다.
+- **MCP 서버를 만들지 않는다.** 세 도구 모두 셸이 있으므로 CLI(`find`/`show`/`status`)로 충분하고, 설치물이 하나다.
+- **오래된 것은 오래됐다고 말한다.** 읽기 경로마다 마지막 scan 기준 미분석 기록 수와 scan 이후 세션·기록 수를 센 값으로 적는다(`freshness.py`). 추정하지 않는다.
+- **opencode는 입력이지 Runner가 아니다.** Runner는 Codex·Claude이고, 프로젝트에 저장된 runner가 없으면 스킬이 사용자에게 묻는다. opencode에는 스킬의 "명시적 호출만" 장치가 없어, 설치 뒤 `permission.skill` 설정으로 승인을 요구하라는 안내를 보여 주되 사용자 설정 파일은 고치지 않는다.

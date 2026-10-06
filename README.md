@@ -178,7 +178,7 @@ Requires Python 3.11+, Git, and a UTF-8 terminal. Python's `curses` module is ne
 
 ```bash
 pipx install contexttrail          # or: pip install contexttrail
-contexttrail install-commands      # adds the Codex and Claude Code skills; existing user files are kept
+contexttrail install-commands      # adds the Codex, Claude Code and opencode commands; existing user files are kept
 ct --version                       # ct is the short alias of contexttrail
 ```
 
@@ -433,21 +433,21 @@ contexttrail show contexttrail:ev_6226b954@v12   # copied reference; notifies if
 
 Output is brief and machine-friendly by default; `--json` is also supported. No AI calls are made — reads only from stored results.
 
-### Installing Codex / Claude Code Commands
+### Installing the Codex / Claude Code / opencode Commands
 
-`./install.sh` automatically registers two commands as personal skills in the current user's Codex and Claude Code installations. If you installed via `pip` directly, run `contexttrail install-commands` once. Files created by ContextTrail are updated on reinstall; separately authored files are not overwritten. Use `contexttrail install-commands --force` only if you want to replace those too. If the agent does not recognize the new commands, start a new session.
+`./install.sh` automatically registers two commands as personal skills in the current user's Codex and Claude Code installations and as custom commands in opencode. If you installed via `pip` directly, run `contexttrail install-commands` once. Files created by ContextTrail are updated on reinstall; separately authored files are not overwritten. Use `contexttrail install-commands --force` only if you want to replace those too. If the agent does not recognize the new commands, start a new session.
 
-| Task | Codex | Claude Code |
+| Task | Codex | Claude Code / opencode |
 | --- | --- | --- |
 | Update graph | `$contexttrail-update [N units \| current session]` | `/contexttrail-update [N units \| current session]` |
 | Load context from saved graph | `$contexttrail-context [reference \| search term]` | `/contexttrail-context [reference \| search term]` |
 
-The legacy slash-style variants `/prompts:contexttrail-update` and `/prompts:contexttrail-context` for Codex CLI/IDE are also installed for compatibility; Codex recommends the skill form. Both commands invoke the `contexttrail` CLI from the shell — no MCP server required.
+The legacy slash-style variants `/prompts:contexttrail-update` and `/prompts:contexttrail-context` for Codex CLI/IDE are also installed for compatibility; Codex recommends the skill form. All of them invoke the `contexttrail` CLI from the shell — no MCP server required. The same graph answers in every tool: a decision made in an opencode session is there when you ask from Claude Code, and the first line of `find` says whether the graph is behind the transcripts (`contexttrail status` has the detail).
 
-- **Update** runs only when the user calls it by name. Claude Code uses `disable-model-invocation`; Codex uses `allow_implicit_invocation: false` in `agents/openai.yaml` to prevent the agent from calling it on its own. It first shows pending units and per-choice token/time projections, then prompts for unit count. Providing a count (e.g. `/contexttrail-update 5`) skips the prompt; `current session` prioritizes the active conversation's session. Analysis uses the **Codex Runner** only (`analyze --no-tui --brief --units N`, printing a few-line summary instead of the full flow). Since it can take a long time, the agent runs it in the background where possible and reports progress as `unit done k/N` lines. Interrupted runs resume from the last completed unit. Running inside Codex may be blocked by Codex's own isolation — the agent will guide you to run the command in a separate terminal.
+- **Update** runs only when the user calls it by name. Claude Code uses `disable-model-invocation`; Codex uses `allow_implicit_invocation: false` in `agents/openai.yaml` to prevent the agent from calling it on its own; opencode's custom commands are never chosen by the model, but opencode also reads the skills in `~/.claude/skills` and `~/.agents/skills` and has no explicit-only flag for a skill, so `install-commands` prints the `permission.skill` line to add to `~/.config/opencode/opencode.json` if you want the update skill to need your approval there (the file is not edited for you). It first shows pending units and per-choice token/time projections, then prompts for unit count. Providing a count (e.g. `/contexttrail-update 5`) skips the prompt; `current session` prioritizes the active conversation's session. The analysis runs with the runner saved for the project; if none is saved, the agent asks whether to use **Codex** or **Claude** (`analyze --runner codex|claude --no-tui --brief --units N`, printing a few-line summary instead of the full flow). opencode is a log source, never a runner. Since it can take a long time, the agent runs it in the background where possible and reports progress as `unit done k/N` lines. Interrupted runs resume from the last completed unit. Running inside Codex may be blocked by Codex's own isolation — the agent will guide you to run the command in a separate terminal.
 - **Context loading** reads only stored results; no AI calls. The agent may invoke it proactively when the user asks about past decisions, attempts, or verifications. The agent uses `contexttrail find "<query>"` (or recent events and open items if no query) and `contexttrail show <event>` (description, connections, cited source evidence). Both support `--json`. Output and skill instructions note that source evidence is a quotation from past records and should be treated as reference — not instruction.
 - **Attaching events as evidence:** Press `y` in the TUI or click "Copy agent reference" in the browser to copy a reference like `contexttrail:ev_6226b954@v12`. Paste it into a Claude Code or Codex conversation — the agent reads that event and its evidence with `show`. If the event was re-analyzed and changed or removed since the copy, `show` will say so.
-- Using context loading in Claude Code sends cited Codex/Claude records to the model in that conversation (Anthropic).
+- Using context loading in Claude Code sends cited Codex/Claude/opencode records to the model in that conversation (Anthropic); in opencode, to whichever model that session uses.
 
 ### Export
 

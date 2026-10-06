@@ -1,6 +1,6 @@
 # 세 도구가 같이 쓰는 프로젝트 기억 — Claude Code · Codex · opencode
 
-**상태: 2026-10-06 작성. A(opencode 입력)·B1(신선도) 구현됨. 나머지 미구현.** 외부 도구의 형식은 공식 문서에서 확인한 것과 확인 필요로 표시한 것을 나눴다(9절). 진행 기록은 12절.
+**상태: 2026-10-06 작성. A(opencode 입력)·B1(신선도)·C(opencode 설치)·D(Runner 저장)·E(포지셔닝) 구현됨. F(검증)·B2(자동 갱신)는 미구현.** 외부 도구의 형식은 공식 문서에서 확인한 것과 확인 필요로 표시한 것을 나눴다(9절). 진행 기록은 12절.
 
 ## 0. 한 문장
 
@@ -19,10 +19,10 @@ ContextTrail을 "지난 일을 보여 주는 도구"에서 **"도구가 아니�
 | Codex 기록 입력 | 있음 | `sources/local.py` |
 | opencode 기록 입력 | 있음(2026-10-06) | `sources/opencode.py`. 설계와 확인한 사실은 `OPENCODE_SOURCE.md` |
 | Claude Code·Codex 스킬 설치 | 있음 | `agent_commands.py`: `~/.claude/skills`, `~/.agents/skills`, `~/.codex/prompts` |
-| **opencode 스킬·명령 설치** | **없음** | 단, opencode는 `~/.claude/skills`·`~/.agents/skills`를 스스로 읽는다(5절) |
+| opencode 스킬·명령 설치 | 있음(2026-10-06) | `~/.config/opencode/commands/contexttrail-*.md`; 스킬은 `~/.claude/skills`를 통해 보인다(5절) |
 | 그래프가 오래됐는지 아는 방법 | 있음(2026-10-06) | `status`, `find` 첫 줄, TUI·브라우저 상단: 마지막 scan 기준 미분석 기록 수 + scan 이후 세션·기록 수(바뀐 파일만 파싱). `freshness.py` |
 | **세션이 끝나면 저절로 갱신** | **없음** | 분석은 명시적 요청에만 돈다(불변식) |
-| 스킬의 Runner | Codex 고정 | Claude Runner가 생긴 뒤에도 스킬 문구는 "Codex only"(6절) |
+| 스킬의 Runner | 저장된 것, 없으면 묻기(2026-10-06) | `scan --json`의 `runner`(6절) |
 | 어떤 모델·effort가 그 기록을 만들었는지 | 없음 | `OPENCODE_SOURCE.md` 2절 |
 
 ## 2. 지킬 원칙
@@ -86,14 +86,14 @@ ContextTrail을 "지난 일을 보여 주는 도구"에서 **"도구가 아니�
 
 - **스킬은 이미 보인다.** opencode는 `~/.claude/skills/*/SKILL.md`와 `~/.agents/skills/*/SKILL.md`도 읽는다(공식 문서). 지금 `install-commands`가 설치한 두 스킬이 opencode에도 그대로 나타난다. 문구에서 `/contexttrail-update`(Claude) · `$contexttrail-update`(Codex) 분기에 opencode용 `/contexttrail-update`를 더하고, `host="opencode"`를 추가한다.
 - **명령:** `~/.config/opencode/commands/contexttrail-update.md`, `contexttrail-context.md`(frontmatter `description`, 본문에 `$ARGUMENTS`). 사용자가 `/contexttrail-update 3`처럼 명시적으로 부르는 길이다.
-- **명시적 호출만 허용하는 장치가 없다.** opencode에는 Codex의 `allow_implicit_invocation: false`나 Claude의 `disable-model-invocation`에 해당하는 것이 문서에 없다. opencode가 `~/.claude/skills/contexttrail-update`를 스스로 고를 수 있다는 뜻이다. 대책 순서: (1) opencode `permission` 설정으로 특정 스킬을 `deny`/`ask`로 둘 수 있는지 확인(9절) — 되면 `install-commands`가 그 설정을 권고 문구로 보여 준다(사용자 설정 파일은 고치지 않는다). (2) 안 되면 update 스킬 본문의 첫 문장("사용자가 이름으로 불렀을 때만")에 의존하고 README에 적는다. (3) `analyze`는 어차피 `--yes`가 있어도 동의 키가 없으면 묻기 때문에, 에이전트가 멋대로 불러도 첫 실행은 멈춘다 — 이 보호가 실제로 작동하는지 테스트로 고정한다.
-- 테스트: `install_agent_commands`의 대상 경로에 opencode 둘을 더하고, 사용자 파일 보호(`--force`)가 같은지 확인.
+- **명시적 호출만 허용하는 장치가 없다.** opencode에는 Codex의 `allow_implicit_invocation: false`나 Claude의 `disable-model-invocation`에 해당하는 것이 문서에 없다. opencode가 `~/.claude/skills/contexttrail-update`를 스스로 고를 수 있다는 뜻이다. **구현(2026-10-06):** opencode 문서상 `permission`은 도구별로 패턴 키의 중첩 객체를 받고 `skill` 항목은 스킬 이름과 맞춘다(`deny`는 에이전트에게 숨김, `ask`는 승인 요구). 그래서 `install-commands`가 `{"permission": {"skill": {"contexttrail-update": "ask"}}}`를 `~/.config/opencode/opencode.json`에 넣으라고 안내만 한다(파일은 고치지 않음). 이 설정이 실제로 그렇게 동작하는지는 opencode를 띄워 확인하지 않았다(F에서). 원래 (3)으로 적었던 "`--yes`가 있어도 동의 키가 없으면 묻는다"는 **틀렸다**: `--yes`가 곧 동의 기록이다. 그러므로 opencode에서의 보호는 `permission` 설정과 스킬 본문의 첫 문장뿐이다.
+- ~~테스트: `install_agent_commands`의 대상 경로에 opencode 둘을 더하고, 사용자 파일 보호(`--force`)가 같은지 확인.~~ 끝(`tests/test_agent_commands.py`, 대상 9개).
 
 ## 6. 단계 D — Runner를 호스트에 묶지 않기
 
 - 스킬의 update 본문은 "Runner는 Codex뿐"이라고 말한다. 2026-10-06의 자기 분석은 Claude Runner로 했고 잘 됐다. 사용자는 셋 중 어느 구독을 쓸지 고를 수 있어야 한다.
-- 저장: 프로젝트 옵션에 `runner`를 둔다(`analyze --runner X --yes`가 성공하면 저장, B2의 `--enable --runner`도 같은 키). `scan --json`에 `runner`(저장된 값 또는 null)를 넣는다.
-- 스킬 문구: "저장된 runner가 있으면 그것, 없으면 사용자에게 Codex와 Claude 중 무엇으로 할지 묻는다. opencode는 Runner가 아니다."
+- 저장: 프로젝트 옵션의 `runner`는 이미 `analyze --runner X`를 줄 때 저장되고 있었다(`cli._options`; 성공 여부와 무관). `scan --json`에 `runner`(저장된 값 또는 null)를 넣었다(2026-10-06).
+- 스킬 문구(2026-10-06): "저장된 runner가 있으면 그것, 없으면 사용자에게 Codex와 Claude 중 무엇으로 할지 묻는다. opencode는 Runner가 아니다." `analyze . --runner <runner> --yes …`.
 - 호스트 안에서 Runner CLI를 못 돌리는 경우(Codex 샌드박스 안에서 `sandbox-exec` 등)의 문구는 그대로 둔다.
 
 ## 7. 단계 E — 포지셔닝
@@ -103,6 +103,7 @@ ContextTrail을 "지난 일을 보여 주는 도구"에서 **"도구가 아니�
 - `docs/DECISIONS.md`에 2절의 원칙(쓰는 손 하나, 훅은 opt-in, MCP 아님)을 결정으로 적는다.
 - `CLAUDE.md`: 세 번째 소스, `status`, `auto-update`, `install-hooks`, 저장 옵션 `runner`·`auto_update`·`opencode_home`.
 - 노출 순서: 영어권 노출(Show HN)은 A와 B1이 들어간 뒤로 미룬다. 첫 문장이 바뀌기 때문이다.
+- **구현(2026-10-06):** README 첫 문단과 설치 절, `_DESCRIPTIONS["context"]`, `docs/DECISIONS.md`, `docs/PRD.md` 머리말, CLAUDE.md. 스킬 설명 문구가 바뀐 뒤 각 도구의 스킬 선택이 달라지는지는 아직 보지 않았다.
 
 ## 8. 단계 F — 검증
 
@@ -115,7 +116,7 @@ ContextTrail을 "지난 일을 보여 주는 도구"에서 **"도구가 아니�
 ## 9. 구현 전에 확인할 것
 
 1. ~~opencode 데이터 디렉터리 환경 변수.~~ 확인: `XDG_DATA_HOME`만, `OPENCODE_DATA_DIR`는 없음. DB 이름은 채널별, `OPENCODE_DB`로 변경 가능(`OPENCODE_SOURCE.md` 1절).
-2. opencode `permission` 설정으로 스킬 하나를 `deny`/`ask`로 둘 수 있는지.
+2. ~~opencode `permission` 설정으로 스킬 하나를 `deny`/`ask`로 둘 수 있는지.~~ 문서상 가능(`permission.skill`의 이름 패턴). 실제 동작 확인은 F로.
 3. opencode 플러그인이 받는 컨텍스트에 작업 폴더가 있는지, `session.idle`이 하위 에이전트 세션에도 오는지.
 4. Codex `notify` payload에 `cwd`(또는 thread id로 세션 파일을 찾을 길)가 있는지. Codex lifecycle hooks의 유무와 형식.
 5. Claude Code `Stop` 훅의 `async: true`가 분리 실행과 어떻게 다른지(훅 프로세스가 끝나면 자식도 죽는지).
@@ -146,5 +147,6 @@ B2를 마지막에 둔 이유: 돈이 드는 분석을 사람이 모르게 띄�
 
 ## 12. 진행 기록
 
+- 2026-10-06 C·D·E 완료: opencode 명령 파일 둘, `OPENCODE_PERMISSION_HINT`, `scan --json`의 `runner`, 스킬 본문의 runner 선택 단계와 도구 간 문구, README·DECISIONS·PRD·CLAUDE.md.
 - 2026-10-06 B1 완료: `freshness.py`(`build_index`·`check`·`summary`·`status_lines`), `contexttrail status [--json]`, `find` 첫 줄과 `--json`의 `freshness`, TUI 1행과 브라우저 상태줄(그래프 버전당 한 번 계산), context 스킬의 규칙 한 줄. 테스트 465개.
 - 2026-10-06 A 완료: `sources/opencode.py`, `collect_logs(opencode_home=)`, `AnalysisConfig.opencode_home`, `--opencode-home`, `scan`의 소스별 개수, 도구 이름 표(`edit`/`write`/`read`/`bash`/`task`), `render.PROVIDER`, 평가 fixture의 provider 허용. 테스트 459개 통과. 9절 1·6·7 확인.

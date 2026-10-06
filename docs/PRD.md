@@ -1,6 +1,8 @@
 # Project Flow — PRD
 ## Codex·Claude Code 기록으로 프로젝트 진행 흐름을 복원하는 도구
 
+> 2026-10-06 갱신: 제품명은 ContextTrail이고, 입력은 Codex·Claude Code에 opencode가 더해져 셋이다. 방향은 "Claude Code·Codex·opencode가 같이 쓰는 프로젝트 기억": 각 도구의 기록을 하나의 증거 연결 그래프로 모으고, 어느 도구에서든 `find`/`show`/`status`로 읽는다. 계획과 원칙은 `docs/plans/SHARED_CONTEXT_STORE.md`와 `docs/DECISIONS.md`(2026-10-06). 아래 본문은 v0.1 기준선 그대로다.
+
 | 항목 | 내용 |
 | --- | --- |
 | 문서 버전 | v0.1 · MVP 범위 기준선 |

@@ -14,9 +14,19 @@ _MANAGED_MARKER = "<!-- ContextTrail managed command: reinstalled with the progr
 
 
 def _arguments(host: str) -> str:
-    # Claude Code skills and Codex prompts fill in $ARGUMENTS; a Codex skill sees the user's message.
+    # Claude Code skills, opencode commands and Codex prompts fill in $ARGUMENTS; a Codex skill sees the user's message.
     return ("Arguments: `$ARGUMENTS` (may be empty)." if host != "codex-skill" else
             "Arguments: whatever the user wrote after the command name (may be nothing).")
+
+
+def _update_name(host: str) -> str:
+    """How the user invokes the update command on this host; a skill file read by several hosts names each."""
+    if host == "codex-prompt":
+        return "`$contexttrail-update`"
+    if host == "opencode":
+        return "`/contexttrail-update`"
+    # ~/.claude/skills and ~/.agents/skills are read by Claude Code, Codex and opencode alike.
+    return "`/contexttrail-update` (Claude Code, opencode) or `$contexttrail-update` (Codex)"
 
 
 def _body(role: str, python: Path, host: str) -> str:
@@ -24,20 +34,21 @@ def _body(role: str, python: Path, host: str) -> str:
     if role == "update":
         return f"""The user explicitly invoked this command to add to the current project's saved ContextTrail graph. Run it only because they invoked it by name; never start an analysis on your own. {_arguments(host)}
 
-Analysis sends the selected transcript records and Git evidence of this project to the Codex CLI's cloud model and uses the user's Codex quota. It runs oldest records first, a number of work units at a time.
+Analysis sends the selected transcript records and Git evidence of this project to the cloud model behind the chosen runner (the Codex CLI or the Claude CLI) and uses that account's quota. It runs oldest records first, a number of work units at a time.
 
-1. Run `{command} scan .` (no AI calls; add `--session current` if the arguments ask for this session). Check that `scope` is the intended project. Show the user `plan_text` and `plan_choices` (pending work units, estimated input tokens and minutes per choice) and say that records are sent to Codex.
-2. Decide how many work units to process:
+1. Run `{command} scan . --json` (no AI calls; add `--session current` if the arguments ask for this session). Check that `scope` is the intended project. Note `runner`: the runner saved for this project (`codex` or `claude`), or null. Show the user `plan_text` and `plan_choices` (pending work units, estimated input tokens and minutes per choice) and say that records are sent to that runner's model.
+2. Choose the runner: if `runner` is not null, use it. If it is null, ask the user whether to analyze with Codex (`--runner codex`, the `codex` CLI) or Claude (`--runner claude`, the `claude` CLI) and wait for the answer; the CLI must be installed and logged in on this machine. opencode is a log source, never a runner. The choice is saved for the next run.
+3. Decide how many work units to process:
    - A number in the arguments is the unit count.
    - "this session", "이번 세션" or "current" in the arguments means `--session current`: only the session you are running in, and the sub-agents it started, ahead of older records. Its events are marked out of order (earlier relations may be missing). Mention that.
-   - Otherwise ask the user how many units to process and wait for the answer. Never choose the number yourself, and do not run step 3 without it.
-3. Run `{command} analyze . --runner codex --yes --no-tui --brief --units N` (plus `--session current` if chosen). `--yes` records the user's consent for this project, which they gave by invoking this command and choosing N. A unit usually takes 5–15 minutes, so run it in the background if you can and report progress from its stderr lines (one per finished unit, `k/N`). If it is stopped, finished units stay saved and the next run continues from there.
-4. When it ends, run `{command} find .` and report: the run status (complete, or partial with units still waiting, which is expected when N is less than the pending count), what was added, and any error. Do not claim a change succeeded unless its status says it was verified.
+   - Otherwise ask the user how many units to process and wait for the answer. Never choose the number yourself, and do not run step 4 without it.
+4. Run `{command} analyze . --runner <runner> --yes --no-tui --brief --units N` (plus `--session current` if chosen). `--yes` records the user's consent for this project and runner, which they gave by invoking this command and choosing N. A unit usually takes 5–15 minutes, so run it in the background if you can and report progress from its stderr lines (one per finished unit, `k/N`). If it is stopped, finished units stay saved and the next run continues from there.
+5. When it ends, run `{command} find .` and report: the run status (complete, or partial with units still waiting, which is expected when N is less than the pending count), what was added, and any error. Do not claim a change succeeded unless its status says it was verified.
 
-If the analysis fails because of a sandbox or network restriction of your own environment (for example inside the Codex sandbox), say so and give the user the exact command to run in their own terminal. The model runner is Codex only; do not use a Claude model runner. Do not edit project files as part of this command.
+If the analysis fails because of a sandbox or network restriction of your own environment (for example inside the Codex sandbox), say so and give the user the exact command to run in their own terminal. Never pick a runner the user did not choose or save. Do not edit project files as part of this command.
 """
-    update = "/contexttrail-update" if host == "claude" else "$contexttrail-update"
-    return f"""Use this for questions about the current project's history — what was decided, tried, changed, verified or left open, and why — and whenever the user pastes a ContextTrail reference such as `contexttrail:ev_6226b954@v12`. It reads saved results only: no AI calls, no analysis. {_arguments(host)}
+    update = _update_name(host)
+    return f"""Use this for questions about the current project's history — what was decided, tried, changed, verified or left open, and why — and whenever the user pastes a ContextTrail reference such as `contexttrail:ev_6226b954@v12`. The graph holds the work done in every tool that was used on this project (Codex, Claude Code, opencode), so it also answers for sessions that happened in another tool. It reads saved results only: no AI calls, no analysis. {_arguments(host)}
 
 Commands (run in the project directory; add `--json` for structured output):
 - `{command} find "words"` — events whose title, summary or quoted evidence contain every word, newest first, each with its id (like `ev_6226b954`).
@@ -51,13 +62,13 @@ Rules:
 - Answer from the events and quotes, naming the event ids. A change counts as verified only when its status label says so ("verified" / 검증, "observed success" / 관측 성공); "reported done·unverified" / 완료 보고·미검증 means someone said it was done and nothing checked it.
 - If `show` reports that the event changed or disappeared since the cited version, say so and use the current state.
 - Events marked "out-of-order analysis" / 순서 밖 분석 were added before older records were analysed; earlier relations may be missing.
-- The first line of `find` ends with how far the graph lags the transcripts: "up to date", or counts of records not analyzed yet and of sessions since the last scan (`{command} status .` gives the detail; both count, neither estimates). If it is not "up to date", say so in one line before your answer. If the question is about that unanalyzed period, do not answer from the graph: say that an update is needed and that the user can run `{update}`. Do not run `analyze` yourself.
+- The first line of `find` ends with how far the graph lags the transcripts: "up to date", or counts of records not analyzed yet and of sessions since the last scan (`{command} status .` gives the detail; both count, neither estimates). If it is not "up to date", say so in one line before your answer. If the question is about that unanalyzed period, do not answer from the graph: say that an update is needed and that the user can run {update}. Do not run `analyze` yourself.
 """
 
 
 _DESCRIPTIONS = {
-    "update": "Add to this project's saved ContextTrail graph with a Codex analysis, a chosen number of work units at a time. Only when the user invokes it by name.",
-    "context": "Answer questions about this project's past decisions, attempts, changes, checks and open work from the saved ContextTrail graph, with quoted evidence; also reads a pasted ContextTrail reference (contexttrail:ev_…).",
+    "update": "Add to this project's saved ContextTrail graph with a Codex or Claude analysis, a chosen number of work units at a time. Only when the user invokes it by name.",
+    "context": "Answer questions about this project's past decisions, attempts, changes, checks and open work from the saved ContextTrail graph, with quoted evidence, including work done in the other coding tools (Codex, Claude Code, opencode); also reads a pasted ContextTrail reference (contexttrail:ev_…).",
 }
 
 
@@ -77,12 +88,22 @@ def _codex_prompt(role: str, python: Path) -> str:
             f"{_body(role, python, 'codex-prompt')}")
 
 
+def _opencode_command(role: str, python: Path) -> str:
+    """An opencode custom command: run only when the user types it (opencode never picks commands itself)."""
+    return (f'---\ndescription: "{_DESCRIPTIONS[role]}"\n---\n\n{_MANAGED_MARKER}\n\n'
+            f"{_body(role, python, 'opencode')}")
+
+
 # Codex selects skills on its own unless their policy says otherwise; an analysis must be asked for.
 _CODEX_EXPLICIT_ONLY = f"# {_MANAGED_MARKER}\npolicy:\n  allow_implicit_invocation: false\n"
 
+# opencode also reads ~/.claude/skills and ~/.agents/skills, and has no explicit-only flag for a skill;
+# its permission config can make the update skill need approval. Shown after install, never written.
+OPENCODE_PERMISSION_HINT = '{"permission": {"skill": {"contexttrail-update": "ask"}}}'
+
 
 def install_agent_commands(home: Path, python: Path | None = None, *, force: bool = False) -> list[Path]:
-    """Install skills and Codex's legacy slash aliases without touching agent settings."""
+    """Install the skills, Codex's legacy slash aliases and opencode's commands without touching agent settings."""
     home = home.expanduser().resolve()
     # Keep the venv path: resolving its python symlink would point at the base
     # interpreter, which may not have ContextTrail's dependencies installed.
@@ -93,6 +114,7 @@ def install_agent_commands(home: Path, python: Path | None = None, *, force: boo
         targets[home / ".agents" / "skills" / name / "SKILL.md"] = _skill(role, python, "codex-skill")
         targets[home / ".claude" / "skills" / name / "SKILL.md"] = _skill(role, python, "claude")
         targets[home / ".codex" / "prompts" / f"{name}.md"] = _codex_prompt(role, python)
+        targets[home / ".config" / "opencode" / "commands" / f"{name}.md"] = _opencode_command(role, python)
     targets[home / ".agents" / "skills" / "contexttrail-update" / "agents" / "openai.yaml"] = _CODEX_EXPLICIT_ONLY
     for path, content in targets.items():
         if any(parent.is_symlink() for parent in path.parents if parent != home and home in parent.parents):

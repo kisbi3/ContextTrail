@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .agent_commands import install_agent_commands
+from .agent_commands import OPENCODE_PERMISSION_HINT, install_agent_commands
 from .agent_view import find, find_text, show, show_text
 from .analysis import AnalysisConfig, Engine, _evidence_ids, classify_steps, plan_choices_text, plan_text
 from .demo import FixtureRunner, create_demo
@@ -520,8 +520,13 @@ def main(argv: list[str] | None = None) -> int:
             print(tr("Codex CLI·IDE 슬래시: /prompts:contexttrail-update / /prompts:contexttrail-context",
                      "Codex CLI/IDE slash: /prompts:contexttrail-update / /prompts:contexttrail-context"))
             print("Claude Code: /contexttrail-update / /contexttrail-context")
-            print(tr("분석(update)은 직접 부를 때만 실행되고, 처리할 작업 단위 수를 먼저 묻습니다.",
-                     "Analysis (update) runs only when called directly and asks for the number of work units first."))
+            print("opencode: /contexttrail-update / /contexttrail-context")
+            print(tr("분석(update)은 직접 부를 때만 실행되고, 처리할 작업 단위 수를 먼저 묻습니다. Runner는 프로젝트에 저장된 것, 없으면 Codex·Claude 중 사용자가 고른 것입니다.",
+                     "Analysis (update) runs only when called directly and asks for the number of work units first. The runner is the one saved for the project, else the one the user picks (Codex or Claude)."))
+            print(tr("opencode는 ~/.claude/skills와 ~/.agents/skills의 스킬도 읽고 스킬을 스스로 고를 수 있습니다. update 스킬에 승인을 요구하려면 "
+                     "~/.config/opencode/opencode.json에 다음을 넣으세요(설정 파일은 고치지 않습니다): " + OPENCODE_PERMISSION_HINT,
+                     "opencode also reads the skills in ~/.claude/skills and ~/.agents/skills and may pick a skill itself. To make the update skill "
+                     "need your approval there, add this to ~/.config/opencode/opencode.json (the file is not edited): " + OPENCODE_PERMISSION_HINT))
             print(tr("context는 저장된 결과만 읽습니다. 다만 Claude Code에서 쓰면 인용된 Codex·Claude 기록이 "
                      "그 대화의 모델(Anthropic)로 전달됩니다.",
                      "context reads the saved result only; used from Claude Code, though, the quoted Codex/Claude "
@@ -649,6 +654,7 @@ def main(argv: list[str] | None = None) -> int:
                          "state_dir": str(scope.state_dir), "snapshot_id": snapshot.id,
                          "records": counts, "steps": classify_steps(snapshot.records),
                          "limitations": snapshot.limitations, "runner_calls": 0,
+                         "runner": (store.get_meta("options", {}) or {}).get("runner"),
                          "plan": plan, "plan_text": plan_text(plan) if plan else plan_error,
                          "plan_choices": plan_choices_text(plan) if plan else None,
                          "codex_selection": {

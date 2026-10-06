@@ -9,14 +9,21 @@ from contexttrail.util import FlowError
 def test_install_agent_commands_preserves_existing_user_commands(tmp_path):
     python = Path('/test environment/bin/python')
     paths = install_agent_commands(tmp_path, python)
-    assert len(paths) == 7
+    assert len(paths) == 9
     update = tmp_path / '.agents/skills/contexttrail-update/SKILL.md'
     claude = tmp_path / '.claude/skills/contexttrail-context/SKILL.md'
     prompt = tmp_path / '.codex/prompts/contexttrail-update.md'
-    assert 'scan .' in update.read_text()
-    assert 'analyze . --runner codex --yes --no-tui --brief --units N' in update.read_text()
+    opencode = tmp_path / '.config/opencode/commands/contexttrail-update.md'
+    assert 'scan . --json' in update.read_text()
+    assert 'analyze . --runner <runner> --yes --no-tui --brief --units N' in update.read_text()
+    assert 'Codex only' not in update.read_text() and 'opencode is a log source, never a runner' in update.read_text()
     assert 'Do not run `analyze` yourself' in claude.read_text()
+    assert '`/contexttrail-update` (Claude Code, opencode) or `$contexttrail-update` (Codex)' in claude.read_text()
     assert 'name: contexttrail-update' not in prompt.read_text()
+    assert opencode.read_text().startswith('---\ndescription: "') and '`$ARGUMENTS`' in opencode.read_text()
+    assert 'name: contexttrail-update' not in opencode.read_text() and 'disable-model-invocation' not in opencode.read_text()
+    context = (tmp_path / '.config/opencode/commands/contexttrail-context.md').read_text()
+    assert 'the user can run `/contexttrail-update`.' in context
     assert all(path.stat().st_mode & 0o077 == 0 for path in paths)
     install_agent_commands(tmp_path, Path('/new environment/bin/python'))
     assert '/new environment/bin/python' in update.read_text()
