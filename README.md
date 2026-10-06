@@ -2,9 +2,9 @@
 
 [![test](https://github.com/kisbi3/ContextTrail/actions/workflows/test.yml/badge.svg)](https://github.com/kisbi3/ContextTrail/actions/workflows/test.yml)
 
-**Turns the Codex and Claude Code sessions already on your machine into an evidence-linked history of a project: what was tried, what failed, what was decided, and what was actually verified.**
+**Turns the Codex, Claude Code and opencode sessions already on your machine into an evidence-linked history of a project: what was tried, what failed, what was decided, and what was actually verified.**
 
-ContextTrail reads the transcripts the two CLIs keep locally, plus the project's Git history, and asks the CLI you already have installed (sandboxed, read-only) to reconstruct the flow. Every event and every arrow carries a quote from the source, and the code checks each quote against the record before anything is stored. You get a terminal view, a local browser view, `find`/`show` commands, and two agent skills so Codex and Claude Code can answer "why did we drop X?" from the saved graph instead of from memory.
+ContextTrail reads the transcripts the three tools keep locally (Codex and Claude Code JSONL files, the opencode SQLite database), plus the project's Git history, and asks the Codex or Claude CLI you already have installed (sandboxed, read-only) to reconstruct the flow. Every event and every arrow carries a quote from the source, and the code checks each quote against the record before anything is stored. You get a terminal view, a local browser view, `find`/`show` commands, and two agent skills so Codex and Claude Code can answer "why did we drop X?" from the saved graph instead of from memory.
 
 Development alpha `0.1.0a5`. Linux and macOS, Python 3.11+. [What has been measured](#6-what-has-been-measured) is further down; nothing on this page is an estimate presented as a result.
 
@@ -290,7 +290,7 @@ For non-interactive use, consent can be given with explicit `--yes`. The followi
 contexttrail analyze /path/to/project --runner codex --yes --no-tui
 ```
 
-Default log paths: `CODEX_HOME` or `~/.codex` (`sessions/`, `archived_sessions/`) and `CLAUDE_CONFIG_DIR` or `~/.claude` (`projects/`). Override when paths differ per server:
+Default log paths: `CODEX_HOME` or `~/.codex` (`sessions/`, `archived_sessions/`), `CLAUDE_CONFIG_DIR` or `~/.claude` (`projects/`), and the opencode data directory `$XDG_DATA_HOME/opencode` or `~/.local/share/opencode` (every `opencode*.db`, opened read-only; only the `session`, `message` and `part` tables are read, never the credential tables or `auth.json`). A session belongs to the project by its recorded working directory only. Override when paths differ per server (`--opencode-home` for opencode):
 
 ```bash
 contexttrail scan /path/to/project \

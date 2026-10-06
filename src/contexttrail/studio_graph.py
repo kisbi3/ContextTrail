@@ -202,6 +202,7 @@ def _context(state: StudioState) -> tuple[Engine, Store, Snapshot]:
     store = Store(scope.state_dir, scope.id)
     config = AnalysisConfig(codex_home=directory / "fixture-codex",
                             claude_home=directory / "fixture-claude",
+                            opencode_home=directory / "fixture-opencode",
                             escalation_model="fixture-review")
     engine = Engine(scope, store, config)
     engine.detailed_trace = True
@@ -304,6 +305,7 @@ def scan_sources(state: StudioState) -> StudioState:
             config = AnalysisConfig(
                 codex_home=Path(os.environ["CONTEXTTRAIL_STUDIO_CODEX_HOME"]) if os.environ.get("CONTEXTTRAIL_STUDIO_CODEX_HOME") else None,
                 claude_home=Path(os.environ["CONTEXTTRAIL_STUDIO_CLAUDE_HOME"]) if os.environ.get("CONTEXTTRAIL_STUDIO_CLAUDE_HOME") else None,
+                opencode_home=Path(os.environ["CONTEXTTRAIL_STUDIO_OPENCODE_HOME"]) if os.environ.get("CONTEXTTRAIL_STUDIO_OPENCODE_HOME") else None,
                 runner_name="codex", max_calls=state["max_calls"], extract_workers=1)
             engine = Engine(scope, store, config)
             engine.detailed_trace = True

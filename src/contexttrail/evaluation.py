@@ -208,7 +208,7 @@ def fixture_records(data: dict) -> list[SourceRecord]:
                                'Fixture content must be a non-empty string.'))
         if record.role not in {'user', 'assistant', 'tool_call', 'tool_result', 'metadata', 'git'}:
             raise FlowError(tr('fixture role이 지원 범위 밖입니다.', 'The fixture role is not supported.'))
-        if record.provider not in {'codex', 'claude', 'git'} or not isinstance(record.locator, dict):
+        if record.provider not in {'codex', 'claude', 'opencode', 'git'} or not isinstance(record.locator, dict):
             raise FlowError(tr('fixture provider/locator가 잘못되었습니다.', 'The fixture provider/locator is invalid.'))
         # The eval loader never reads paths in locator or executes log commands.
         # Disable revision-file capabilities: a fixture cannot grant filesystem access.

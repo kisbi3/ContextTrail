@@ -479,7 +479,8 @@ def resolve_quote_slips(region: str, quote: str) -> tuple[list[tuple[int, int]],
 
 DOC_VERIFIES_REASON = ("dropped a verifies relation between a documentation-only change and a run "
                        "whose command never names that document (no evidence it checked the change)")
-EDIT_TOOL_NAMES = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
+# Claude Code and Codex names, then opencode's lowercase ones.
+EDIT_TOOL_NAMES = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch", "edit", "write", "multiedit"}
 DOC_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".adoc")
 
 
@@ -492,7 +493,7 @@ def edited_files(record: SourceRecord) -> list[str]:
     if files:
         return list(dict.fromkeys(files))
     if head.removeprefix("Tool: ").strip() in EDIT_TOOL_NAMES:
-        for key in ("file_path", "notebook_path", "path"):
+        for key in ("file_path", "filePath", "notebook_path", "path"):
             found = re.search(rf'"{key}":\s*"([^"]+)"', body)
             if found:
                 return [found.group(1)]

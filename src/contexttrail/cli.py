@@ -89,6 +89,8 @@ def parser() -> argparse.ArgumentParser:
         route_options(sub)
         sub.add_argument("--codex-home", type=Path)
         sub.add_argument("--claude-home", type=Path)
+        sub.add_argument("--opencode-home", type=Path, help=tr("opencode 데이터 폴더(opencode.db가 있는 곳); 기본 ~/.local/share/opencode",
+                                                               "opencode data directory (where opencode.db is); default ~/.local/share/opencode"))
         sub.add_argument("--history-limit", type=int)
         sub.add_argument("--timeout", type=float, help=tr("모델 호출 하나의 제한 시간(초); 기본 600", "Time limit per model call in seconds; default 600"))
         sub.add_argument("--record-chars", type=int)
@@ -266,7 +268,7 @@ def _print_flow(graph: dict, *, ascii_only: bool = False, width: int = 104) -> N
 
 def _options(args, store: Store) -> AnalysisConfig:
     options = store.get_meta("options", {})
-    for key in ("runner", "model", "codex_home", "claude_home", "history_limit", "timeout", "record_chars", "unit_chars",
+    for key in ("runner", "model", "codex_home", "claude_home", "opencode_home", "history_limit", "timeout", "record_chars", "unit_chars",
                 "extract_model", "integrate_model", "escalation_model", "extract_effort", "integrate_effort",
                 "escalation_effort", "extract_workers", "output_language", "context_mode", "integrate_evidence",
                 "review_output", "integrate_output"):
@@ -284,7 +286,7 @@ def _options(args, store: Store) -> AnalysisConfig:
     store.set_meta("options", options)
     config_keys = {field.name for field in dataclasses.fields(AnalysisConfig)}
     values = {key: value for key, value in options.items() if key in config_keys}
-    for key in ("codex_home", "claude_home"):
+    for key in ("codex_home", "claude_home", "opencode_home"):
         if key in values:
             values[key] = Path(values[key])
     if getattr(args, "max_calls", None) is not None:
@@ -514,8 +516,10 @@ def main(argv: list[str] | None = None) -> int:
             scope = Scope.resolve(folder)
             store = Store(scope.state_dir, scope.id)
             store.set_meta("demo", True)
-            store.set_meta("options", {"codex_home": str(codex), "claude_home": str(claude)})
-            engine = Engine(scope, store, AnalysisConfig(codex_home=codex, claude_home=claude))
+            # The demo reads its own fixtures only; the real opencode database stays out.
+            opencode = codex.parent / "fixture-opencode"
+            store.set_meta("options", {"codex_home": str(codex), "claude_home": str(claude), "opencode_home": str(opencode)})
+            engine = Engine(scope, store, AnalysisConfig(codex_home=codex, claude_home=claude, opencode_home=opencode))
             result = engine.analyze(FixtureRunner)
             if args.no_tui or not sys.stdout.isatty():
                 plain(store, ascii_only=args.ascii)
@@ -615,7 +619,7 @@ def main(argv: list[str] | None = None) -> int:
                 plan, plan_error = engine.preview_plan(snapshot), None
             except FlowError as exc:
                 plan, plan_error = None, str(exc)
-            counts = {provider: sum(r.provider == provider for r in snapshot.records) for provider in ("codex", "claude", "git")}
+            counts = {provider: sum(r.provider == provider for r in snapshot.records) for provider in ("codex", "claude", "opencode", "git")}
             print(dumps({"scope": str(scope.folder), "worktrees": [str(p) for p in scope.roots],
                          "state_dir": str(scope.state_dir), "snapshot_id": snapshot.id,
                          "records": counts, "steps": classify_steps(snapshot.records),

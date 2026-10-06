@@ -1,6 +1,6 @@
 # 세 도구가 같이 쓰는 프로젝트 기억 — Claude Code · Codex · opencode
 
-**상태: 계획. 2026-10-06 작성. 미구현.** 외부 도구의 형식은 공식 문서에서 확인한 것과 확인 필요로 표시한 것을 나눴다(9절).
+**상태: 2026-10-06 작성. A(opencode 입력) 구현됨. 나머지 미구현.** 외부 도구의 형식은 공식 문서에서 확인한 것과 확인 필요로 표시한 것을 나눴다(9절). 진행 기록은 12절.
 
 ## 0. 한 문장
 
@@ -17,7 +17,7 @@ ContextTrail을 "지난 일을 보여 주는 도구"에서 **"도구가 아니�
 | 분석 중에도 읽기 가능 | 있음 | SQLite WAL + 분석 lock |
 | Claude Code 기록 입력 | 있음 | `sources/local.py` |
 | Codex 기록 입력 | 있음 | `sources/local.py` |
-| **opencode 기록 입력** | **없음** | 계획만 있음: `OPENCODE_SOURCE.md`. 코드에 opencode가 한 줄도 없다 |
+| opencode 기록 입력 | 있음(2026-10-06) | `sources/opencode.py`. 설계와 확인한 사실은 `OPENCODE_SOURCE.md` |
 | Claude Code·Codex 스킬 설치 | 있음 | `agent_commands.py`: `~/.claude/skills`, `~/.agents/skills`, `~/.codex/prompts` |
 | **opencode 스킬·명령 설치** | **없음** | 단, opencode는 `~/.claude/skills`·`~/.agents/skills`를 스스로 읽는다(5절) |
 | **그래프가 오래됐는지 아는 방법** | **약함** | `find` 첫 줄의 `분석 기준` 시각뿐. 그 뒤 세션이 몇 개 쌓였는지는 `scan`을 돌려야 안다 |
@@ -38,13 +38,13 @@ ContextTrail을 "지난 일을 보여 주는 도구"에서 **"도구가 아니�
 
 설계는 `docs/plans/OPENCODE_SOURCE.md`를 따른다(파서 `sources/opencode.py`, 범위 귀속은 `session.directory`로만, `parent_id`로 하위 에이전트, `patch` 파트는 `hint=edit`, 허용 목록 테이블만 `SELECT`, 합성 DB로만 테스트). 거기에 더해 이번에 확인·결정한 것:
 
-- **데이터 디렉터리 우선순위:** `OPENCODE_DATA_DIR` → `$XDG_DATA_HOME/opencode` → `~/.local/share/opencode`. 이 순서는 서드파티 도구(codeburn)의 문서에서 본 것이라 opencode 소스로 확인해야 한다(9절). ContextTrail 쪽 옵션 이름은 Codex·Claude와 같은 꼴로 `--opencode-home` / 저장 옵션 `opencode_home`.
+- **데이터 디렉터리:** `$XDG_DATA_HOME/opencode` → `~/.local/share/opencode`(opencode 소스로 확인; `OPENCODE_DATA_DIR`는 opencode에 없다). DB 파일은 채널에 따라 `opencode.db` 또는 `opencode-<channel>.db`, `OPENCODE_DB`로 바꿀 수 있어 폴더의 `opencode*.db` 전부를 읽는다. ContextTrail 쪽 옵션은 `--opencode-home` / 저장 옵션 `opencode_home`.
 - **`content_hash` 불변:** 모델·effort(`authoring`) 필드는 해시에 넣지 않는다. 이미 통합된 단위가 다시 보내지면 안 된다. 기존 두 파서에 `authoring`을 먼저 넣는 순서는 `OPENCODE_SOURCE.md` 5절대로 하되, 이 단계의 목표는 **opencode 기록이 그래프에 들어가는 것**이므로 `authoring` 표시(화면·`show`)는 뒤로 미뤄도 된다.
 - **자기 실행 제외:** opencode 안에서 ContextTrail을 돌린 세션은 Codex·Claude와 같은 규칙으로 뺀다(`metadata.source`, 작업 폴더 이름 `contexttrail-run-`).
-- **WAL 읽기:** opencode가 켜져 있는 동안 `mode=ro`로 열어 읽는 것이 되는지 실제로 확인한다. 안 되면 DB·WAL·SHM을 임시 폴더(0700)에 복사해 읽고 지운다.
+- **WAL 읽기:** opencode가 켜져 있는 동안 `mode=ro`로 열어 읽을 수 있고 파일이 바뀌지 않는다(확인). 복사 방안은 필요 없었다.
 - **`scan` 출력**에 소스별 개수(codex/claude/opencode)를 넣어, 세 도구가 다 잡히는지 한눈에 보이게 한다.
 
-완료 기준: 합성 opencode DB 하나로 `scan`이 세션·하위 에이전트·압축 경계를 Codex·Claude와 같은 형태로 내고, 실제 DB로 `scan`을 돌렸을 때(모델 호출 없음) 범위 밖 세션이 0건 섞이며, 테스트가 DB 파일을 바꾸지 않는다(mtime·해시 동일).
+완료 기준: 합성 opencode DB 하나로 `scan`이 세션·하위 에이전트·압축 경계를 Codex·Claude와 같은 형태로 내고, 실제 DB로 `scan`을 돌렸을 때(모델 호출 없음) 범위 밖 세션이 0건 섞이며, 테스트가 DB 파일을 바꾸지 않는다(mtime·해시 동일). **충족(2026-10-06):** 이 저장소에서 11개 세션 중 4개 선택·7개 범위 밖·0개 미귀속, 레코드 1,936개, 전부 cwd가 이 저장소, 읽기 뒤 DB·WAL·SHM 변화 없음, 파싱 0.4초. 테스트 14개.
 
 ## 4. 단계 B — 신선도
 
@@ -112,13 +112,13 @@ ContextTrail을 "지난 일을 보여 주는 도구"에서 **"도구가 아니�
 
 ## 9. 구현 전에 확인할 것
 
-1. opencode 데이터 디렉터리 환경 변수(`OPENCODE_DATA_DIR`, `XDG_DATA_HOME`)가 opencode 자체 소스에 있는지. 지금 근거는 서드파티 문서다.
+1. ~~opencode 데이터 디렉터리 환경 변수.~~ 확인: `XDG_DATA_HOME`만, `OPENCODE_DATA_DIR`는 없음. DB 이름은 채널별, `OPENCODE_DB`로 변경 가능(`OPENCODE_SOURCE.md` 1절).
 2. opencode `permission` 설정으로 스킬 하나를 `deny`/`ask`로 둘 수 있는지.
 3. opencode 플러그인이 받는 컨텍스트에 작업 폴더가 있는지, `session.idle`이 하위 에이전트 세션에도 오는지.
 4. Codex `notify` payload에 `cwd`(또는 thread id로 세션 파일을 찾을 길)가 있는지. Codex lifecycle hooks의 유무와 형식.
 5. Claude Code `Stop` 훅의 `async: true`가 분리 실행과 어떻게 다른지(훅 프로세스가 끝나면 자식도 죽는지).
-6. `OPENCODE_SOURCE.md` 4절의 7가지(`variant`=effort, `tool`/`patch`/`step-finish` 구조, WAL 읽기, 주입 텍스트 표시 등).
-7. 측정 프로젝트에서 B1의 전체 파싱 시간.
+6. ~~`OPENCODE_SOURCE.md` 4절의 7가지.~~ 확인, 그 문서 4절에 적음(Codex·Claude 레코드의 모델·effort만 남음).
+7. ~~측정 프로젝트에서 B1의 전체 파싱 시간.~~ 측정(2026-10-06, 이 저장소, 세션 파일 수천 개): Codex+Claude JSONL 파싱 47.6초, opencode 0.4초, `scan` 전체 74초. **2초를 한참 넘으므로 B1은 전체 파싱을 쓰지 않는다** — 마지막 scan의 파일 색인(경로·크기·mtime·선택 레코드 수)과 비교해 새로 생기거나 바뀐 파일만 파싱하고, opencode는 범위 안 세션의 `time_updated`만 질의한다.
 
 ## 10. 순서와 양
 
@@ -141,3 +141,7 @@ B2를 마지막에 둔 이유: 돈이 드는 분석을 사람이 모르게 띄�
 - 도구 사이의 실시간 동기화(파일 감시, 데몬). 상태는 SQLite 하나이고, 읽는 쪽이 매번 열면 된다.
 - 훅이 사용자 몰래 다른 프로젝트까지 분석하는 것. 설정은 프로젝트마다.
 - opencode를 분석 Runner로 쓰는 것(`OPENCODE_SOURCE.md`의 결정).
+
+## 12. 진행 기록
+
+- 2026-10-06 A 완료: `sources/opencode.py`, `collect_logs(opencode_home=)`, `AnalysisConfig.opencode_home`, `--opencode-home`, `scan`의 소스별 개수, 도구 이름 표(`edit`/`write`/`read`/`bash`/`task`), `render.PROVIDER`, 평가 fixture의 provider 허용. 테스트 459개 통과. 9절 1·6·7 확인.

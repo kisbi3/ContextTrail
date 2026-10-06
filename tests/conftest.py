@@ -23,6 +23,13 @@ def korean_screen(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_real_opencode_data(monkeypatch, tmp_path_factory):
+    """The default opencode data directory is empty in tests, so no test reads a real opencode database."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path_factory.mktemp("xdg-data")))
+    monkeypatch.delenv("OPENCODE_DB", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def integrate_by_model(monkeypatch):
     """Most tests are about the integrate call itself; a test of draft publishing asks for it."""
     original = AnalysisConfig.__init__

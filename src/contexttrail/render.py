@@ -34,7 +34,7 @@ ROLE = Labels({"user": "사용자 발화", "assistant": "어시스턴트 응답"
                "tool_result": "도구 결과", "metadata": "세션 정보", "git": "Git 변경"},
               {"user": "user message", "assistant": "assistant reply", "tool_call": "tool call",
                "tool_result": "tool result", "metadata": "session info", "git": "Git change"})
-PROVIDER = {"codex": "Codex", "claude": "Claude Code", "git": "Git"}
+PROVIDER = {"codex": "Codex", "claude": "Claude Code", "opencode": "opencode", "git": "Git"}
 # One glyph per tone so a terminal list reads at a glance, with ASCII fallbacks.
 MARK = {"ok": "✓", "warn": "!", "fail": "✗", "plain": "·"}
 ASCII_MARK = {"ok": "v", "warn": "!", "fail": "x", "plain": "-"}

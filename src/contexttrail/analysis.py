@@ -33,6 +33,7 @@ from .util import Cancelled, FlowError, digest, dumps, ident, now
 class AnalysisConfig:
     codex_home: Path | None = None
     claude_home: Path | None = None
+    opencode_home: Path | None = None
     history_limit: int = 50
     unit_chars: int = 60_000
     record_chars: int = 48_000
@@ -287,10 +288,12 @@ class IdAliases:
 
 
 EDIT_TOOLS = EDIT_TOOL_NAMES
-READ_TOOLS = {"Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "web_search", "web__run", "view_image"}
+READ_TOOLS = {"Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "web_search", "web__run", "view_image",
+              # opencode's tools are lowercase
+              "read", "glob", "grep", "list", "webfetch", "websearch", "codesearch", "skill"}
 # Handing work to another agent and waiting for it: neither a run nor an outcome of its own.
 DELEGATE_TOOLS = {"spawn_agent", "wait_agent", "send_message", "followup_task", "list_agents", "close_agent",
-                  "resume_agent", "Agent", "Task", "SendMessage", "TaskStop"}
+                  "resume_agent", "Agent", "Task", "SendMessage", "TaskStop", "task"}
 # Codex's exec tool runs JavaScript that calls these; they only read or look things up.
 READ_INNER_TOOLS = {"web__run", "view_image", "clock__curr_time"}
 READ_COMMANDS = re.compile(r"^\s*(cat|sed -n|grep|rg|ls|head|tail|find|wc|pwd|git (status|diff|log|show))\b")
@@ -306,7 +309,7 @@ def _tool_target(name: str, body: str, cwd: str | None) -> str:
     files = re.findall(r"\*\*\* (?:Update|Add|Delete) File: ([^\s\\\"]+)", body)
     if files:
         return "patch " + ", ".join(dict.fromkeys(relative(f) for f in files))
-    for key in ("file_path", "notebook_path", "path"):
+    for key in ("file_path", "filePath", "notebook_path", "path"):
         found = re.search(rf'"{key}":\s*"([^"]+)"', body)
         if found:
             return relative(found.group(1))
@@ -560,7 +563,7 @@ def call_cap(config: "AnalysisConfig", limit: int | None) -> int:
 
 def session_family(records: list[SourceRecord], wanted: str) -> set[str]:
     """The session a prefix names, and the sub-agent sessions it started (at any depth)."""
-    sessions = {r.session_id for r in records if r.session_id and r.provider in ("codex", "claude")}
+    sessions = {r.session_id for r in records if r.session_id and r.provider in ("codex", "claude", "opencode")}
     found = sorted(s for s in sessions if s.startswith(wanted))
     if not found:
         raise FlowError(tr(f"이 프로젝트 범위의 기록에 세션 {wanted}가 없습니다.",
@@ -1720,7 +1723,8 @@ class Engine:
     def scan(self) -> Snapshot:
         proven = [Path(p) for p in self.store.get_meta("known_worktree_roots", [])]
         source_scope = dataclasses.replace(self.scope, roots=list(dict.fromkeys(self.scope.roots + proven)))
-        logs = collect_logs(source_scope, codex_home=self.config.codex_home, claude_home=self.config.claude_home)
+        logs = collect_logs(source_scope, codex_home=self.config.codex_home, claude_home=self.config.claude_home,
+                            opencode_home=self.config.opencode_home)
         artifacts = collect_git(self.scope, history_limit=self.config.history_limit,
                                 exclude=self.store.get_meta("exports", []))
         self.store.set_meta("known_worktree_roots", [str(p) for p in source_scope.roots])

@@ -10,6 +10,7 @@ from ..git_context import Scope
 from ..i18n import tr
 from ..model import Snapshot, SourceRecord, segment_record
 from ..util import FlowError, digest, ident, within
+from .opencode import opencode_data_dir, opencode_databases, parse_opencode
 
 MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_LINE_BYTES = 4 * 1024 * 1024
@@ -682,7 +683,9 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
     return Snapshot(_segments(result), list(dict.fromkeys(warnings)), [manifest] if manifest else [])
 
 
-def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: Path | None = None) -> Snapshot:
+def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: Path | None = None,
+                 opencode_home: Path | None = None) -> Snapshot:
+    """Every in-scope record of the three tools: Codex and Claude Code JSONL files, the opencode database."""
     codex_home = codex_home or Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
     claude_home = claude_home or Path(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")).expanduser()
     result, warnings, files = {}, [], []
@@ -691,6 +694,14 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
     specs = ((codex_home / "archived_sessions", parse_codex),
              (codex_home / "sessions", parse_codex),
              (claude_dir, parse_claude))
+    def merge(snapshot: Snapshot) -> None:
+        warnings.extend(snapshot.limitations)
+        files.extend(snapshot.files)
+        for record in snapshot.records:
+            previous = result.get(record.source_id)
+            if previous and previous.content_hash != record.content_hash:
+                warnings.append(f"different content under the same native ID: {record.source_id}; the copy found later was kept.")
+            result[record.source_id] = record
     for directory, parser in specs:
         if not directory.is_dir():
             continue
@@ -698,16 +709,11 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
             if path.is_symlink() or not within(path, directory):
                 continue
             if parser is parse_claude:
-                snapshot = parse_claude(path, scope, subagent_link=claude_links.get(str(path)))
+                merge(parse_claude(path, scope, subagent_link=claude_links.get(str(path))))
             else:
-                snapshot = parse_codex(path, scope)
-            warnings.extend(snapshot.limitations)
-            files.extend(snapshot.files)
-            for record in snapshot.records:
-                previous = result.get(record.source_id)
-                if previous and previous.content_hash != record.content_hash:
-                    warnings.append(f"different content under the same native ID: {record.source_id}; the copy found later was kept.")
-                result[record.source_id] = record
+                merge(parse_codex(path, scope))
+    for path in opencode_databases(opencode_data_dir(opencode_home)):
+        merge(parse_opencode(path, scope))
     ordered = sorted(result.values(), key=lambda r: (r.recorded_at or "", r.provider, r.session_id or "",
                                                     r.locator.get("line", 0), r.locator.get("fragment_index", 0), r.source_id))
     return Snapshot(ordered, list(dict.fromkeys(warnings)), files)

@@ -1,6 +1,6 @@
 # opencode 기록 지원과 모델·effort 기록
 
-**상태: 계획. 미구현. 저장소 구조는 이 머신에서 확인했고, 나머지는 확인 필요로 표시했다.**
+**상태: 수집(3절) 구현됨, 2026-10-06, `sources/opencode.py` + `tests/test_opencode_source.py`. 모델·effort 기록(2절)은 미구현.** 확인한 것은 4절 아래에 적었다.
 
 ContextTrail은 지금 Codex와 Claude Code 기록을 읽는다. 여기에 opencode를 세 번째 수집 대상으로 넣는다. 결정된 것은 두 가지다.
 
@@ -11,7 +11,7 @@ ContextTrail은 지금 Codex와 Claude Code 기록을 읽는다. 여기에 openc
 
 ## 1. opencode 저장소 구조 (이 머신에서 확인, 내용은 읽지 않음)
 
-경로: `~/.local/share/opencode/`. 우선순위 `OPENCODE_DATA_DIR` → `$XDG_DATA_HOME/opencode` → `~/.local/share/opencode`로 보이나(2026-10-06, 서드파티 문서 기준) opencode 소스로 확인해야 한다. 이 계획을 포함하는 상위 계획: `docs/plans/SHARED_CONTEXT_STORE.md`.
+경로: `$XDG_DATA_HOME/opencode`, 없으면 `~/.local/share/opencode` (opencode 소스 `packages/core/src/global.ts`가 `xdg-basedir`로 정한다. `OPENCODE_DATA_DIR`는 opencode에 없고 서드파티 도구의 변수였다). DB 파일 이름은 설치 채널에 따라 `opencode.db`(latest·beta·prod) 또는 `opencode-<channel>.db`이고 `OPENCODE_DB`로 바꿀 수 있다(`packages/core/src/database/database.ts`). ContextTrail은 `--opencode-home`(저장 옵션 `opencode_home`)이 가리키는 폴더의 `opencode*.db` 전부와 `OPENCODE_DB`를 읽는다. 이 계획을 포함하는 상위 계획: `docs/plans/SHARED_CONTEXT_STORE.md`.
 
 | 항목 | 내용 |
 | --- | --- |
@@ -101,21 +101,21 @@ DB 테이블: `session`, `message`, `part`, `project`, `project_directory`, `tod
 
 ---
 
-## 4. 확인해야 할 것 (구현 전)
+## 4. 확인한 것 (2026-10-06, opencode 1.18.33 소스와 이 머신의 DB 구조)
 
-1. `variant`가 effort인가, 다른 옵션도 섞이는가(공식 문서).
-2. `tool`, `patch`, `step-finish` 파트의 JSON 구조(값이 아니라 구조만 본다).
-3. 데이터 디렉터리를 바꾸는 환경 변수(`XDG_DATA_HOME` 등).
-4. opencode 실행 중 `mode=ro`로 읽어도 되는지.
-5. Codex `turn_context`, Claude 어시스턴트 레코드에 모델·effort가 실제로 있는지.
-6. `reasoning` 파트를 분석에 보낼지(양과 민감도).
-7. opencode가 하네스가 주입한 텍스트를 어떻게 표시하는지.
+1. `variant`는 모델 변형의 이름이고 공식 문서상 추론 수준(`reasoningEffort`·`thinking`)을 담는 설정 묶음이다(`low`/`high`/`max` 등). effort로 읽되 제공자마다 뜻이 다를 수 있다.
+2. 파트 구조(`packages/schema/src/v1/session.ts`): `tool`은 `callID`·`tool`·`state{status: pending|running|completed|error, input, output|error, metadata, time}`; `patch`는 `hash`·`files[]`; `step-finish`는 `reason`·`cost`·`tokens`·`snapshot`; `text`는 `synthetic`·`ignored`·`metadata` 플래그; `compaction`은 `auto`·`overflow`·`tail_start_id`; `subtask`는 `prompt`·`description`·`agent`; `file`은 `mime`·`filename`·`url`; 그 밖에 `reasoning`, `step-start`, `snapshot`, `agent`, `retry`.
+3. 데이터 폴더는 1절. 환경 변수는 `XDG_DATA_HOME`과 `OPENCODE_DB`뿐.
+4. opencode가 켜진 채로 `mode=ro`로 열어 읽을 수 있고, 읽은 뒤 DB·WAL·SHM의 mtime·해시가 같았다(실제 DB, 합성 WAL DB 테스트).
+5. Codex `turn_context`·Claude 어시스턴트 레코드의 모델·effort: 미확인(2절 구현 때).
+6. `reasoning` 파트는 Codex·Claude와 같이 수집하지 않는다.
+7. 주입 텍스트: 사용자 역할의 `text` 파트에 `synthetic: true`(도구 결과에서 꺼낸 첨부), `ignored: true`(모델에 보내지 않은 텍스트), `metadata.compaction_continue: true`(자동 압축 뒤 opencode가 쓰는 후속 메시지)로 표시된다. 셋 다 `metadata` 레코드로 다룬다. 압축은 사용자 메시지의 `compaction` 파트(경계) 다음에 `summary: true`인 어시스턴트 메시지(요약)로 남고, 이전 메시지는 DB에 그대로 있다. 하위 에이전트는 `session.parent_id`와 부모의 `task` 도구 `metadata.sessionId`로 잇는다. `user` 메시지의 `summary`는 그 턴의 파일 diff 목록이지 압축 요약이 아니다.
 
 ## 5. 단계
 
-1. 4절의 확인. 기존 두 파서에 `authoring`을 먼저 넣는다(해시 불변 테스트 포함).
-2. `sources/opencode.py`와 합성 DB 테스트.
-3. 범위 귀속·하위 에이전트·압축 경계 테스트, 읽기 전용 테스트(파일 변경 없음).
-4. `scan`/`analyze --session`으로 opencode 세션을 계획에 포함(모델 호출은 소유자 동의 뒤).
-5. 화면·브라우저·`find`/`show`에 모델·effort 표시.
-6. README, `docs/SECURITY.md`, CLAUDE.md 갱신.
+1. ~~4절의 확인.~~ 끝. `authoring`은 뒤로 미뤘다(상위 계획 3절: 먼저 기록이 그래프에 들어가는 것이 목표).
+2. ~~`sources/opencode.py`와 합성 DB 테스트.~~ 끝.
+3. ~~범위 귀속·하위 에이전트·압축 경계 테스트, 읽기 전용 테스트(파일 변경 없음).~~ 끝.
+4. ~~`scan`으로 opencode 세션을 계획에 포함.~~ 끝(이 저장소: 11개 중 4개 세션, 1,936 레코드, 0.4초). `analyze --session current`는 opencode가 셸에 세션 ID 환경 변수를 주는지 확인하지 못해 아직 Codex·Claude만 된다.
+5. 화면·브라우저·`find`/`show`에 모델·effort 표시 — 미구현(2절과 함께).
+6. ~~README, `docs/SECURITY.md`, CLAUDE.md 갱신.~~ 끝.

@@ -9,6 +9,7 @@
 - 로그: 범위가 맞는 기록만 AI 입력에 선택한다. 완전한 JSONL 행까지 snapshot을 고정하고 변경 경쟁·손상·알 수 없는 형식을 표시한다. account의 무관한 대화를 모델에 보내 분류하지 않는다.
 - Git: shell 문자열이 아닌 인자 배열, 읽기 연산만 사용한다. inherited `GIT_*`, external diff, textconv, fsmonitor, pager, hooks 경로를 제한한다. Git objects/refs/index/config를 수정하지 않는다.
 - Sidecar: 명시적으로 참조되고 허용 디렉터리 안에 있는 tool-result만 읽는다. arbitrary ReadRequest 경로는 허용하지 않는다.
+- opencode: 데이터 폴더의 `opencode*.db`를 `mode=ro`·`query_only`로 열고 `session`·`message`·`part` 세 테이블만 질의한다. 같은 파일의 계정·자격 테이블(`account`, `credential` 등)과 `auth.json`은 이름조차 질의에 넣지 않으며, 테스트가 이를 고정한다(`tests/test_opencode_source.py`). 세션의 범위 귀속은 기록된 `directory`로만 한다. 읽기 뒤 DB·WAL·SHM의 mtime과 해시가 같음을 합성 DB와 실제 DB에서 확인했다(2026-10-06). opencode의 `tool-output/`에 있는 잘린 출력 전문은 읽지 않는다.
 - 처리: 근거 존재·내용 hash·인용 줄·발췌 일치·상태 enum·참조·source snapshot·graph version을 검증한다. observed 성공/실패에는 원래 tool_result가 필요하다. 이것만으로 의미적 주장이 옳음을 보증하지 않는다.
 - 주변 문맥: 같은 worktree에서 시각이 15분 이내인 반대 출처(Git/대화)의 기록을 최대 4개 우선 제공할 수 있다. 이 기록은 `context_only`이며 시간 근접성은 인과관계나 동일 작업의 증거가 아니다. 다른 worktree의 기록은 이 규칙으로 추가하지 않는다.
 - 시점 제한: WorkUnit 이후의 같은 세션 기록과 시각상 미래의 교차 출처 기록은 원문 manifest와 추가 읽기 목록에서 제외한다. 고정 revision 파일의 조회 허용 목록도 같은 범위로 제한한다.

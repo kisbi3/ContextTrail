@@ -2,6 +2,11 @@
 
 All notable changes to ContextTrail are listed here, newest first. Dates are the dates the change landed on `main`. Measurements behind each entry are in `docs/plans/PERFORMANCE_PLAN.md` and `docs/DECISIONS.md`.
 
+## Unreleased
+
+### Added
+- **opencode as a third log source.** `sources/opencode.py` reads the opencode SQLite database (`$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`, override with `--opencode-home`; every `opencode*.db` and `OPENCODE_DB`) read-only, from the `session`, `message` and `part` tables only. Sessions are attributed by their recorded directory, sub-agent sessions keep their parent and the `task` call that started them, a compaction becomes a work-unit boundary followed by its summary, `synthetic`/`ignored` text and attachments are metadata, reasoning is never collected. `scan` counts records per source. On this repository the real database (4 of 11 sessions in scope, 1,936 records) parsed in 0.4 s and its files were unchanged afterwards.
+
 ## 0.1.0a5 – 2026-10-06
 
 First release under the `contexttrail` name on PyPI.
