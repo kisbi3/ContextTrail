@@ -61,6 +61,10 @@ Prompts in `src/contexttrail/prompts/` are written in English. Validation messag
 
 See [`SECURITY.md`](SECURITY.md). Please do not open a public issue for a vulnerability.
 
+## Releases
+
+Maintainers cut releases as described in [`docs/guides/RELEASING.md`](docs/guides/RELEASING.md): a version bump, a tag, and the `publish` workflow, which uploads to PyPI through Trusted Publishing.
+
 ## License
 
 By contributing you agree that your contribution is licensed under the [MIT License](LICENSE).

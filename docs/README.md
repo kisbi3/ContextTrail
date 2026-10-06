@@ -14,6 +14,7 @@ GitHub에 공개하는 사용자 문서와 검증 기록을 정리했다. 실제
 - [Studio 실행 그래프](guides/STUDIO_ARCHITECTURE.md): CLI와 Studio가 공유하는 실제 분석 흐름, 단계별 출력, 실행 모드.
 - [LLM Ops](guides/LLM_OPS.md): 호출 기록, 사용량, LangSmith 추적.
 - [모델 계층화와 평가](guides/TIERED_ANALYSIS.md): 모델 역할과 작은 fixture 평가.
+- [릴리스 절차](guides/RELEASING.md): 버전 올리기, 태그, PyPI Trusted Publishing 워크플로.
 
 ## 검증 기록 — 측정한 값의 출처
 
