@@ -476,6 +476,13 @@ def tool_steps(assigned: list[SourceRecord]) -> list[dict]:
 # between are listed as omitted and read with read_records on request. What the person typed,
 # the assistant's words and tool calls (patches included) are always shown whole.
 VIEW_HEAD_CHARS, VIEW_TAIL_CHARS = 2_000, 1_000
+# A record line the model is shown is cut here (a minified file or a one-line JSON result otherwise
+# slips past the head/tail view whole); what is cut is readable by line range, and a quote from the
+# shown part is still an exact substring of the line.
+LINE_CHARS = 1_500
+# A saved quote is the whole cited lines (`EvidenceValidator` canonicalizes partial quotes, keeping the
+# cited part as `focus`); the model is shown the cited part, or the head of the lines, within this.
+SHOWN_QUOTE_CHARS = 300
 # What a read-only call (a file read, a listing, a search) returned is rarely an event of its own:
 # a shorter head and tail, the rest on request.
 READ_HEAD_CHARS, READ_TAIL_CHARS = 400, 200
@@ -500,13 +507,29 @@ def _view(record: SourceRecord, head_chars: int = VIEW_HEAD_CHARS,
     return (head, tail) if tail - head > 1 and tail <= len(lines) else None
 
 
+def shown_line(text: str) -> str:
+    """A record line as the model sees it: whole up to LINE_CHARS, then cut with a note."""
+    if len(text) <= LINE_CHARS:
+        return text
+    return text[:LINE_CHARS] + f" [cut: {len(text) - LINE_CHARS} more characters on this line; the quote must come from the part shown]"
+
+
+def shown_quote(quote: str, focus: list[list[int]] | None) -> str:
+    """The part of a canonical quote the model is shown: the longest cited piece, else the head of the lines."""
+    if len(quote) <= SHOWN_QUOTE_CHARS:
+        return quote
+    pieces = sorted((quote[a:b] for a, b in (focus or []) if 0 <= a < b <= len(quote)), key=len, reverse=True)
+    piece = pieces[0] if pieces else quote[:SHOWN_QUOTE_CHARS]
+    return piece[:SHOWN_QUOTE_CHARS]
+
+
 def unit_cost(record: SourceRecord) -> int:
     """Characters this record puts into a unit's input."""
     view = _view(record)
-    if view is None:
-        return len(record.content)
     lines = record.content.splitlines()
-    return sum(len(line) + 1 for line in lines[:view[0]] + lines[view[1] - 1:]) + 120
+    if view is None:
+        return sum(min(len(line), LINE_CHARS + 90) + 1 for line in lines)
+    return sum(min(len(line), LINE_CHARS + 90) + 1 for line in lines[:view[0]] + lines[view[1] - 1:]) + 120
 
 
 def _shown(record: SourceRecord, harness: "Harness", *, read: bool = False) -> dict:
@@ -938,23 +961,43 @@ def _rehydrate(pool: dict[str, SourceRecord], provided: dict[str, list[tuple[int
         provided[source_id] = [(i["start_line"], i["end_line"]) for i in items]
 
 
-def candidate_quotes(candidates: dict) -> set[tuple[str, int, int, str]]:
-    """Every citation the candidates carry, as (source_id, start_line, end_line, quote)."""
+CANDIDATE_SECTIONS = ("event_candidates", "edge_candidates", "open_items", "existing_event_matches")
+
+
+def candidate_quotes(candidates: dict) -> set[tuple[str, int, int]]:
+    """The lines every citation the candidates carry points at, as (source_id, start_line, end_line)."""
     found = set()
-    for key in ("event_candidates", "edge_candidates", "open_items", "existing_event_matches"):
+    for key in CANDIDATE_SECTIONS:
         for item in candidates.get(key, []):
             for cite in item.get("evidence") or []:
                 if isinstance(cite, dict) and cite.get("quote"):
-                    found.add((cite.get("source_id"), cite.get("start_line"), cite.get("end_line"), cite["quote"]))
+                    found.add((cite.get("source_id"), cite.get("start_line"), cite.get("end_line")))
     return found
 
 
+def candidates_for_model(candidates: dict, evidence: dict[str, dict]) -> dict:
+    """The validated candidates with each citation's quote shown as `shown_quote` (the cited part of the lines).
+
+    The checks canonicalized every quote to its whole lines, which for a long line means the whole
+    line; the model only needs the part that was cited, and a quote it copies from there still
+    resolves to the same lines. The code keeps the canonical candidates."""
+    focus = {(item["source_id"], item["start_line"], item["end_line"]): item.get("focus") for item in evidence.values()}
+    view = dict(candidates)
+    for key in CANDIDATE_SECTIONS:
+        view[key] = [{**item, "evidence": [
+            {**cite, "quote": shown_quote(cite["quote"], focus.get((cite.get("source_id"), cite.get("start_line"), cite.get("end_line"))))}
+            if isinstance(cite, dict) and isinstance(cite.get("quote"), str) else cite
+            for cite in item.get("evidence") or []]} if "evidence" in item else item
+            for item in candidates.get(key, [])]
+    return view
+
+
 def _prompt_evidence(evidence: dict[str, dict], context_only: list[dict] | None = None,
-                     quoted: set[tuple[str, int, int, str]] | None = None) -> dict[str, dict]:
+                     quoted: set[tuple[str, int, int]] | None = None) -> dict[str, dict]:
     """Send citation substance without repeating filesystem/source metadata per quote.
 
-    A quote whose lines are all in `context_only`, or that a candidate in the same request already
-    carries (`quoted`), is marked rather than repeated."""
+    A quote whose lines are all in `context_only`, or whose lines a candidate in the same request
+    already cites (`quoted`), is marked rather than repeated; the rest is shown as `shown_quote`."""
     visible_lines: dict[str, set[int]] = {}
     for item in context_only or []:
         visible_lines.setdefault(item["source_id"], set()).update(line["line"] for line in item["lines"])
@@ -969,10 +1012,12 @@ def _prompt_evidence(evidence: dict[str, dict], context_only: list[dict] | None 
         if all(line in visible_lines.get(item["source_id"], set())
                for line in range(item["start_line"], item["end_line"] + 1)):
             compact["quote_in_context_only"] = True
-        elif quoted and (item["source_id"], item["start_line"], item["end_line"], item["quote"]) in quoted:
+        elif quoted and (item["source_id"], item["start_line"], item["end_line"]) in quoted:
             compact["quote_in_candidates"] = True
         else:
-            compact["quote"] = item["quote"]
+            compact["quote"] = shown_quote(item["quote"], item.get("focus"))
+            if len(compact["quote"]) < len(item["quote"]):
+                compact["quote_is_part_of_lines"] = True
         result[evidence_id] = compact
     return result
 
@@ -1032,7 +1077,7 @@ class Harness:
         self.dependencies[source_id] = record.content_hash
         result = record.metadata()
         result.pop("locator")
-        result["lines"] = [{"line": n, "text": lines[n - 1]} for n in range(start, end + 1)]
+        result["lines"] = [{"line": n, "text": shown_line(lines[n - 1])} for n in range(start, end + 1)]
         return result
 
     def nearest_lines(self, source_id: str, quote: str, limit: int = NEAREST_LINES) -> list[dict]:
@@ -1698,7 +1743,9 @@ REVIEW_INSTRUCTION = REVIEW_CHECKS + ("Return the complete corrected GraphDelta 
 SHOWN_WITHOUT_EVIDENCE = ("An added item shown as {id, candidate: unchanged} is the candidate of that id exactly as "
                           "given; a candidate_resolution or change_attribution shown without evidence has its "
                           "candidate's own evidence, in validated_candidates; a candidate_evidence entry marked "
-                          "quote_in_candidates has its quote in the candidate that cites those lines. ")
+                          "quote_in_candidates has its quote in the candidate that cites those lines; a quote marked "
+                          "quote_is_part_of_lines is the cited part of longer lines, and a candidate's quote may be "
+                          "such a part: cite it as shown. ")
 # The patch-mode review judges the proposal on the candidates, their evidence and the existing events; the
 # records' context and the manifest, which the integration read, are not sent a third time.
 REVIEW_OMITTED = ("context_only", "manifest")
@@ -1965,7 +2012,7 @@ class Engine:
         validator.check_extraction(output, unit["id"], snapshot_id, graph)
         if any(output[k] for k in ("event_candidates", "edge_candidates", "existing_event_matches", "open_items")):
             data = {"base_graph_version": graph["version"], "snapshot_id": snapshot_id,
-                    "validated_candidates": output,
+                    "validated_candidates": candidates_for_model(output, extracted["evidence"]),
                     "candidate_evidence": _prompt_evidence(extracted["evidence"], quoted=candidate_quotes(output)),
                     "assigned_source_ids": unit["sources"], **model_context(context)}
             if self.config.integrate_evidence == "reuse":
