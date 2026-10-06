@@ -683,17 +683,34 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
     return Snapshot(_segments(result), list(dict.fromkeys(warnings)), [manifest] if manifest else [])
 
 
+def source_homes(codex_home: Path | None = None, claude_home: Path | None = None,
+                 opencode_home: Path | None = None) -> tuple[Path, Path, Path]:
+    """The three tools' directories: as given, else from each tool's own environment variable, else its default."""
+    codex_home = codex_home or Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+    claude_home = claude_home or Path(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")).expanduser()
+    return codex_home, claude_home, opencode_data_dir(opencode_home)
+
+
+def jsonl_files(codex_home: Path, claude_home: Path) -> list[tuple[Path, str]]:
+    """Every transcript file with its provider, in collection order; symlinks and escapes are skipped."""
+    found: list[tuple[Path, str]] = []
+    for directory, provider in ((codex_home / "archived_sessions", "codex"), (codex_home / "sessions", "codex"),
+                                (claude_home / "projects", "claude")):
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.rglob("*.jsonl")):
+            if not path.is_symlink() and within(path, directory):
+                found.append((path, provider))
+    return found
+
+
 def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: Path | None = None,
                  opencode_home: Path | None = None) -> Snapshot:
     """Every in-scope record of the three tools: Codex and Claude Code JSONL files, the opencode database."""
-    codex_home = codex_home or Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
-    claude_home = claude_home or Path(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")).expanduser()
+    codex_home, claude_home, opencode_home = source_homes(codex_home, claude_home, opencode_home)
     result, warnings, files = {}, [], []
     claude_dir = claude_home / "projects"
     claude_links = _claude_subagent_links(claude_dir) if claude_dir.is_dir() else {}
-    specs = ((codex_home / "archived_sessions", parse_codex),
-             (codex_home / "sessions", parse_codex),
-             (claude_dir, parse_claude))
     def merge(snapshot: Snapshot) -> None:
         warnings.extend(snapshot.limitations)
         files.extend(snapshot.files)
@@ -702,17 +719,12 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
             if previous and previous.content_hash != record.content_hash:
                 warnings.append(f"different content under the same native ID: {record.source_id}; the copy found later was kept.")
             result[record.source_id] = record
-    for directory, parser in specs:
-        if not directory.is_dir():
-            continue
-        for path in sorted(directory.rglob("*.jsonl")):
-            if path.is_symlink() or not within(path, directory):
-                continue
-            if parser is parse_claude:
-                merge(parse_claude(path, scope, subagent_link=claude_links.get(str(path))))
-            else:
-                merge(parse_codex(path, scope))
-    for path in opencode_databases(opencode_data_dir(opencode_home)):
+    for path, provider in jsonl_files(codex_home, claude_home):
+        if provider == "claude":
+            merge(parse_claude(path, scope, subagent_link=claude_links.get(str(path))))
+        else:
+            merge(parse_codex(path, scope))
+    for path in opencode_databases(opencode_home):
         merge(parse_opencode(path, scope))
     ordered = sorted(result.values(), key=lambda r: (r.recorded_at or "", r.provider, r.session_id or "",
                                                     r.locator.get("line", 0), r.locator.get("fragment_index", 0), r.source_id))

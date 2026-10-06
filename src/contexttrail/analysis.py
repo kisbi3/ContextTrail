@@ -15,6 +15,7 @@ from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from .freshness import INDEX_KEY, build_index
 from .git_context import Scope, collect_git, git
 from .i18n import tr
 from .langsmith_trace import LangSmithTracer
@@ -1728,6 +1729,9 @@ class Engine:
         artifacts = collect_git(self.scope, history_limit=self.config.history_limit,
                                 exclude=self.store.get_meta("exports", []))
         self.store.set_meta("known_worktree_roots", [str(p) for p in source_scope.roots])
+        # What this scan saw, so `status` and `find` can count what changed since without parsing everything.
+        self.store.set_meta(INDEX_KEY, build_index(source_scope, logs, codex_home=self.config.codex_home,
+                                                   claude_home=self.config.claude_home, opencode_home=self.config.opencode_home))
         return Snapshot(logs.records + artifacts.records, list(dict.fromkeys(logs.limitations + artifacts.limitations)), logs.files)
 
     def resolve_language(self, snapshot: Snapshot) -> str:

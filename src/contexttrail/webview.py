@@ -11,6 +11,8 @@ from urllib.parse import parse_qs, quote, urlsplit
 from .agent_view import reference
 from .i18n import language, tr
 from .render import RELATION, evidence_excerpt, mermaid, status_labels, svg
+from .freshness import check_from_store
+from .freshness import summary as freshness_summary
 from .store import Store
 from .util import FlowError, dumps
 
@@ -45,8 +47,9 @@ def page_html(text: str, lang: str | None = None) -> str:
 
 
 class LocalViewer:
-    def __init__(self, store: Store, refresh=None, *, port: int = 8765):
-        self.store, self.refresh_callback = store, refresh
+    def __init__(self, store: Store, refresh=None, *, port: int = 8765, scope=None):
+        self.store, self.refresh_callback, self.scope = store, refresh, scope
+        self._fresh: tuple[int, str] | None = None
         self.token = secrets.token_urlsafe(32)
         self.refresh_thread = None
         self.refresh_lock = threading.Lock()
@@ -58,6 +61,14 @@ class LocalViewer:
     @property
     def port(self) -> int:
         return self.server.server_address[1]
+
+    def freshness(self, version: int) -> str:
+        """What the graph does not hold yet, counted once per graph version; empty without a scope."""
+        if self.scope is None:
+            return ""
+        if self._fresh is None or self._fresh[0] != version:
+            self._fresh = (version, freshness_summary(check_from_store(self.scope, self.store)))
+        return self._fresh[1]
 
     def url(self, version: int | None = None, event_id: str | None = None) -> str:
         fragment = "token=" + quote(self.token)
@@ -119,8 +130,9 @@ class LocalViewer:
                 try:
                     graph = self.graph()
                     if path == "/graph":
+                        refreshing = bool(viewer.refresh_thread and viewer.refresh_thread.is_alive())
                         return self.send_data(200, {"graph": graph, "last_check": viewer.store.get_meta("last_check", {}),
-                            "refreshing": bool(viewer.refresh_thread and viewer.refresh_thread.is_alive()),
+                            "freshness": "" if refreshing else viewer.freshness(graph["version"]), "refreshing": refreshing,
                             "refresh_result": viewer.refresh_result, "can_refresh": viewer.refresh_callback is not None})
                     if path == "/graph.svg":
                         return self.send_data(200, svg(graph), "image/svg+xml; charset=utf-8")

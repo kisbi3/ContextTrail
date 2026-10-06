@@ -1,6 +1,6 @@
 # 세 도구가 같이 쓰는 프로젝트 기억 — Claude Code · Codex · opencode
 
-**상태: 2026-10-06 작성. A(opencode 입력) 구현됨. 나머지 미구현.** 외부 도구의 형식은 공식 문서에서 확인한 것과 확인 필요로 표시한 것을 나눴다(9절). 진행 기록은 12절.
+**상태: 2026-10-06 작성. A(opencode 입력)·B1(신선도) 구현됨. 나머지 미구현.** 외부 도구의 형식은 공식 문서에서 확인한 것과 확인 필요로 표시한 것을 나눴다(9절). 진행 기록은 12절.
 
 ## 0. 한 문장
 
@@ -20,7 +20,7 @@ ContextTrail을 "지난 일을 보여 주는 도구"에서 **"도구가 아니�
 | opencode 기록 입력 | 있음(2026-10-06) | `sources/opencode.py`. 설계와 확인한 사실은 `OPENCODE_SOURCE.md` |
 | Claude Code·Codex 스킬 설치 | 있음 | `agent_commands.py`: `~/.claude/skills`, `~/.agents/skills`, `~/.codex/prompts` |
 | **opencode 스킬·명령 설치** | **없음** | 단, opencode는 `~/.claude/skills`·`~/.agents/skills`를 스스로 읽는다(5절) |
-| **그래프가 오래됐는지 아는 방법** | **약함** | `find` 첫 줄의 `분석 기준` 시각뿐. 그 뒤 세션이 몇 개 쌓였는지는 `scan`을 돌려야 안다 |
+| 그래프가 오래됐는지 아는 방법 | 있음(2026-10-06) | `status`, `find` 첫 줄, TUI·브라우저 상단: 마지막 scan 기준 미분석 기록 수 + scan 이후 세션·기록 수(바뀐 파일만 파싱). `freshness.py` |
 | **세션이 끝나면 저절로 갱신** | **없음** | 분석은 명시적 요청에만 돈다(불변식) |
 | 스킬의 Runner | Codex 고정 | Claude Runner가 생긴 뒤에도 스킬 문구는 "Codex only"(6절) |
 | 어떤 모델·effort가 그 기록을 만들었는지 | 없음 | `OPENCODE_SOURCE.md` 2절 |
@@ -49,6 +49,8 @@ ContextTrail을 "지난 일을 보여 주는 도구"에서 **"도구가 아니�
 ## 4. 단계 B — 신선도
 
 ### B1. 얼마나 오래됐는지 보여 주기 (모델 호출 없음)
+
+**구현됨(2026-10-06, `freshness.py`).** 전체 파싱이 47초라 아래의 "비용을 먼저 잰다"의 두 번째 길을 택했다: `Engine.scan`이 파일 색인(`source_index`: 파일별 읽은 길이·mtime, opencode는 범위 안 세션의 `time_updated`)을 저장하고, `status`·`find`는 새로 생기거나 바뀐 파일만 파싱해 저장소에 없는 레코드를 센다. 값은 둘이다: 마지막 scan 기준 미분석 기록 수(저장소에서), scan 이후 세션·기록 수(바뀐 파일에서). `find`는 바뀐 파일이 128 MB를 넘으면 파싱하지 않고 파일 수만 말한다. 이 저장소에서 `status` 0.9초(그중 확인 0.28초). 대기 작업 단위 수는 계획을 세워야 나오므로(전체 파싱 필요) 넣지 않았다. 하위 에이전트 파일만 바뀐 경우는 부모 연결 검증 없이는 세지 않는다(다음 scan에서 잡힌다).
 
 - 새 명령 `contexttrail status [folder]`: 그래프 버전·분석 기준 시각과 함께 **마지막 분석 뒤에 쌓인 것**을 센다 — 소스별 세션 수, 기록 수, 가장 최근 기록 시각, 대기 중인 작업 단위 수(`Engine.preview_plan`의 값). `--json` 지원.
 - `find`의 첫 줄(`ContextTrail · graph vN (status) · analyzed as of …`)에 같은 값을 짧게 붙인다: `· 3 sessions not analyzed (newest 2h ago)`. 0이면 `· up to date`.
@@ -144,4 +146,5 @@ B2를 마지막에 둔 이유: 돈이 드는 분석을 사람이 모르게 띄�
 
 ## 12. 진행 기록
 
+- 2026-10-06 B1 완료: `freshness.py`(`build_index`·`check`·`summary`·`status_lines`), `contexttrail status [--json]`, `find` 첫 줄과 `--json`의 `freshness`, TUI 1행과 브라우저 상태줄(그래프 버전당 한 번 계산), context 스킬의 규칙 한 줄. 테스트 465개.
 - 2026-10-06 A 완료: `sources/opencode.py`, `collect_logs(opencode_home=)`, `AnalysisConfig.opencode_home`, `--opencode-home`, `scan`의 소스별 개수, 도구 이름 표(`edit`/`write`/`read`/`bash`/`task`), `render.PROVIDER`, 평가 fixture의 provider 허용. 테스트 459개 통과. 9절 1·6·7 확인.

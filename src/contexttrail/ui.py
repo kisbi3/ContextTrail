@@ -18,6 +18,9 @@ from .render import (ASCII_MARK, MARK, event_detail, linked_events, status_label
                      terminal_graph)
 from .agent_view import reference
 from .analysis import plan_choices_text, plan_text
+from .freshness import check_from_store
+from .freshness import summary as freshness_summary
+from .git_context import Scope
 from .store import Store
 from .util import FlowError, cell_slice, safe_text
 from .webview import LocalViewer
@@ -886,8 +889,8 @@ class TerminalApp:
 
     def __init__(self, store: Store, analyze: Callable, *, title: str, initial_analyze: bool = False,
                  ascii_only: bool = False, authorize: Callable | None = None, color: bool = True,
-                 mouse: bool = True):
-        self.store, self.analyze, self.authorize = store, analyze, authorize
+                 mouse: bool = True, scope: Scope | None = None):
+        self.store, self.analyze, self.authorize, self.scope = store, analyze, authorize, scope
         self.title, self.initial, self.ascii_only, self.color = title, initial_analyze, ascii_only, color
         self.mouse = mouse
         self.cancel = threading.Event()
@@ -904,6 +907,15 @@ class TerminalApp:
         self._token_checked_at = 0.0
         self._token_totals = (0, 0, 0)
         self._check = {}
+        self._fresh: tuple[int, str] | None = None
+
+    def _freshness(self, version: int) -> str:
+        """What the graph does not hold yet, counted once per graph version (changed files are parsed up to a budget)."""
+        if self.scope is None:
+            return ""
+        if self._fresh is None or self._fresh[0] != version:
+            self._fresh = (version, freshness_summary(check_from_store(self.scope, self.store)))
+        return self._fresh[1]
 
     @staticmethod
     def _idle_notice() -> str:
@@ -1019,8 +1031,9 @@ class TerminalApp:
                   curses.A_BOLD | styles["frame"])
         none = tr("없음", "none")
         analyzed, checked, state = graph.get("analyzed_at") or none, check.get("at", none), check.get("status", "no_data")
+        fresh = "" if self.busy() or self.scope is None else "   ·   " + self._freshness(graph["version"])
         self._put(screen, 1, 1, tr(f"분석 기준 {analyzed}   ·   마지막 확인 {checked} ({state})",
-                                   f"analyzed as of {analyzed}   ·   last check {checked} ({state})"), styles["dim"])
+                                   f"analyzed as of {analyzed}   ·   last check {checked} ({state})") + fresh, styles["dim"])
         # Before anything happens in this session, a failed last check says why.
         idle = not self.busy() and self.notice == self._idle_notice()
         self._put(screen, 2, 1, tr("마지막 확인 오류: ", "Last check error: ") + check["error"]
@@ -1042,7 +1055,7 @@ class TerminalApp:
 
     def show_browser(self, screen):
         if not self.viewer:
-            self.viewer = LocalViewer(self.store, refresh=lambda: self.analyze(self.cancel, lambda _: None)).start()
+            self.viewer = LocalViewer(self.store, refresh=lambda: self.analyze(self.cancel, lambda _: None), scope=self.scope).start()
         address = self.viewer.url(self.graph["version"], self.selected_id())
         rows, cols = screen.getmaxyx()
         screen.erase()

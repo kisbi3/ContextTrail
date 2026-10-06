@@ -19,6 +19,8 @@ from .diagram import flow_diagram
 from .evaluation import call_timeline, run_eval, summarize_calls
 from .eval_review import render_eval_review
 from .input_preview import preview_eval
+from .freshness import check, check_from_store, status_lines
+from .freshness import summary as freshness_summary
 from .git_context import Scope
 from . import i18n
 from .i18n import tr
@@ -152,6 +154,10 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("folder", nargs="?", default=".", help=tr("프로젝트 경로 또는 eval 출력 디렉터리", "Project path or eval output directory"))
     sub.add_argument("--no-mouse", action="store_true", help=tr("터미널 화면에서 마우스를 쓰지 않음(터미널의 글자 선택 사용)",
                                                                "No mouse on the terminal screen (use the terminal's own text selection)"))
+    sub = commands.add_parser("status", help=tr("그래프가 기록에 비해 얼마나 오래됐는지: 미분석 기록 수와 마지막 scan 이후 변화. AI 호출 없음",
+                                                "How far the graph lags the transcripts: unanalyzed records and changes since the last scan; no AI calls"))
+    sub.add_argument("folder", nargs="?", default=".")
+    sub.add_argument("--json", action="store_true")
     sub = commands.add_parser("find", help=tr("저장된 사건 검색(검색어 없으면 최근 사건과 열린 항목). AI 호출 없음",
                                               "Search saved events (recent events and open items without a query); no AI calls"))
     sub.add_argument("query", nargs="?", default="", help=tr("제목·설명·원문 근거에 모두 들어 있어야 할 단어들", "Words that must all appear in the title, summary or quoted evidence"))
@@ -350,7 +356,23 @@ def _find(args) -> int:
     store = Store(scope.state_dir, scope.id)
     _screen_language(None, store)
     result = find(store.graph(), args.query, store.evidence_many, limit=max(1, args.limit))
+    # The header says what the graph does not hold yet; changed files are parsed up to a byte budget.
+    fresh = check_from_store(scope, store)
+    result["freshness"] = fresh
+    result["freshness_text"] = freshness_summary(fresh)
     print(dumps(result, pretty=True) if args.json else "\n".join(find_text(result)))
+    return 0
+
+
+def _status(args) -> int:
+    scope = Scope.resolve(args.folder)
+    store = Store(scope.state_dir, scope.id)
+    _screen_language(None, store)
+    options = store.get_meta("options", {}) or {}
+    homes = {key: Path(options[key]) for key in ("codex_home", "claude_home", "opencode_home") if options.get(key)}
+    result = check(scope, store, budget_bytes=None, **homes)
+    result["summary"] = freshness_summary(result)
+    print(dumps(result, pretty=True) if args.json else "\n".join(status_lines(result, Path(args.folder))))
     return 0
 
 
@@ -509,6 +531,8 @@ def main(argv: list[str] | None = None) -> int:
             return _graph(args)
         if args.command == "find":
             return _find(args)
+        if args.command == "status":
+            return _status(args)
         if args.command == "show":
             return _show(args)
         if args.command == "demo":
@@ -525,7 +549,8 @@ def main(argv: list[str] | None = None) -> int:
                 plain(store, ascii_only=args.ascii)
             else:
                 TerminalApp(store, lambda cancel, update: engine.analyze(FixtureRunner, cancel=cancel, update=update),
-                            title=tr("합성 fixture / Mock", "Synthetic fixture / mock"), ascii_only=args.ascii, mouse=not args.no_mouse).run()
+                            title=tr("합성 fixture / Mock", "Synthetic fixture / mock"), ascii_only=args.ascii, mouse=not args.no_mouse,
+                            scope=scope).run()
             return 0 if result["status"] in {"complete", "noop"} else 1
         scope = Scope.resolve(args.folder)
         store = Store(scope.state_dir, scope.id)
@@ -636,7 +661,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "serve":
             cancel = threading.Event()
-            viewer = LocalViewer(store, refresh=lambda: analyze_callback(cancel, lambda _: None), port=args.port).start()
+            viewer = LocalViewer(store, refresh=lambda: analyze_callback(cancel, lambda _: None), port=args.port, scope=scope).start()
             print(tr("PC에서 포트 포워딩:", "Port forwarding from your PC:"))
             print(f"ssh -L 127.0.0.1:{viewer.port}:127.0.0.1:{viewer.port} user@server")
             print(tr("접근 주소 (외부 공유 금지):", "Access URL (do not share):"), viewer.url())
@@ -655,7 +680,7 @@ def main(argv: list[str] | None = None) -> int:
         if use_tui:
             TerminalApp(store, analyze_callback, title=scope.folder.name, initial_analyze=args.command == "analyze",
                         ascii_only=args.ascii, authorize=authorize_ui, color=not args.no_color,
-                        mouse=not args.no_mouse).run()
+                        mouse=not args.no_mouse, scope=scope).run()
             return 0
         if args.command == "analyze":
             result = engine.analyze(factory, consent=consent, update=lambda s: print(s, file=sys.stderr))

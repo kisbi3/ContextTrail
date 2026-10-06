@@ -70,7 +70,7 @@ async function select(id) {
 async function load() {
   const payload=await(await api("/graph")).json(), graph=payload.graph;
   version=String(graph.version||"");$("version").textContent=L.graphVersion(graph.version,graph.analyzed_at);
-  $("status").textContent=(graph.analysis_mode==="synthetic_mock"?L.synthetic:"")+L.lastCheck(payload.last_check.at,payload.last_check.status||graph.analysis_status);
+  $("status").textContent=(graph.analysis_mode==="synthetic_mock"?L.synthetic:"")+L.lastCheck(payload.last_check.at,payload.last_check.status||graph.analysis_status)+(payload.freshness?" · "+payload.freshness:"");
   $("refresh").disabled=!payload.can_refresh||payload.refreshing;
   const text=await(await api("/graph.svg")).text();
   // This endpoint contains host-generated escaped SVG, not LLM HTML. Enforce a second

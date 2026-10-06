@@ -51,7 +51,7 @@ Rules:
 - Answer from the events and quotes, naming the event ids. A change counts as verified only when its status label says so ("verified" / 검증, "observed success" / 관측 성공); "reported done·unverified" / 완료 보고·미검증 means someone said it was done and nothing checked it.
 - If `show` reports that the event changed or disappeared since the cited version, say so and use the current state.
 - Events marked "out-of-order analysis" / 순서 밖 분석 were added before older records were analysed; earlier relations may be missing.
-- If nothing is saved yet, or the question is about work newer than the graph (see "analyzed as of" / `분석 기준` in the first line of `find`), say that an update is needed and that the user can run `{update}`. Do not run `analyze` yourself.
+- The first line of `find` ends with how far the graph lags the transcripts: "up to date", or counts of records not analyzed yet and of sessions since the last scan (`{command} status .` gives the detail; both count, neither estimates). If it is not "up to date", say so in one line before your answer. If the question is about that unanalyzed period, do not answer from the graph: say that an update is needed and that the user can run `{update}`. Do not run `analyze` yourself.
 """
 
 

@@ -262,6 +262,8 @@ def find_text(result: dict) -> list[str]:
     analyzed = _when(result["analyzed_at"])
     lines = [tr(f"ContextTrail · 그래프 v{version} ({status}) · 분석 기준 {analyzed or '없음'} · AI 호출 없음",
                 f"ContextTrail · graph v{version} ({status}) · analyzed as of {analyzed or 'none'} · no AI calls")]
+    if result.get("freshness_text"):
+        lines[0] += " · " + _clean(result["freshness_text"])
     if not result["graph_version"]:
         return lines + [tr("저장된 분석 결과가 없습니다. 분석은 사용자가 `/contexttrail-update`로 요청해야 합니다.",
                            "No saved analysis. The user has to request one with `/contexttrail-update`.")]

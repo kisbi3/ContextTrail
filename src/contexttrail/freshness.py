@@ -1,0 +1,247 @@
+"""How far the saved graph lags behind the transcripts: counted, with no model call and no full re-parse.
+
+Two numbers answer "is this graph current?":
+
+- records the last scan ingested that no analysis has processed yet (from the store alone);
+- records written since the last scan. Parsing every transcript again costs tens of seconds on a
+  machine with a few gigabytes of sessions, so the last scan leaves an index of every transcript
+  file (size, mtime) and of every in-scope opencode session (`time_updated`) in the store, and this
+  check parses only the files that are new or changed. A caller with a time budget (the agent's
+  `find` header) can skip that parse above a byte limit and gets the file count instead.
+
+Nothing here estimates. What was not parsed is reported as not parsed.
+"""
+from __future__ import annotations
+
+import os
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .git_context import Scope
+from .i18n import tr
+from .model import Snapshot
+from .sources.local import jsonl_files, parse_claude, parse_codex, source_homes
+from .sources.opencode import opencode_databases, parse_opencode, session_times
+from .store import Store
+from .util import now
+
+INDEX_KEY = "source_index"
+INDEX_VERSION = 1
+# `find` parses changed files up to this many bytes (about a second and a half at the measured
+# 80 MB/s); `status` has no limit.
+FIND_BUDGET_BYTES = 128 * 1024 * 1024
+UNIT_DONE = {"integrated", "superseded"}
+
+
+def build_index(scope: Scope, snapshot: Snapshot, *, codex_home: Path | None, claude_home: Path | None,
+                opencode_home: Path | None) -> dict[str, Any]:
+    """What the scan saw: each transcript file's size and mtime, each in-scope opencode session's update time.
+
+    A file's size is the length the parser read (its manifest), so a file that grew during the
+    scan still counts as changed next time.
+    """
+    codex_home, claude_home, opencode_home = source_homes(codex_home, claude_home, opencode_home)
+    read = {entry["path"]: entry.get("complete_bytes", entry.get("bytes")) for entry in snapshot.files if entry.get("path")}
+    files: dict[str, dict[str, int]] = {}
+    for path, _ in jsonl_files(codex_home, claude_home):
+        try:
+            info = os.stat(path, follow_symlinks=False)
+        except OSError:
+            continue
+        size = read.get(str(path))
+        files[str(path)] = {"bytes": size if isinstance(size, int) else info.st_size, "mtime_ns": info.st_mtime_ns}
+    databases: dict[str, dict[str, Any]] = {}
+    for path in opencode_databases(opencode_home):
+        databases[str(path)] = {"sessions": session_times(path, scope) or {}}
+    return {"version": INDEX_VERSION, "scanned_at": now(), "files": files, "opencode": databases,
+            "homes": {"codex": str(codex_home), "claude": str(claude_home), "opencode": str(opencode_home)}}
+
+
+def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_home: Path | None = None,
+          opencode_home: Path | None = None, budget_bytes: int | None = None) -> dict[str, Any]:
+    """The lag between the graph and the transcripts, as counts.
+
+    `since_scan.parsed` says whether the changed files were parsed (then `sessions`, `records`,
+    `newest_at` and `by_source` are exact) or only counted against the budget.
+    """
+    started = time.perf_counter()
+    graph = store.graph()
+    index = store.get_meta(INDEX_KEY)
+    sources = store.sources()
+    pending = sum(1 for row in sources.values() if row["available"] and row["processed_hash"] != row["content_hash"])
+    units = sum(1 for unit in store.units() if unit["status"] not in UNIT_DONE)
+    result: dict[str, Any] = {
+        "graph": {"version": graph["version"], "analysis_status": graph.get("analysis_status"),
+                  "analyzed_at": graph.get("analyzed_at")},
+        "scanned_at": index.get("scanned_at") if index else None,
+        "pending": {"records": pending, "units": units},
+        "since_scan": None, "took_ms": 0}
+    if not index:
+        result["took_ms"] = int((time.perf_counter() - started) * 1000)
+        return result
+    codex_home, claude_home, opencode_home = source_homes(codex_home, claude_home, opencode_home)
+    known = index.get("files", {})
+    changed: list[tuple[Path, str]] = []
+    new_files, changed_bytes, newest_mtime = 0, 0, 0
+    for path, provider in jsonl_files(codex_home, claude_home):
+        try:
+            info = os.stat(path, follow_symlinks=False)
+        except OSError:
+            continue
+        before = known.get(str(path))
+        if before and before.get("bytes") == info.st_size and before.get("mtime_ns") == info.st_mtime_ns:
+            continue
+        if not before:
+            new_files += 1
+        changed.append((path, provider))
+        changed_bytes += info.st_size
+        newest_mtime = max(newest_mtime, info.st_mtime_ns)
+    deleted = sum(1 for path in known if not Path(path).exists())
+    databases_changed: list[Path] = []
+    for path in opencode_databases(opencode_home):
+        before = (index.get("opencode", {}).get(str(path)) or {}).get("sessions", {})
+        times = session_times(path, scope)
+        if times is None or any(before.get(session) != stamp for session, stamp in times.items()):
+            databases_changed.append(path)
+            try:
+                changed_bytes += os.stat(path).st_size
+            except OSError:
+                pass
+            if times:
+                newest_mtime = max(newest_mtime, max(times.values()) * 1_000_000)
+    since: dict[str, Any] = {"files_changed": len(changed), "files_new": new_files, "files_deleted": deleted,
+                             "databases_changed": len(databases_changed), "bytes": changed_bytes,
+                             "newest_change_at": _iso_ns(newest_mtime), "parsed": False}
+    result["since_scan"] = since
+    if budget_bytes is not None and changed_bytes > budget_bytes:
+        result["took_ms"] = int((time.perf_counter() - started) * 1000)
+        return result
+    sessions: set[tuple[str, str | None]] = set()
+    by_source: dict[str, int] = {}
+    newest: str | None = None
+    count = 0
+    snapshots = [parse_claude(path, scope) if provider == "claude" else parse_codex(path, scope) for path, provider in changed]
+    snapshots += [parse_opencode(path, scope) for path in databases_changed]
+    for snapshot in snapshots:
+        for record in snapshot.records:
+            row = sources.get(record.source_id)
+            if row and row["content_hash"] == record.content_hash:
+                continue
+            count += 1
+            sessions.add((record.provider, record.session_id))
+            by_source[record.provider] = by_source.get(record.provider, 0) + 1
+            if record.recorded_at and (newest is None or record.recorded_at > newest):
+                newest = record.recorded_at
+    since.update(parsed=True, sessions=len(sessions), records=count, newest_at=newest, by_source=by_source)
+    result["took_ms"] = int((time.perf_counter() - started) * 1000)
+    return result
+
+
+def check_from_store(scope: Scope, store: Store, *, budget_bytes: int | None = FIND_BUDGET_BYTES) -> dict[str, Any] | None:
+    """The check with the project's saved source directories; None when the state cannot be read."""
+    try:
+        options = store.get_meta("options", {}) or {}
+        homes = {key: Path(options[key]) for key in ("codex_home", "claude_home", "opencode_home") if options.get(key)}
+        return check(scope, store, budget_bytes=budget_bytes, **homes)
+    except Exception:  # a locked or half-written state must not take the read path down
+        return None
+
+
+def _iso_ns(nanoseconds: int) -> str | None:
+    if nanoseconds <= 0:
+        return None
+    moment = datetime.fromtimestamp(nanoseconds / 1e9, timezone.utc)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def ago(value: str | None, reference: datetime | None = None) -> str:
+    """`10 min ago`, `2 h ago`, `3 d ago`; empty when there is no time."""
+    if not value:
+        return ""
+    try:
+        then = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    then = then if then.tzinfo else then.replace(tzinfo=timezone.utc)
+    seconds = max(0, int(((reference or datetime.now(timezone.utc)) - then).total_seconds()))
+    if seconds < 90:
+        return tr("방금", "just now")
+    if seconds < 3600:
+        return tr(f"{seconds // 60}분 전", f"{seconds // 60} min ago")
+    if seconds < 36 * 3600:
+        return tr(f"{seconds // 3600}시간 전", f"{seconds // 3600} h ago")
+    return tr(f"{seconds // 86400}일 전", f"{seconds // 86400} d ago")
+
+
+def summary(result: dict[str, Any] | None) -> str:
+    """One phrase for a header: what is not in the graph yet, or `up to date`."""
+    if result is None:
+        return tr("신선도 확인 불가", "freshness unknown")
+    if not result["scanned_at"]:
+        return tr("기록을 아직 scan하지 않음", "transcripts never scanned")
+    parts: list[str] = []
+    pending = result["pending"]["records"]
+    if pending:
+        parts.append(tr(f"마지막 scan 기준 미분석 기록 {pending}개", f"{pending} records not analyzed as of the last scan"))
+    since = result["since_scan"] or {}
+    if since.get("parsed"):
+        if since["records"]:
+            when = ago(since.get("newest_at"))
+            parts.append(tr(f"scan 이후 세션 {since['sessions']}개·기록 {since['records']}개" + (f" (최근 {when})" if when else ""),
+                            f"{since['sessions']} sessions, {since['records']} records since" + (f" (newest {when})" if when else "")))
+    elif since.get("files_changed") or since.get("databases_changed"):
+        changed = since.get("files_changed", 0) + since.get("databases_changed", 0)
+        when = ago(since.get("newest_change_at"))
+        parts.append(tr(f"scan 이후 바뀐 기록 파일 {changed}개 (파싱 안 함" + (f", 최근 {when}" if when else "") + ")",
+                        f"{changed} transcript files changed since the scan (not parsed" + (f", newest {when}" if when else "") + ")"))
+    return " + ".join(parts) if parts else tr("최신", "up to date")
+
+
+def status_lines(result: dict[str, Any], folder: Path) -> list[str]:
+    """The `status` command's screen text."""
+    graph = result["graph"]
+    version, state = graph["version"], graph.get("analysis_status") or "no_data"
+    analyzed = _local(graph.get("analyzed_at"))
+    lines = [tr(f"ContextTrail · 그래프 v{version} ({state}) · 분석 기준 {analyzed or '없음'} · AI 호출 없음",
+                f"ContextTrail · graph v{version} ({state}) · analyzed as of {analyzed or 'none'} · no AI calls")]
+    scanned = result["scanned_at"]
+    if not scanned:
+        lines.append(tr("기록을 아직 scan하지 않았습니다: contexttrail scan . 또는 contexttrail analyze .",
+                        "Transcripts were never scanned: contexttrail scan . or contexttrail analyze ."))
+        return lines
+    pending = result["pending"]
+    lines.append(tr(f"마지막 scan {_local(scanned)} ({ago(scanned)}) · 그때 기준 미분석 기록 {pending['records']}개"
+                    + (f", 작업 단위 {pending['units']}개 대기" if pending["units"] else ""),
+                    f"Last scan {_local(scanned)} ({ago(scanned)}) · {pending['records']} records not analyzed as of then"
+                    + (f", {pending['units']} work units waiting" if pending["units"] else "")))
+    since = result["since_scan"] or {}
+    if since.get("parsed"):
+        if since["records"]:
+            sources = ", ".join(f"{name} {count}" for name, count in sorted(since["by_source"].items()))
+            lines.append(tr(f"scan 이후: 세션 {since['sessions']}개, 기록 {since['records']}개 ({sources}), 최근 {ago(since['newest_at'])} "
+                            f"· 바뀐 파일 {since['files_changed']}개를 {result['took_ms']} ms에 읽음",
+                            f"Since then: {since['sessions']} sessions, {since['records']} records ({sources}), newest {ago(since['newest_at'])} "
+                            f"· {since['files_changed']} changed files read in {result['took_ms']} ms"))
+        else:
+            lines.append(tr(f"scan 이후 새 기록 없음 · 바뀐 파일 {since['files_changed']}개 확인에 {result['took_ms']} ms",
+                            f"Nothing new since · {since['files_changed']} changed files checked in {result['took_ms']} ms"))
+    else:
+        lines.append(tr(f"scan 이후 바뀐 기록 파일 {since.get('files_changed', 0) + since.get('databases_changed', 0)}개 (파싱 안 함)",
+                        f"{since.get('files_changed', 0) + since.get('databases_changed', 0)} transcript files changed since the scan (not parsed)"))
+    if pending["records"] or since.get("records"):
+        lines.append(tr(f"갱신: contexttrail analyze {folder} --units N  (에이전트에서는 /contexttrail-update N)",
+                        f"To update: contexttrail analyze {folder} --units N  (from an agent: /contexttrail-update N)"))
+    else:
+        lines.append(tr("그래프가 기록을 따라잡고 있습니다.", "The graph is up to date with the transcripts."))
+    return lines
+
+
+def _local(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return ""

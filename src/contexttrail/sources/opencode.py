@@ -283,6 +283,27 @@ class _SessionParser:
         self.record(f"{key}:result", "tool_result", text, part, item_cwd, **common, tool_call_id=call_id)
 
 
+def session_times(path: Path, scope: Scope) -> dict[str, int] | None:
+    """`time_updated` of every in-scope session, from the session table alone (no message is read).
+
+    None when the database cannot be read; the caller then treats it as changed.
+    """
+    try:
+        with closing(_connect(path)) as connection:
+            names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "session" not in names:
+                return {}
+            rows = connection.execute("SELECT id, directory, time_updated FROM session").fetchall()
+    except sqlite3.Error:
+        return None
+    found: dict[str, int] = {}
+    for row in rows:
+        directory = _absolute(row["directory"])
+        if directory and not Path(directory).name.startswith(SELF_RUN_PREFIXES) and scope.includes(directory):
+            found[str(row["id"])] = int(row["time_updated"] or 0)
+    return found
+
+
 def parse_opencode(path: Path, scope: Scope) -> Snapshot:
     """Every record of the sessions whose recorded directory lies in the scope, from one database."""
     warnings: list[str] = []

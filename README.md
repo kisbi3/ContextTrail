@@ -4,7 +4,7 @@
 
 **Turns the Codex, Claude Code and opencode sessions already on your machine into an evidence-linked history of a project: what was tried, what failed, what was decided, and what was actually verified.**
 
-ContextTrail reads the transcripts the three tools keep locally (Codex and Claude Code JSONL files, the opencode SQLite database), plus the project's Git history, and asks the Codex or Claude CLI you already have installed (sandboxed, read-only) to reconstruct the flow. Every event and every arrow carries a quote from the source, and the code checks each quote against the record before anything is stored. You get a terminal view, a local browser view, `find`/`show` commands, and two agent skills so Codex and Claude Code can answer "why did we drop X?" from the saved graph instead of from memory.
+ContextTrail reads the transcripts the three tools keep locally (Codex and Claude Code JSONL files, the opencode SQLite database), plus the project's Git history, and asks the Codex or Claude CLI you already have installed (sandboxed, read-only) to reconstruct the flow. Every event and every arrow carries a quote from the source, and the code checks each quote against the record before anything is stored. You get a terminal view, a local browser view, `find`/`show`/`status` commands, and two agent skills so Codex, Claude Code and opencode can answer "why did we drop X?" from the saved graph instead of from memory, and can tell when that graph is behind the transcripts.
 
 Development alpha `0.1.0a5`. Linux and macOS, Python 3.11+. [What has been measured](#6-what-has-been-measured) is further down; nothing on this page is an estimate presented as a result.
 
