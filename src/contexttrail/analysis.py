@@ -228,7 +228,7 @@ CONTEXT_POLICY_VERSION = "relevance_v2"
 # `lean`: earlier work reaches the model as graph (events, edges, quotes) and a few records, not as
 # whole records. Cut finely, a piece's neighbours are already in the graph.
 LEAN_CITED_LINES, LEAN_PREVIOUS_RECORDS, LEAN_CONTEXT_EVENTS = 5, 2, 12
-LEAN_INDEX_RECORDS, LEAN_INDEX_EVENTS, LEAN_INDEX_FILES = 100, 100, 50
+LEAN_INDEX_RECORDS, LEAN_INDEX_EVENTS, LEAN_INDEX_FILES = 100, 60, 50  # the event index is by relevance; it must not grow with the graph
 # Repair hints: a few provided lines per failed quote, ranked by how close they are to it.
 NEAREST_LINES, NEAREST_POOL, NEAREST_LINE_CHARS = 3, 12, 400
 # What the extraction input carries besides the records: short IDs, a tool-step outline
@@ -1005,10 +1005,13 @@ def _prompt_evidence(evidence: dict[str, dict], context_only: list[dict] | None 
     for evidence_id, item in evidence.items():
         source = item["source"]
         compact = {key: item[key] for key in ("id", "source_id", "start_line", "end_line")}
+        # Only what says something: a missing value or the default derivation is left out.
         compact["source"] = {key: source.get(key) for key in
-                             ("provider", "session_id", "role", "recorded_at", "worktree_id", "derivation")}
+                             ("provider", "session_id", "role", "recorded_at", "worktree_id", "derivation")
+                             if source.get(key) not in (None, "", "original")}
         lineage = source.get("lineage") or {}
-        compact["source"]["lineage_kind"] = lineage.get("kind") if isinstance(lineage, dict) else None
+        if isinstance(lineage, dict) and lineage.get("kind"):
+            compact["source"]["lineage_kind"] = lineage["kind"]
         if all(line in visible_lines.get(item["source_id"], set())
                for line in range(item["start_line"], item["end_line"] + 1)):
             compact["quote_in_context_only"] = True
