@@ -13,7 +13,7 @@ Development alpha `0.1.0a5`. Linux and macOS, Python 3.11+. [What has been measu
 ## Try it in a minute, without an AI account
 
 ```bash
-git clone https://github.com/kisbi3/ContextTrail.git && cd ContextTrail && ./install.sh
+pipx install contexttrail                               # or: pip install contexttrail
 contexttrail demo --path /tmp/contexttrail-demo        # synthetic logs + a deterministic mock runner
 ```
 
@@ -174,15 +174,22 @@ Version: `0.1.0a5` · Linux / SSH primary, macOS measured · names are provision
 
 ## 1. Getting Started
 
-Requires Python 3.11+, Git, and a UTF-8 terminal. Python's `curses` module and venv support are needed. On Linux or macOS, clone the repository and run once from the repo root:
+Requires Python 3.11+, Git, and a UTF-8 terminal. Python's `curses` module is needed. From PyPI:
 
 ```bash
-cd /path/to/ContextTrail
-./install.sh
-contexttrail --version
+pipx install contexttrail          # or: pip install contexttrail
+contexttrail install-commands      # adds the Codex and Claude Code skills; existing user files are kept
+ct --version                       # ct is the short alias of contexttrail
 ```
 
-`install.sh` installs the package into `~/.local/share/contexttrail/venv`, links `~/.local/bin/contexttrail` and (where possible) the `project` command, and registers Codex/Claude Code agent commands. Existing user command files are preserved; files created by ContextTrail are updated on reinstall. Package repository access may be required. If `~/.local/bin` is not in `PATH`, follow the instructions printed during installation. Running `pip install` or `pip install git+...` directly does not register agent commands — run `contexttrail install-commands` afterward.
+Or from a clone, which does both steps and links `contexttrail` and `ct` into `~/.local/bin`:
+
+```bash
+git clone https://github.com/kisbi3/ContextTrail.git && cd ContextTrail
+./install.sh
+```
+
+`install.sh` installs into `~/.local/share/contexttrail/venv`. Existing user command files are preserved; files created by ContextTrail are updated on reinstall. If `~/.local/bin` is not in `PATH`, follow the instructions printed during installation.
 
 After installation, running `contexttrail` with no arguments in a project directory opens its saved flow view — equivalent to `contexttrail view .`. AI is called only when you press `R` in the TUI. To open a different directory, pass it as the first argument: `contexttrail /path/to/project`.
 
