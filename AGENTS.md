@@ -22,7 +22,7 @@ Tests use pytest. Add focused `tests/test_*.py` cases named `test_<behavior>` fo
 
 ## Commit & Pull Request Guidelines
 
-This checkout has no Git history, so no established commit convention can be verified. Use short, imperative commit subjects that identify the change. Pull requests should explain the behavior changed, link a relevant issue or design note, include test results, and attach screenshots for UI changes.
+Use short, imperative commit subjects that identify the behaviour changed, as the existing history does. `CONTRIBUTING.md` has the full checklist, including the evaluation required for any change to model-visible input. Pull requests should explain the behavior changed, link a relevant issue or design note, include test results, and attach screenshots for UI changes.
 
 ## Security & Configuration
 
