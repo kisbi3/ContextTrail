@@ -164,6 +164,9 @@ def run_hook(folder: Path | None, *, python: Path | None = None, launcher=None) 
         store = Store(scope.state_dir, scope.id)
         reason, value = decide(scope, store)
         if reason != "run":
+            if reason != "disabled":
+                # Where it is enabled, every quiet decision is one line in the log, so "why not?" has an answer.
+                _log(scope.state_dir / LOG_NAME, f"hook: {reason}")
             return reason, None
         record_start(store)
         pid = (launcher or spawn)(analyze_argv(scope.folder, value, python), scope.state_dir / LOG_NAME, scope.folder)
@@ -279,11 +282,18 @@ def install_claude_hook(home: Path, python: Path | None = None, *, force: bool =
 
 
 def install_codex_hook(home: Path, python: Path | None = None, *, force: bool = False) -> Path:
-    """`Stop` hook in ~/.codex/hooks.json (Codex runs hooks synchronously; the command returns at once)."""
+    """`Stop` hook in ~/.codex/hooks.json: `{"hooks": {"Stop": [...]}}`, the same shape as Claude Code's `hooks` object.
+
+    Codex runs hooks synchronously (the command returns at once) and asks the person to trust a new
+    hooks file in its own UI before running it.
+    """
     path = home / ".codex" / "hooks.json"
     document = _load_json(path, str(path))
+    hooks = document.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        raise FlowError(tr(f"{path}의 hooks가 객체가 아닙니다.", f"hooks in {path} is not an object."))
     entry = {"hooks": [{"type": "command", "command": hook_command(python), "timeout": 30}]}
-    if _merge_hooks(document, "Stop", entry, force=force, where=str(path)):
+    if _merge_hooks(hooks, "Stop", entry, force=force, where=str(path)):
         _write_json(path, document)
     return path
 

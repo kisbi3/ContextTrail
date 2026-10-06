@@ -81,7 +81,7 @@ def test_hook_stays_quiet_during_a_run_when_nothing_is_pending_in_cooldown_and_p
     enable(store, runner="codex", units=2, cooldown=600, max_runs_per_day=2)
     with store.analyze_lock():
         assert decide(scope, store)[0] == "lock_held"
-    moment = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
+    moment = datetime.now(timezone.utc) - timedelta(hours=30)  # in the past, so the real clock below sees no recent run
     assert decide(scope, store, moment=moment)[0] == "run"
     auto_update.record_start(store, moment)
     assert decide(scope, store, moment=moment + timedelta(minutes=5))[0] == "cooldown"
@@ -91,6 +91,8 @@ def test_hook_stays_quiet_during_a_run_when_nothing_is_pending_in_cooldown_and_p
     assert decide(scope, store, moment=moment + timedelta(hours=25))[0] == "run"
     engine.analyze(FixtureRunner)  # nothing pending any more
     assert decide(scope, store, moment=moment + timedelta(hours=25))[0] == "nothing_pending"
+    assert run_hook(folder, launcher=launcher([])) == ("nothing_pending", None)
+    assert "hook: nothing_pending" in (scope.state_dir / "auto-update.log").read_text()
     auto_update.disable(store)
     assert decide(scope, store)[0] == "disabled"
 
@@ -169,8 +171,8 @@ def test_hooks_are_merged_into_the_hosts_files_and_user_entries_survive(tmp_path
     ours = settings["hooks"]["Stop"][1]["hooks"][0]
     assert ours == {"type": "command", "command": "/venv/bin/python -m contexttrail auto-update", "async": True, "timeout": 30}
     codex = json.loads((home / ".codex" / "hooks.json").read_text())
-    assert codex["Stop"][0]["hooks"][0]["command"] == "/venv/bin/python -m contexttrail auto-update"
-    assert "async" not in codex["Stop"][0]["hooks"][0]
+    assert codex["hooks"]["Stop"][0]["hooks"][0]["command"] == "/venv/bin/python -m contexttrail auto-update"
+    assert "async" not in codex["hooks"]["Stop"][0]["hooks"][0]
     plugin = (home / ".config" / "opencode" / "plugins" / "contexttrail.ts").read_text()
     assert 'event.type !== "session.idle"' in plugin and "auto-update --folder ${directory}" in plugin
     # files ContextTrail creates are private; the user's existing settings.json keeps its own mode
