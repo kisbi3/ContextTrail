@@ -11,7 +11,7 @@ ContextTrail은 지금 Codex와 Claude Code 기록을 읽는다. 여기에 openc
 
 ## 1. opencode 저장소 구조 (이 머신에서 확인, 내용은 읽지 않음)
 
-경로: `~/.local/share/opencode/` (환경 변수로 바뀌는지는 미확인).
+경로: `~/.local/share/opencode/`. 우선순위 `OPENCODE_DATA_DIR` → `$XDG_DATA_HOME/opencode` → `~/.local/share/opencode`로 보이나(2026-10-06, 서드파티 문서 기준) opencode 소스로 확인해야 한다. 이 계획을 포함하는 상위 계획: `docs/plans/SHARED_CONTEXT_STORE.md`.
 
 | 항목 | 내용 |
 | --- | --- |

@@ -2,6 +2,10 @@
 
 이 문서는 대화 압축 뒤 이어서 할 일을 모은다. 결정된 내용과 배경은 `docs/DECISIONS.md`의 2026-09-27 항목들에 있다: "에이전트가 CLI로 쓰는 ContextTrail", "분석 속도와 요약", "실패 호출 줄이기", "라이선스 파일". 끝난 항목은 이 문서에서 지우고 DECISIONS에 기록한다.
 
+## 2026-10-06 추가: 세 도구가 같이 쓰는 프로젝트 기억
+
+opencode 입력, 신선도 표시, opencode 설치, Runner 저장, 포지셔닝, 선택적 자동 갱신 훅의 계획은 `docs/plans/SHARED_CONTEXT_STORE.md`에 있다. 2절의 "이름 통일"·"영어 README와 화면 문구"·라이선스는 끝났다(PyPI `contexttrail` 0.1.0a5, 화면·모델 입력 영어화, `docs/DECISIONS.md` 2026-10-06).
+
 ## 현재 상태
 
 - 자동 테스트 363개 통과(2026-09-28 갱신): `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 <venv>/bin/python -m pytest -q`.
