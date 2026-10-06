@@ -11,6 +11,8 @@ import os
 import tempfile
 import threading
 import uuid
+
+from contexttrail.schema import draft_delta
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, TypedDict
@@ -21,7 +23,7 @@ from langsmith import traceable, tracing_context
 
 from contexttrail.analysis import (AnalysisConfig, Engine, IdAliases, PreparedExtraction,
                                   PreparedIntegration, _incomplete_input, _rehydrate,
-                                  build_task, review_signal_items, REVIEW_SIGNALS)
+                                  build_task, integrate_request_data, review_signal_items, REVIEW_SIGNALS)
 from contexttrail.analysis import link_request_turns as analysis_link_request_turns
 from contexttrail.analysis import calibration, call_cap, plan_summary
 from contexttrail.analysis import classify_steps as classify_records
@@ -595,7 +597,10 @@ def prepare_integrate_input(state: StudioState) -> StudioState:
         "context_selection": copy.deepcopy(prepared.harness.selection_audit),
         "base_graph_version": prepared.graph_version,
         "validated_candidate_count": len(prepared.data["validated_candidates"]["event_candidates"]),
-        "request": IdAliases().wire(build_task("integrate", prepared.data, engine.config.output_language)),
+        # Exactly what the Runner receives: with a draft, the draft as the model sees it (`draft_for_model`).
+        "request": IdAliases().wire(build_task("integrate", integrate_request_data(
+            prepared.data, draft_delta(prepared.data["validated_candidates"], prepared.graph_version, snapshot.id)
+            if engine.config.integrate_output != "full" else None), engine.config.output_language)),
         "response_schema": delta_schema(engine.config.integrate_evidence == "reuse")}}
 
 

@@ -766,8 +766,11 @@ def test_review_patch_leaving_a_candidate_unresolved_is_rejected(laboratory):
         def run(self, task, schema, cancel):
             output = super().run(task, schema, cancel)
             if "patch" in schema["properties"] and "repair" not in task:
+                # the proposal shows these without their candidate's evidence; a model answering the schema writes it back
+                own = {c["id"]: c["evidence"] for c in task["data"]["validated_candidates"]["event_candidates"]}
                 output["patch"]["candidate_resolutions"] = [
-                    {**copy.deepcopy(item), "disposition": "excluded", "target_ids": []}
+                    {**copy.deepcopy(item), "disposition": "excluded", "target_ids": [],
+                     "evidence": item.get("evidence") or own[item["candidate_id"]]}
                     for item in task["data"]["proposed_graph_delta"]["candidate_resolutions"]]
             return output
 
@@ -881,6 +884,12 @@ def test_integrate_patch_publishes_the_same_graph_as_full_mode(laboratory):
     assert schema is REVIEW_PATCH_SCHEMA
     assert "return only what changes" in task["data"]["integrate_instruction"]
     assert task["data"]["draft_graph_delta"]["events_to_add"]
+    # The model's copy of the draft carries no evidence in its resolutions and attributions (the candidates'
+    # own, already in the request); the published delta, merged from the full draft, does.
+    draft_view = task["data"]["draft_graph_delta"]
+    assert draft_view["candidate_resolutions"] and all("evidence" not in item for item in draft_view["candidate_resolutions"])
+    assert draft_view["change_attributions"] and all("evidence" not in item for item in draft_view["change_attributions"])
+    assert "shown without evidence has its candidate's own" in task["data"]["integrate_instruction"]
     # The integrator wrote what the draft lacked, not the whole delta again.
     assert sum(call["details"]["output_chars"] for call in _integrate_calls(patch_store)) < full_chars
     assert [item["mode"] for call in _integrate_calls(patch_store)

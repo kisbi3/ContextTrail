@@ -4,6 +4,9 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 
 ## 0.1.0a6 – 2026-10-07
 
+### Fixed
+- **A unit of a dozen candidates no longer overflows the integrate and review requests.** The code-built draft delta carried every candidate's evidence three times (in the item, its resolution and its attribution), and the integrated delta sent to the review did the same; on this repository one hook-started unit failed with "the analysis input budget was exceeded" at 259k characters against the 240k budget, before any integrate call. The model now sees a resolution or attribution whose evidence is exactly its candidate's own without that copy (`schema.delta_for_model`; the full delta stays in code for the merge and every check), and the patch instructions say so. The same unit's integrate request is 196k characters and its review 228k, and the run completes (graph v13 of this repository). Model-input change; mock eval and the live unit checked.
+
 ### Added
 - **The hooks stop after repeated failures.** The detached process a hook starts is now `contexttrail auto-update --run`, which runs the analysis and records how it ended; after three failed runs in a row the hooks start nothing more, `contexttrail auto-update --status` shows the last result and the log path, and `--enable` again restarts them. A partial run (units left, which `--units N` always leaves) counts as fine.
 - **`find` and `status` keep what they already counted.** The per-file counts of a freshness check are cached under the scan and the stored records they were measured against, so a second check re-reads only files that changed in between: on this repository 2.0 s → 0.3 s for the one growing session file.

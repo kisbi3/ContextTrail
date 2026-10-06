@@ -277,6 +277,28 @@ def draft_delta(candidates: dict, graph_version: int, snapshot_id: str) -> dict:
     return delta
 
 
+def delta_for_model(delta: dict, candidates: dict) -> dict:
+    """A delta as the model sees it when it answers with a patch: a resolution or attribution whose evidence
+    is exactly its candidate's own is shown without that copy.
+
+    The candidates' evidence is already in the request (`validated_candidates`, `candidate_evidence`);
+    repeated in the draft's resolutions and attributions it put a unit of a dozen candidates past the
+    input budget, and the review of the integrated delta then overflowed the same way. Evidence the
+    integrator wrote itself (for an update of an existing event, say) stays. The code keeps the full
+    delta for the merge and every check.
+    """
+    own = {item["id"]: item.get("evidence") for key in ("event_candidates", "edge_candidates", "open_items")
+           for item in candidates.get(key, [])}
+    def shown(item: dict, ids: list[str]) -> dict:
+        if ids and all(own.get(i) is not None and own[i] == item.get("evidence") for i in ids):
+            return {k: v for k, v in item.items() if k != "evidence"}
+        return item
+    view = dict(delta)
+    view["candidate_resolutions"] = [shown(item, [item.get("candidate_id")]) for item in delta.get("candidate_resolutions", [])]
+    view["change_attributions"] = [shown(item, list(item.get("candidate_ids") or [])) for item in delta.get("change_attributions", [])]
+    return view
+
+
 # Escapes that appear verbatim when a tool call embeds code in a string literal
 # (e.g. Codex `apply_patch("...\"$x\"...")`). Models often quote the decoded text.
 _ESCAPES = {'"': '"', "'": "'", "\\": "\\", "n": "\n", "t": "\t", "r": "\r", "/": "/"}

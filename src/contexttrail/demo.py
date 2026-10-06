@@ -44,10 +44,15 @@ def cases() -> list[tuple]:
 def review_patch_answer(proposed: dict, answer: dict) -> dict:
     """The fixture's own answer as a patch over the proposal: only what it adds, changes or drops."""
     patch = {}
+    def same(shown: dict | None, item: dict) -> bool:
+        # A proposed resolution or attribution is shown without the evidence that is its candidate's own
+        # (`delta_for_model`); the fixture, like a model, does not resend an item that only differs there.
+        if shown is None:
+            return False
+        return shown == item or ("evidence" not in shown and {k: v for k, v in item.items() if k != "evidence"} == shown)
     for array in PATCH_ARRAYS:
         before = {patch_key(array, item): item for item in proposed[array]}
-        patch[array] = [copy.deepcopy(item) for item in answer[array]
-                        if before.get(patch_key(array, item)) != item]
+        patch[array] = [copy.deepcopy(item) for item in answer[array] if not same(before.get(patch_key(array, item)), item)]
     return {"status": answer["status"], "read_requests": [], "snapshot_id": answer["snapshot_id"],
             "base_graph_version": answer["base_graph_version"],
             "review_resolutions": copy.deepcopy(answer["review_resolutions"]),

@@ -23,7 +23,7 @@ from .model import Snapshot, SourceRecord, is_user_prompt
 from .routing import ROUTING_VERSION, RunnerPool, TaskValidationError
 from .runners.cli_runner import EFFORTS
 from .schema import (DELTA_SCHEMA, EDIT_TOOL_NAMES, EXTRACT_SCHEMA, EvidenceValidator, delta_schema, docs_only,
-                     draft_delta, edited_files, merge_review_patch, reconcile_review_patch,
+                     delta_for_model, draft_delta, edited_files, merge_review_patch, reconcile_review_patch,
                      record_evidence, review_patch_audit, review_patch_schema, validate_shape)
 from .sources import collect_logs
 from .store import Store
@@ -1677,12 +1677,15 @@ REVIEW_CHECKS = ("Compare the proposed GraphDelta with the supplied original evi
 # The default: the review rewrites the delta, so the request and its schema are the integration ones.
 REVIEW_INSTRUCTION = REVIEW_CHECKS + ("Return the complete corrected GraphDelta and preserve one resolution "
                                      "for every candidate.")
-# The opt-in: the review sends back only what it changes, and the code merges it into the proposal.
+# A resolution or attribution whose evidence is its candidate's own is sent without that copy (`delta_for_model`).
+SHOWN_WITHOUT_EVIDENCE = ("A candidate_resolution or change_attribution shown without evidence has its candidate's "
+                          "own evidence, in validated_candidates. ")
+# The default since 2026-09-29: the review sends back only what it changes, and the code merges it into the proposal.
 REVIEW_PATCH_INSTRUCTION = REVIEW_CHECKS + (
     "Return only what changes: patch holds the new or replaced items, never an unchanged one, and an item "
     "whose id is a proposed item's id replaces that item. List proposed items to drop in remove. Give "
     "candidate_resolutions only for candidates whose resolution changes, and change_attributions only for "
-    "added or replaced items. Still preserve one review resolution for every issue.")
+    "added or replaced items. " + SHOWN_WITHOUT_EVIDENCE + "Still preserve one review resolution for every issue.")
 
 INTEGRATE_PATCH_INSTRUCTION = (
     "draft_graph_delta is the GraphDelta code built from the validated candidates: every candidate added "
@@ -1690,8 +1693,16 @@ INTEGRATE_PATCH_INSTRUCTION = (
     "integration task on it and return only what changes: patch holds the new or replaced items, never "
     "an unchanged one, and an item whose id is a draft item's id replaces that item. List draft items to "
     "drop in remove. Give candidate_resolutions only for candidates whose resolution changes, and "
-    "change_attributions only for added or replaced items. review_resolutions stays empty. An empty patch "
-    "and remove mean the draft stands as it is.")
+    "change_attributions only for added or replaced items. " + SHOWN_WITHOUT_EVIDENCE +
+    "review_resolutions stays empty. An empty patch and remove mean the draft stands as it is.")
+
+
+def integrate_request_data(data: dict, draft: dict | None) -> dict:
+    """The integrate request's data: with a draft (patch and draft modes) the model sees `delta_for_model`."""
+    if draft is None:
+        return data
+    return {**data, "draft_graph_delta": delta_for_model(draft, data["validated_candidates"]),
+            "integrate_instruction": INTEGRATE_PATCH_INSTRUCTION}
 
 
 @dataclass
@@ -1971,8 +1982,7 @@ class Engine:
                 pass
             elif draft is not None:
                 h.runner = runners.get("integrate")
-                delta = h.task("integrate", {**data, "draft_graph_delta": draft,
-                                             "integrate_instruction": INTEGRATE_PATCH_INSTRUCTION},
+                delta = h.task("integrate", integrate_request_data(data, draft),
                                check, validator=validator, schema=review_patch_schema(reuse),
                                merge=lambda answer: self._merge_review_patch(
                                    answer, draft, validator, candidate_set, mode="integrate_patch_merged"))
@@ -2006,7 +2016,7 @@ class Engine:
             candidate_set = data["validated_candidates"]
             proposal, patch_mode = delta, self.config.review_output == "patch"
             review_data = {**data, "review_trigger": reasons, "review_issues": issues,
-                "proposed_graph_delta": proposal,
+                "proposed_graph_delta": delta_for_model(proposal, candidate_set) if patch_mode else proposal,
                 "review_instruction": REVIEW_PATCH_INSTRUCTION if patch_mode else REVIEW_INSTRUCTION}
             def check_review(output: dict) -> None:
                 validator.apply_delta(output, graph, snapshot_id, run_id, candidate_set,
