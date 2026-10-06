@@ -278,8 +278,9 @@ def draft_delta(candidates: dict, graph_version: int, snapshot_id: str) -> dict:
 
 
 def delta_for_model(delta: dict, candidates: dict) -> dict:
-    """A delta as the model sees it when it answers with a patch: a resolution or attribution whose evidence
-    is exactly its candidate's own is shown without that copy.
+    """A delta as the model sees it when it answers with a patch: an added item that is its candidate unchanged
+    is named (`{"id", "candidate": "unchanged"}`), and a resolution or attribution whose evidence is exactly its
+    candidate's own is shown without that copy.
 
     The candidates' evidence is already in the request (`validated_candidates`, `candidate_evidence`);
     repeated in the draft's resolutions and attributions it put a unit of a dozen candidates past the
@@ -287,16 +288,32 @@ def delta_for_model(delta: dict, candidates: dict) -> dict:
     integrator wrote itself (for an update of an existing event, say) stays. The code keeps the full
     delta for the merge and every check.
     """
-    own = {item["id"]: item.get("evidence") for key in ("event_candidates", "edge_candidates", "open_items")
-           for item in candidates.get(key, [])}
+    whole = {item["id"]: item for key in ("event_candidates", "edge_candidates", "open_items")
+             for item in candidates.get(key, [])}
+    own = {cid: item.get("evidence") for cid, item in whole.items()}
     def shown(item: dict, ids: list[str]) -> dict:
         if ids and all(own.get(i) is not None and own[i] == item.get("evidence") for i in ids):
             return {k: v for k, v in item.items() if k != "evidence"}
         return item
     view = dict(delta)
+    # An added item that is its candidate, unchanged, is named rather than repeated.
+    for key in ("events_to_add", "edges_to_add", "open_items_to_upsert"):
+        view[key] = [{"id": item["id"], "candidate": "unchanged"} if whole.get(item.get("id")) == item else item
+                     for item in delta.get(key, [])]
     view["candidate_resolutions"] = [shown(item, [item.get("candidate_id")]) for item in delta.get("candidate_resolutions", [])]
     view["change_attributions"] = [shown(item, list(item.get("candidate_ids") or [])) for item in delta.get("change_attributions", [])]
     return view
+
+
+def expand_for_model_view(view: dict, candidates: dict) -> dict:
+    """The inverse of `delta_for_model` as far as a fixture needs it: named items become their candidates again."""
+    whole = {item["id"]: item for key in ("event_candidates", "edge_candidates", "open_items")
+             for item in candidates.get(key, [])}
+    full = dict(view)
+    for key in ("events_to_add", "edges_to_add", "open_items_to_upsert"):
+        full[key] = [copy.deepcopy(whole[item["id"]]) if item.get("candidate") == "unchanged" and item["id"] in whole else item
+                     for item in view.get(key, [])]
+    return full
 
 
 # Escapes that appear verbatim when a tool call embeds code in a string literal

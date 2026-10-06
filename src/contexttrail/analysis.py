@@ -938,8 +938,23 @@ def _rehydrate(pool: dict[str, SourceRecord], provided: dict[str, list[tuple[int
         provided[source_id] = [(i["start_line"], i["end_line"]) for i in items]
 
 
-def _prompt_evidence(evidence: dict[str, dict], context_only: list[dict] | None = None) -> dict[str, dict]:
-    """Send citation substance without repeating filesystem/source metadata per quote."""
+def candidate_quotes(candidates: dict) -> set[tuple[str, int, int, str]]:
+    """Every citation the candidates carry, as (source_id, start_line, end_line, quote)."""
+    found = set()
+    for key in ("event_candidates", "edge_candidates", "open_items", "existing_event_matches"):
+        for item in candidates.get(key, []):
+            for cite in item.get("evidence") or []:
+                if isinstance(cite, dict) and cite.get("quote"):
+                    found.add((cite.get("source_id"), cite.get("start_line"), cite.get("end_line"), cite["quote"]))
+    return found
+
+
+def _prompt_evidence(evidence: dict[str, dict], context_only: list[dict] | None = None,
+                     quoted: set[tuple[str, int, int, str]] | None = None) -> dict[str, dict]:
+    """Send citation substance without repeating filesystem/source metadata per quote.
+
+    A quote whose lines are all in `context_only`, or that a candidate in the same request already
+    carries (`quoted`), is marked rather than repeated."""
     visible_lines: dict[str, set[int]] = {}
     for item in context_only or []:
         visible_lines.setdefault(item["source_id"], set()).update(line["line"] for line in item["lines"])
@@ -954,6 +969,8 @@ def _prompt_evidence(evidence: dict[str, dict], context_only: list[dict] | None 
         if all(line in visible_lines.get(item["source_id"], set())
                for line in range(item["start_line"], item["end_line"] + 1)):
             compact["quote_in_context_only"] = True
+        elif quoted and (item["source_id"], item["start_line"], item["end_line"], item["quote"]) in quoted:
+            compact["quote_in_candidates"] = True
         else:
             compact["quote"] = item["quote"]
         result[evidence_id] = compact
@@ -1678,14 +1695,21 @@ REVIEW_CHECKS = ("Compare the proposed GraphDelta with the supplied original evi
 REVIEW_INSTRUCTION = REVIEW_CHECKS + ("Return the complete corrected GraphDelta and preserve one resolution "
                                      "for every candidate.")
 # A resolution or attribution whose evidence is its candidate's own is sent without that copy (`delta_for_model`).
-SHOWN_WITHOUT_EVIDENCE = ("A candidate_resolution or change_attribution shown without evidence has its candidate's "
-                          "own evidence, in validated_candidates. ")
+SHOWN_WITHOUT_EVIDENCE = ("An added item shown as {id, candidate: unchanged} is the candidate of that id exactly as "
+                          "given; a candidate_resolution or change_attribution shown without evidence has its "
+                          "candidate's own evidence, in validated_candidates; a candidate_evidence entry marked "
+                          "quote_in_candidates has its quote in the candidate that cites those lines. ")
+# The patch-mode review judges the proposal on the candidates, their evidence and the existing events; the
+# records' context and the manifest, which the integration read, are not sent a third time.
+REVIEW_OMITTED = ("context_only", "manifest")
 # The default since 2026-09-29: the review sends back only what it changes, and the code merges it into the proposal.
 REVIEW_PATCH_INSTRUCTION = REVIEW_CHECKS + (
     "Return only what changes: patch holds the new or replaced items, never an unchanged one, and an item "
     "whose id is a proposed item's id replaces that item. List proposed items to drop in remove. Give "
     "candidate_resolutions only for candidates whose resolution changes, and change_attributions only for "
-    "added or replaced items. " + SHOWN_WITHOUT_EVIDENCE + "Still preserve one review resolution for every issue.")
+    "added or replaced items. " + SHOWN_WITHOUT_EVIDENCE + "The records' context and the manifest are not repeated "
+    "here: judge on the candidates, their evidence and the existing events shown. Still preserve one review "
+    "resolution for every issue.")
 
 INTEGRATE_PATCH_INSTRUCTION = (
     "draft_graph_delta is the GraphDelta code built from the validated candidates: every candidate added "
@@ -1941,7 +1965,8 @@ class Engine:
         validator.check_extraction(output, unit["id"], snapshot_id, graph)
         if any(output[k] for k in ("event_candidates", "edge_candidates", "existing_event_matches", "open_items")):
             data = {"base_graph_version": graph["version"], "snapshot_id": snapshot_id,
-                    "validated_candidates": output, "candidate_evidence": _prompt_evidence(extracted["evidence"]),
+                    "validated_candidates": output,
+                    "candidate_evidence": _prompt_evidence(extracted["evidence"], quoted=candidate_quotes(output)),
                     "assigned_source_ids": unit["sources"], **model_context(context)}
             if self.config.integrate_evidence == "reuse":
                 data["evidence_policy"] = EVIDENCE_POLICY_REUSE
@@ -2015,7 +2040,8 @@ class Engine:
             harness.runner, harness.routing_role, harness.routing_reasons = runners.get("escalation"), "integrate_review", reasons
             candidate_set = data["validated_candidates"]
             proposal, patch_mode = delta, self.config.review_output == "patch"
-            review_data = {**data, "review_trigger": reasons, "review_issues": issues,
+            base = {key: value for key, value in data.items() if key not in REVIEW_OMITTED} if patch_mode else data
+            review_data = {**base, "review_trigger": reasons, "review_issues": issues,
                 "proposed_graph_delta": delta_for_model(proposal, candidate_set) if patch_mode else proposal,
                 "review_instruction": REVIEW_PATCH_INSTRUCTION if patch_mode else REVIEW_INSTRUCTION}
             def check_review(output: dict) -> None:

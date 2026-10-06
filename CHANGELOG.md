@@ -4,6 +4,9 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 
 ## 0.1.0a6 – 2026-10-07
 
+### Changed
+- **The integrate and review requests stop repeating the candidates.** In the draft the model is sent, an added item that is its candidate unchanged is named (`{"id", "candidate": "unchanged"}`) instead of copied, and a `candidate_evidence` entry whose quote a candidate already carries is marked `quote_in_candidates` instead of quoted again; the patch-mode review (the default) no longer receives the records' context (`context_only`) and the manifest, which the integration already read, and judges on the candidates, their evidence and the existing events. Measured on this repository's units: the integrate request of a 12-candidate unit 196k → 128k characters, its review 228k → 113k; a live 9-candidate unit integrated at 126k (the ledger's median before was 168k). The review ran on 13 of 14 units here and changed items in 3, so its size was a third of every unit's cost. Model-input change; mock eval and live units checked.
+
 ### Fixed
 - **A unit of a dozen candidates no longer overflows the integrate and review requests.** The code-built draft delta carried every candidate's evidence three times (in the item, its resolution and its attribution), and the integrated delta sent to the review did the same; on this repository one hook-started unit failed with "the analysis input budget was exceeded" at 259k characters against the 240k budget, before any integrate call. The model now sees a resolution or attribution whose evidence is exactly its candidate's own without that copy (`schema.delta_for_model`; the full delta stays in code for the merge and every check), and the patch instructions say so. The same unit's integrate request is 196k characters and its review 228k, and the run completes (graph v13 of this repository). Model-input change; mock eval and the live unit checked.
 

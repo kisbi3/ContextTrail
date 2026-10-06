@@ -719,6 +719,10 @@ def test_review_patch_asks_for_its_own_schema_and_instruction(laboratory):
     review_task, review_schema = seen[2]
     integrate_task, integrate_schema = seen[1]
     assert review_schema is REVIEW_PATCH_SCHEMA
+    # the patch-mode review judges on candidates, evidence and existing events: the records' context and the
+    # manifest the integration read are not sent again
+    assert set(integrate_task["data"]) - set(review_task["data"]) == {"context_only", "manifest"}
+    assert "not repeated here" in review_task["data"]["review_instruction"]
     assert not review_schema is DELTA_SCHEMA and "patch" in review_schema["properties"]
     assert set(review_schema["properties"]["patch"]["properties"]) == set(PATCH_ARRAYS)
     assert review_schema["properties"]["remove"]["items"]["properties"]["operation"]["enum"] == list(DELTA_ITEM_ARRAYS)
@@ -728,8 +732,9 @@ def test_review_patch_asks_for_its_own_schema_and_instruction(laboratory):
                    "candidate_resolutions only for candidates whose resolution changes",
                    "change_attributions only for added or replaced items", "never an unchanged one"):
         assert clause in instruction
-    # Everything else the review is sent is the integration request.
-    assert {key: review_task["data"][key] for key in integrate_task["data"]} == integrate_task["data"]
+    # Everything else the review is sent is the integration request, less the records' context and manifest.
+    assert {key: review_task["data"][key] for key in integrate_task["data"] if key not in ("context_only", "manifest")} == \
+        {key: value for key, value in integrate_task["data"].items() if key not in ("context_only", "manifest")}
 
 
 def test_review_patch_rejects_removing_an_item_the_proposal_never_had(laboratory):
@@ -884,6 +889,8 @@ def test_integrate_patch_publishes_the_same_graph_as_full_mode(laboratory):
     assert schema is REVIEW_PATCH_SCHEMA
     assert "return only what changes" in task["data"]["integrate_instruction"]
     assert task["data"]["draft_graph_delta"]["events_to_add"]
+    assert all(item == {"id": item["id"], "candidate": "unchanged"} for item in task["data"]["draft_graph_delta"]["events_to_add"])
+    assert all("quote" not in item and item.get("quote_in_candidates") for item in task["data"]["candidate_evidence"].values())
     # The model's copy of the draft carries no evidence in its resolutions and attributions (the candidates'
     # own, already in the request); the published delta, merged from the full draft, does.
     draft_view = task["data"]["draft_graph_delta"]

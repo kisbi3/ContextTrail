@@ -5,7 +5,7 @@ import copy
 import json
 from pathlib import Path
 
-from .schema import DELTA_ITEM_ARRAYS, EVENT_FIELDS, PATCH_ARRAYS, patch_key
+from .schema import DELTA_ITEM_ARRAYS, EVENT_FIELDS, PATCH_ARRAYS, expand_for_model_view, patch_key
 from .i18n import language, tr
 from .util import FlowError, dumps
 
@@ -41,8 +41,9 @@ def cases() -> list[tuple]:
     return CASES if language() == "ko" else CASES_EN
 
 
-def review_patch_answer(proposed: dict, answer: dict) -> dict:
+def review_patch_answer(proposed: dict, answer: dict, candidates: dict | None = None) -> dict:
     """The fixture's own answer as a patch over the proposal: only what it adds, changes or drops."""
+    proposed = expand_for_model_view(proposed, candidates or {})
     patch = {}
     def same(shown: dict | None, item: dict) -> bool:
         # A proposed resolution or attribution is shown without the evidence that is its candidate's own
@@ -170,7 +171,8 @@ class FixtureRunner:
                     item["evidence"] = []
         # A review that was asked for a patch answers only the items it changes.
         if "patch" in schema["properties"]:
-            return review_patch_answer(data.get("proposed_graph_delta") or data["draft_graph_delta"], output)
+            return review_patch_answer(data.get("proposed_graph_delta") or data["draft_graph_delta"], output,
+                                       data.get("validated_candidates"))
         return output
 
 

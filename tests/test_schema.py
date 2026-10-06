@@ -12,8 +12,12 @@ def test_delta_for_model_drops_only_evidence_copied_from_the_candidate():
                                      {"operation": "events_to_update", "item_id": "ev_8", "candidate_ids": [], "evidence": quote}],
              "events_to_add": [{"id": "tmp_a", "evidence": quote}]}
     view = delta_for_model(delta, candidates)
+    assert view["events_to_add"] == [{"id": "tmp_a", "candidate": "unchanged"}]  # the candidate itself, named
     assert "evidence" not in view["candidate_resolutions"][0] and view["candidate_resolutions"][1]["evidence"] == quote
     assert "evidence" not in view["change_attributions"][0]
     assert view["change_attributions"][1]["evidence"] == other and view["change_attributions"][2]["evidence"] == quote
-    assert view["events_to_add"] == delta["events_to_add"]
+    from contexttrail.schema import expand_for_model_view
+    assert expand_for_model_view(view, candidates)["events_to_add"] == delta["events_to_add"]
+    changed = {**delta, "events_to_add": [{"id": "tmp_a", "evidence": quote, "title": "edited"}]}
+    assert delta_for_model(changed, candidates)["events_to_add"] == changed["events_to_add"]  # an edited item stays whole
     assert delta["candidate_resolutions"][0]["evidence"] == quote  # the original is untouched
