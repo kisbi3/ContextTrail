@@ -64,8 +64,8 @@
     },
     {
       "source_id": "eval-s4",
-      "provider": "claude",
-      "session_id": "eval-claude",
+      "provider": "opencode",
+      "session_id": "eval-opencode",
       "role": "user",
       "content": "동시 쓰기 때문에 SQLite로 바꾸자.",
       "cwd": "/fixture/project",

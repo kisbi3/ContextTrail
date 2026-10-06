@@ -11,7 +11,9 @@ import time
 from pathlib import Path
 
 from . import __version__
+from . import auto_update
 from .agent_commands import OPENCODE_PERMISSION_HINT, install_agent_commands
+from .auto_update import install_hooks
 from .agent_view import find, find_text, show, show_text
 from .analysis import AnalysisConfig, Engine, _evidence_ids, classify_steps, plan_choices_text, plan_text
 from .demo import FixtureRunner, create_demo
@@ -98,6 +100,7 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--record-chars", type=int)
         sub.add_argument("--unit-chars", type=int)
         sub.add_argument("--context-mode", choices=["full", "lean"], help=argparse.SUPPRESS)
+        sub.add_argument("--trigger", choices=["hook"], help=argparse.SUPPRESS)
         sub.add_argument("--integrate-evidence", choices=["full", "reuse"], help=argparse.SUPPRESS)
         sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
         sub.add_argument("--integrate-output", choices=["full", "patch", "draft"], help=argparse.SUPPRESS)
@@ -158,6 +161,23 @@ def parser() -> argparse.ArgumentParser:
                                                 "How far the graph lags the transcripts: unanalyzed records and changes since the last scan; no AI calls"))
     sub.add_argument("folder", nargs="?", default=".")
     sub.add_argument("--json", action="store_true")
+    sub = commands.add_parser("auto-update", help=tr("프로젝트별 자동 갱신: 켜기·끄기·상태. 인자 없이 부르면 훅용(설정된 프로젝트에서만 백그라운드 분석 시작, 항상 종료 코드 0)",
+                                                     "Per-project automatic analysis: enable, disable, status. Without flags it is the hook entry point (starts a background analysis only where enabled; always exits 0)"))
+    sub.add_argument("--folder", help=tr("프로젝트 폴더; 없으면 stdin JSON의 cwd, 그것도 없으면 현재 폴더(--enable/--disable/--status)",
+                                         "Project folder; else the cwd of the JSON on stdin; else the current folder (--enable/--disable/--status)"))
+    sub.add_argument("--enable", action="store_true", help=tr("이 프로젝트에서 켬 (--runner와 --units 필요)", "Turn it on for this project (needs --runner and --units)"))
+    sub.add_argument("--disable", action="store_true")
+    sub.add_argument("--status", action="store_true")
+    sub.add_argument("--runner", choices=["codex", "claude"])
+    sub.add_argument("--units", type=int, help=tr("훅 한 번에 처리할 작업 단위 수", "Work units per hook-started run"))
+    sub.add_argument("--cooldown", default="15m", help=tr("자동 실행 사이 최소 간격; 기본 15m", "Minimum gap between hook-started runs; default 15m"))
+    sub.add_argument("--max-runs-per-day", type=int, default=8)
+    sub = commands.add_parser("install-hooks", help=tr("세 도구의 훅에 auto-update 명령을 등록 (설정 파일은 병합, 사용자 항목 유지)",
+                                                       "Register the auto-update command in the three tools' hooks (settings are merged, user entries kept)"))
+    sub.add_argument("--claude", action="store_true", help="~/.claude/settings.json: Stop hook (async)")
+    sub.add_argument("--codex", action="store_true", help="~/.codex/hooks.json: Stop hook")
+    sub.add_argument("--opencode", action="store_true", help="~/.config/opencode/plugins/contexttrail.ts: session.idle")
+    sub.add_argument("--force", action="store_true", help=tr("이미 설치된 ContextTrail 훅 갱신", "Refresh ContextTrail hooks already installed"))
     sub = commands.add_parser("find", help=tr("저장된 사건 검색(검색어 없으면 최근 사건과 열린 항목). AI 호출 없음",
                                               "Search saved events (recent events and open items without a query); no AI calls"))
     sub.add_argument("query", nargs="?", default="", help=tr("제목·설명·원문 근거에 모두 들어 있어야 할 단어들", "Words that must all appear in the title, summary or quoted evidence"))
@@ -299,6 +319,7 @@ def _options(args, store: Store) -> AnalysisConfig:
         values["max_calls"], values["calls_fixed"] = args.max_calls, True
     values["max_units"] = getattr(args, "max_units", None)
     values["session"] = _session(getattr(args, "session", None))
+    values["trigger"] = getattr(args, "trigger", None)
     values["runner_name"], values["base_model"] = options.get("runner"), options.get("model")
     values["semantic_review"] = getattr(args, "semantic_review", True)
     values["langsmith_enabled"] = getattr(args, "langsmith_enabled", False)
@@ -361,6 +382,35 @@ def _find(args) -> int:
     result["freshness"] = fresh
     result["freshness_text"] = freshness_summary(fresh)
     print(dumps(result, pretty=True) if args.json else "\n".join(find_text(result)))
+    return 0
+
+
+def _auto_update(args) -> int:
+    if args.enable or args.disable or args.status:
+        scope = Scope.resolve(args.folder or ".")
+        store = Store(scope.state_dir, scope.id)
+        _screen_language(None, store)
+        if args.enable:
+            if not args.runner or not args.units:
+                raise FlowError(tr("--enable에는 --runner와 --units가 필요합니다.", "--enable needs --runner and --units."))
+            auto_update.enable(store, runner=args.runner, units=args.units, cooldown=auto_update.parse_duration(args.cooldown),
+                               max_runs_per_day=args.max_runs_per_day)
+            print(tr(f"켰습니다: {safe_text(scope.folder)}. 훅이 불릴 때마다 대기 기록이 있으면 {args.runner}로 {args.units}개 단위를 분석합니다 "
+                     f"(이 프로젝트의 기록이 {args.runner}의 모델로 전송됩니다). 훅 설치: contexttrail install-hooks --claude|--codex|--opencode",
+                     f"Enabled for {safe_text(scope.folder)}. Each time a hook fires and records are pending, {args.units} units are analyzed with "
+                     f"{args.runner} (this project's records go to that runner's model). Install the hooks: contexttrail install-hooks --claude|--codex|--opencode"))
+        elif args.disable:
+            auto_update.disable(store)
+            print(tr(f"껐습니다: {safe_text(scope.folder)}", f"Disabled for {safe_text(scope.folder)}"))
+        for line in auto_update.describe(store):
+            print(line)
+        return 0
+    # The hook entry point: quiet, quick, and never a non-zero exit.
+    stdin_text = None if sys.stdin.isatty() else sys.stdin.read(65_536)
+    folder = auto_update.hook_folder(args.folder, stdin_text)
+    reason, pid = auto_update.run_hook(folder)
+    if reason == "run":
+        print(f"contexttrail auto-update: started analysis (pid {pid})", file=sys.stderr)
     return 0
 
 
@@ -538,6 +588,17 @@ def main(argv: list[str] | None = None) -> int:
             return _find(args)
         if args.command == "status":
             return _status(args)
+        if args.command == "auto-update":
+            return _auto_update(args)
+        if args.command == "install-hooks":
+            if not (args.claude or args.codex or args.opencode):
+                raise FlowError(tr("--claude, --codex, --opencode 중 하나 이상을 지정하세요.", "Give at least one of --claude, --codex, --opencode."))
+            for path in install_hooks(Path.home(), claude=args.claude, codex=args.codex, opencode=args.opencode, force=args.force):
+                print(" ", safe_text(path))
+            print(tr("훅은 자동 갱신을 켠 프로젝트에서만 동작합니다: 프로젝트 폴더에서 contexttrail auto-update --enable --runner codex|claude --units N",
+                     "The hooks act only in projects where automatic analysis is enabled: in the project folder run "
+                     "contexttrail auto-update --enable --runner codex|claude --units N"))
+            return 0
         if args.command == "show":
             return _show(args)
         if args.command == "demo":

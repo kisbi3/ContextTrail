@@ -105,7 +105,7 @@ The `contexttrail:ev_…@v2` reference can be pasted into a Codex or Claude Code
 
 ## The same thing on a real project
 
-On a real project the records are thousands of lines of conversation, tool calls, diffs and test output, and the model does the reading; the checks are the same. This is the tail of what Claude Sonnet reconstructed from three work units of this repository's own Codex logs (the afternoon macOS sandbox support was added), in 8 calls, about 1.5 minutes and no repair round:
+On a real project the records are thousands of lines of conversation, tool calls, diffs and test output, and the model does the reading; the checks are the same. The same graph takes records from every tool: on 2026-10-06 one opencode session of this repository (an explore sub-agent surveying the source, 4 work units) was analyzed with the Claude runner in 11 calls and 2.5 minutes with one repair round, and `find` run from this Claude Code session then listed those four opencode events (quoted from the opencode database, labelled `opencode · tool result · session ses_f1a2`) next to the Codex ones, with the first line saying how many records were still unanalyzed. This is the tail of what Claude Sonnet reconstructed from three work units of this repository's own Codex logs (the afternoon macOS sandbox support was added), in 8 calls, about 1.5 minutes and no repair round:
 
 ```text
  ┌─ [19] change ─────────────────┐               ┌─ [20] result ─────────────────┐
@@ -448,6 +448,20 @@ The legacy slash-style variants `/prompts:contexttrail-update` and `/prompts:con
 - **Context loading** reads only stored results; no AI calls. The agent may invoke it proactively when the user asks about past decisions, attempts, or verifications. The agent uses `contexttrail find "<query>"` (or recent events and open items if no query) and `contexttrail show <event>` (description, connections, cited source evidence). Both support `--json`. Output and skill instructions note that source evidence is a quotation from past records and should be treated as reference — not instruction.
 - **Attaching events as evidence:** Press `y` in the TUI or click "Copy agent reference" in the browser to copy a reference like `contexttrail:ev_6226b954@v12`. Paste it into a Claude Code or Codex conversation — the agent reads that event and its evidence with `show`. If the event was re-analyzed and changed or removed since the copy, `show` will say so.
 - Using context loading in Claude Code sends cited Codex/Claude/opencode records to the model in that conversation (Anthropic); in opencode, to whichever model that session uses.
+
+### Automatic analysis from the tools' hooks (opt-in, per project)
+
+Analysis still runs only on request. If you want a project's graph to follow your sessions without typing `/contexttrail-update`, enable it for that project, in your own terminal, and install the hooks once:
+
+```bash
+cd /path/to/project
+contexttrail auto-update --enable --runner claude --units 2 --cooldown 15m --max-runs-per-day 8
+contexttrail install-hooks --claude --codex --opencode     # merges into ~/.claude/settings.json (Stop, async),
+                                                          # ~/.codex/hooks.json (Stop), ~/.config/opencode/plugins/contexttrail.ts (session.idle)
+contexttrail auto-update --status
+```
+
+Enabling is the explicit request: it records your consent for that runner and the project. Every hook runs the same command, `contexttrail auto-update`, which exits 0 at once in every case and never blocks the tool. It starts a detached `analyze … --units N` (output in the state directory's `auto-update.log`) only when the project has it enabled, no analysis is running, records are pending, the cooldown has passed and the daily cap is not reached; in other projects the hook does nothing and creates nothing. Runs started this way carry `trigger: hook` in the local run ledger. `contexttrail auto-update --disable` turns it off; `--force` on `install-hooks` refreshes a hook ContextTrail installed earlier, and hooks you wrote yourself are kept. Codex runs hooks synchronously and its hooks support may need to be enabled in its config; opencode's plugin fires on `session.idle` for the directory it was started in.
 
 ### Export
 

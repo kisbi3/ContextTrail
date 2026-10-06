@@ -68,6 +68,8 @@ class AnalysisConfig:
     calls_fixed: bool = False  # max_calls was given for this run, so a unit count does not raise it
     # A session (with its sub-agents) analysed ahead of the oldest-first order.
     session: str | None = None
+    # Who started this run: None for a person, "hook" for the opt-in automatic analysis. Per run, never saved.
+    trigger: str | None = None
     # Titles and summaries are written in this language; None: detected once per project and saved.
     output_language: str | None = None
     langsmith_enabled: bool = False

@@ -1,6 +1,6 @@
 # 세 도구가 같이 쓰는 프로젝트 기억 — Claude Code · Codex · opencode
 
-**상태: 2026-10-06 작성. A(opencode 입력)·B1(신선도)·C(opencode 설치)·D(Runner 저장)·E(포지셔닝) 구현됨. F(검증)·B2(자동 갱신)는 미구현.** 외부 도구의 형식은 공식 문서에서 확인한 것과 확인 필요로 표시한 것을 나눴다(9절). 진행 기록은 12절.
+**상태: 2026-10-06 작성, 같은 날 A–F와 B2 모두 구현됨.** 남은 확인은 12절 끝에. 외부 도구의 형식은 공식 문서에서 확인한 것과 확인 필요로 표시한 것을 나눴다(9절). 진행 기록은 12절.
 
 ## 0. 한 문장
 
@@ -21,7 +21,7 @@ ContextTrail을 "지난 일을 보여 주는 도구"에서 **"도구가 아니�
 | Claude Code·Codex 스킬 설치 | 있음 | `agent_commands.py`: `~/.claude/skills`, `~/.agents/skills`, `~/.codex/prompts` |
 | opencode 스킬·명령 설치 | 있음(2026-10-06) | `~/.config/opencode/commands/contexttrail-*.md`; 스킬은 `~/.claude/skills`를 통해 보인다(5절) |
 | 그래프가 오래됐는지 아는 방법 | 있음(2026-10-06) | `status`, `find` 첫 줄, TUI·브라우저 상단: 마지막 scan 기준 미분석 기록 수 + scan 이후 세션·기록 수(바뀐 파일만 파싱). `freshness.py` |
-| **세션이 끝나면 저절로 갱신** | **없음** | 분석은 명시적 요청에만 돈다(불변식) |
+| 세션이 끝나면 저절로 갱신 | 있음, 프로젝트별 opt-in(2026-10-06) | `auto_update.py`: `auto-update --enable`, `install-hooks` |
 | 스킬의 Runner | 저장된 것, 없으면 묻기(2026-10-06) | `scan --json`의 `runner`(6절) |
 | 어떤 모델·effort가 그 기록을 만들었는지 | 없음 | `OPENCODE_SOURCE.md` 2절 |
 
@@ -60,6 +60,8 @@ ContextTrail을 "지난 일을 보여 주는 도구"에서 **"도구가 아니�
 
 ### B2. 세션이 끝나면 저절로 갱신 (선택, 프로젝트별 opt-in)
 
+**구현됨(2026-10-06, `auto_update.py`, 테스트 9개).** 아래 구조대로다. 다른 점: 대기 판단은 작업 단위 수가 아니라 B1의 값(마지막 scan 기준 미분석 기록 + scan 이후 기록, 예산 초과면 바뀐 파일 수)이고, 상태 폴더가 없는 프로젝트에서는 아무것도 만들지 않는다. Codex는 `notify` 대신 lifecycle hooks(`~/.codex/hooks.json`, `Stop`, stdin JSON에 `cwd`·`session_id`)를 쓴다. `ops`에서 자동 실행만 고르는 필터는 넣지 않았고, 실행 원장(`analysis_runs.manifest.trigger`)에만 남는다.
+
 **구조:** 훅은 모두 하나의 숨은 명령 `contexttrail auto-update`를 부른다. 이 명령은
 
 1. stdin의 JSON(또는 인자)에서 작업 폴더를 읽고, 존재하는 디렉터리인지 확인한 뒤 `Scope.resolve`로 상태 폴더를 찾는다. 셸을 거치지 않는다(인자 배열).
@@ -73,8 +75,8 @@ ContextTrail을 "지난 일을 보여 주는 도구"에서 **"도구가 아니�
 | 도구 | 어디에 | 어떤 사건 | 확인 상태 |
 | --- | --- | --- | --- |
 | Claude Code | `~/.claude/settings.json`의 `hooks` | `Stop`(턴마다; `async: true`로 비차단) — `SessionEnd`는 모든 훅이 1.5초를 나눠 쓰므로 분석을 띄우기엔 부적합하지만 분리 실행이면 가능 | 공식 문서 확인. stdin JSON에 `session_id`, `cwd`, `transcript_path`, `hook_event_name` |
-| Codex | `~/.codex/config.toml`의 `notify = [...]` | `agent-turn-complete` 한 종류 | 공식 문서 확인. **payload에 `cwd`·thread id가 있는지 미확인** — 없으면 프로젝트를 알 수 없어 Codex 쪽은 자동 갱신을 넣지 않는다. 최근 Codex에 lifecycle hooks가 생겼다는 언급이 있어 그쪽도 본다 |
-| opencode | `~/.config/opencode/plugins/contexttrail.ts` | `event` 훅의 `session.idle` | 공식 문서 확인. 플러그인이 받는 컨텍스트에 작업 폴더(`directory`/`worktree`)가 있는지, Bun `$`로 명령을 띄울 때 분리 실행이 되는지 미확인 |
+| Codex | `~/.codex/hooks.json`의 `Stop` (config.toml `hooks` 표도 같은 형식) | `Stop` | 공식 config 레퍼런스가 hooks 표와 사건 목록(SessionStart·SessionEnd·Stop·…)을 확인. stdin JSON의 `session_id`·`cwd`·`transcript_path`·`stop_hook_active`와 파일 위치·동기 실행·`async` 미지원은 서드파티 가이드(codex.danielvaughan.com, 2026-04) 기준. `notify`는 쓰지 않는다 |
+| opencode | `~/.config/opencode/plugins/contexttrail.ts` | `event` 훅의 `session.idle` | 공식 문서·`packages/plugin/src/index.ts`로 확인: `PluginInput`에 `directory`·`worktree`·`$`가 있다. 플러그인은 이벤트 payload를 쓰지 않고 자기 `directory`로 `auto-update --folder`를 부른다. 분리 실행은 ContextTrail 쪽(`start_new_session`)이 맡으므로 `$`의 동작과 무관하다 |
 
 `Stop`을 고른 이유: 세션을 몇 시간씩 열어 두는 사람이 많아 `SessionEnd`만으로는 늦고, cooldown과 "대기 단위 0이면 종료"가 있으면 턴마다 불려도 비용이 늘지 않는다.
 
@@ -107,19 +109,19 @@ ContextTrail을 "지난 일을 보여 주는 도구"에서 **"도구가 아니�
 
 ## 8. 단계 F — 검증
 
-- **합성 fixture:** `eval --fixture` 용으로 세 도구의 기록이 섞인 하나의 프로젝트(Codex JSONL + Claude JSONL + opencode DB)를 만든다. 기대 결과에 "opencode에서 한 결정 → Claude Code에서 한 변경 → Codex에서 한 검증" 같은 도구 간 관계를 넣는다. Mock Runner로 CI에서 돈다.
-- **실제 평가(소유자 동의 뒤):** 같은 fixture를 Codex와 Claude Runner로 한 번씩. 비교 기준은 `PERFORMANCE_PLAN.md` §15의 v4 수치(기대 결과 평균 12.6/13, 단위당 1.6분).
-- **실제 프로젝트 확인:** 이 저장소를 세 도구로 번갈아 열어 작업한 뒤 `status` → `analyze` → 다른 도구에서 `find`로 읽는 한 바퀴. 결과를 README의 "실제 프로젝트" 절에 추가.
-- **읽기 전용 테스트:** opencode DB·WAL·SHM의 mtime과 해시가 `scan`·`analyze` 전후에 같다.
-- **훅 테스트:** `auto-update`에 JSON을 넣어 (a) 설정 없는 프로젝트는 아무것도 안 함, (b) lock 중이면 안 함, (c) 대기 단위 0이면 안 함, (d) cooldown, (e) 상한, (f) 띄운 프로세스가 호스트 종료와 무관하게 사는지, (g) 잘못된 `cwd`에 0으로 끝남. 모두 Mock Runner.
+- **합성 fixture:** ~~세 도구가 섞인 프로젝트를 새로 만든다~~ → 기존 `demo` fixture의 레코드를 Codex(0–3)·opencode(4)·Claude Code(5–6)로 나눴다(`evaluation.DEMO_PROVIDERS`, `examples/eval-demo.json`). 기대 관계 `event3 → event4 motivates`가 Codex→opencode를 가로지른다. Mock Runner로 CI에서 돈다(2026-10-06).
+- **실제 평가(소유자 동의 뒤):** 같은 fixture를 Codex와 Claude Runner로 한 번씩 — 아직 안 했다. 레코드 내용은 그대로라 v4 수치와의 비교는 provider 표시 변화만 본다.
+- **실제 프로젝트 확인(2026-10-06):** 이 저장소의 opencode 세션 `ses_f1a2f7be…`(탐색 하위 에이전트, 4 단위)를 `analyze --session … --runner claude --yes --units 4`로 분석: 호출 11(추출 5·통합 6, 검증 실패 1회 복구), 모델 시간 93초, 전체 2.5분, 그래프 v7. 이 Claude Code 세션에서 `find`로 opencode 사건 4개를 읽었고(근거 표시 `opencode · 도구 결과 · 세션 ses_f1a2`), 첫 줄이 미분석 기록 수를 말했다. README "실제 프로젝트" 절에 적음.
+- **읽기 전용 테스트:** 합성 WAL DB(테스트)와 실제 DB(수동)에서 `scan` 전후 mtime·해시 동일. 끝.
+- **훅 테스트(끝, `tests/test_auto_update.py`):** (a) 설정 없는 프로젝트·상태 폴더 없는 프로젝트는 아무것도 안 함, (b) lock 중, (c) 대기 없음, (d) cooldown, (e) 하루 상한, (f) 띄운 프로세스가 자기 세션을 갖고 훅 명령이 끝난 뒤에도 산다, (g) 잘못된 `cwd`·JSON 아님·상대 경로에 0으로 끝남, 훅 파일 병합·보존·`--force`, 원장의 `trigger`.
 
 ## 9. 구현 전에 확인할 것
 
 1. ~~opencode 데이터 디렉터리 환경 변수.~~ 확인: `XDG_DATA_HOME`만, `OPENCODE_DATA_DIR`는 없음. DB 이름은 채널별, `OPENCODE_DB`로 변경 가능(`OPENCODE_SOURCE.md` 1절).
 2. ~~opencode `permission` 설정으로 스킬 하나를 `deny`/`ask`로 둘 수 있는지.~~ 문서상 가능(`permission.skill`의 이름 패턴). 실제 동작 확인은 F로.
-3. opencode 플러그인이 받는 컨텍스트에 작업 폴더가 있는지, `session.idle`이 하위 에이전트 세션에도 오는지.
-4. Codex `notify` payload에 `cwd`(또는 thread id로 세션 파일을 찾을 길)가 있는지. Codex lifecycle hooks의 유무와 형식.
-5. Claude Code `Stop` 훅의 `async: true`가 분리 실행과 어떻게 다른지(훅 프로세스가 끝나면 자식도 죽는지).
+3. ~~opencode 플러그인 컨텍스트.~~ `directory`·`worktree` 있음(소스 확인). `session.idle`이 하위 에이전트 세션에도 오는지는 미확인이나 플러그인이 `directory`만 쓰므로 영향 없음(하위 에이전트 idle에도 한 번 더 불릴 뿐이고 cooldown이 막는다).
+4. ~~Codex `notify`.~~ 쓰지 않는다. Codex lifecycle hooks 존재는 공식 레퍼런스로, payload·파일 위치는 서드파티 가이드로 확인. **hooks를 켜는 feature flag가 필요한지 미확인.**
+5. ~~Claude `async: true`.~~ 공식 문서: 비차단, 훅 프로세스는 분리되나 자식은 부모 종료 시 살아남지 않는다고 적혀 있다 → ContextTrail이 `start_new_session=True`로 손자 프로세스를 띄워 자기 세션을 갖게 했다(테스트 f).
 6. ~~`OPENCODE_SOURCE.md` 4절의 7가지.~~ 확인, 그 문서 4절에 적음(Codex·Claude 레코드의 모델·effort만 남음).
 7. ~~측정 프로젝트에서 B1의 전체 파싱 시간.~~ 측정(2026-10-06, 이 저장소, 세션 파일 수천 개): Codex+Claude JSONL 파싱 47.6초, opencode 0.4초, `scan` 전체 74초. **2초를 한참 넘으므로 B1은 전체 파싱을 쓰지 않는다** — 마지막 scan의 파일 색인(경로·크기·mtime·선택 레코드 수)과 비교해 새로 생기거나 바뀐 파일만 파싱하고, opencode는 범위 안 세션의 `time_updated`만 질의한다.
 
@@ -147,6 +149,8 @@ B2를 마지막에 둔 이유: 돈이 드는 분석을 사람이 모르게 띄�
 
 ## 12. 진행 기록
 
+- 2026-10-06 F·B2 완료: 세 도구 혼합 fixture, 실제 opencode 세션 라이브 분석(위 8절), `auto_update.py`(`auto-update`, `install-hooks`), `--trigger hook`, 테스트 474개.
+- **남은 확인:** opencode `permission.skill` 설정이 실제로 update 스킬에 승인을 요구하는지(opencode를 띄워서), Codex hooks가 기본으로 켜져 있는지, 세 훅을 실제 도구에서 한 번씩 발화시켜 로그를 보는 것, 같은 fixture의 Codex·Claude 실제 평가, 영어권 노출(Show HN).
 - 2026-10-06 C·D·E 완료: opencode 명령 파일 둘, `OPENCODE_PERMISSION_HINT`, `scan --json`의 `runner`, 스킬 본문의 runner 선택 단계와 도구 간 문구, README·DECISIONS·PRD·CLAUDE.md.
 - 2026-10-06 B1 완료: `freshness.py`(`build_index`·`check`·`summary`·`status_lines`), `contexttrail status [--json]`, `find` 첫 줄과 `--json`의 `freshness`, TUI 1행과 브라우저 상태줄(그래프 버전당 한 번 계산), context 스킬의 규칙 한 줄. 테스트 465개.
 - 2026-10-06 A 완료: `sources/opencode.py`, `collect_logs(opencode_home=)`, `AnalysisConfig.opencode_home`, `--opencode-home`, `scan`의 소스별 개수, 도구 이름 표(`edit`/`write`/`read`/`bash`/`task`), `render.PROVIDER`, 평가 fixture의 provider 허용. 테스트 459개 통과. 9절 1·6·7 확인.

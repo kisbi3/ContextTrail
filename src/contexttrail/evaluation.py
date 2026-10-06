@@ -149,13 +149,19 @@ def call_timeline(calls: list[dict]) -> list[dict]:
     return timeline
 
 
+# The synthetic story crosses the three tools: the failed test in a Codex session motivates the
+# decision taken in an opencode session, and the result is reported in a Claude Code session.
+DEMO_PROVIDERS = ('codex', 'codex', 'codex', 'codex', 'opencode', 'claude', 'claude')
+
+
 def demo_fixture() -> dict:
     records, expected = [], []
     for i, case in enumerate(CASES):
         text, kind, title, status, actor, _ = case
         role = 'tool_result' if actor == 'tool' else actor
-        records.append({'source_id': f'eval-s{i}', 'provider': 'claude' if i >= 4 else 'codex',
-                        'session_id': 'eval-claude' if i >= 4 else 'eval-codex', 'role': role,
+        provider = DEMO_PROVIDERS[i]
+        records.append({'source_id': f'eval-s{i}', 'provider': provider,
+                        'session_id': f'eval-{provider}', 'role': role,
                         'content': text, 'cwd': '/fixture/project', 'worktree_id': 'wt_fixture',
                         'tool_call_id': f'eval-call-{i}' if role == 'tool_result' else None,
                         'recorded_at': f'2026-09-22T10:0{i}:00Z',

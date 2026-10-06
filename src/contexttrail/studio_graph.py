@@ -232,7 +232,8 @@ def prepare_run(state: StudioState) -> StudioState:
     if mode == "cli":
         session = _cli_session(state)
         session.engine.store.mark_interrupted_runs()
-        session.engine.store.start_run(state["run_id"], {"scope_id": session.engine.scope.id})
+        session.engine.store.start_run(state["run_id"], {"scope_id": session.engine.scope.id,
+                                                          "trigger": session.engine.config.trigger or "user"})
         return {"unit_index": 0, "completed_units": 0, "reused_extractions": 0,
                 "unit_results": []}
     if mode not in {"synthetic", "live", "eval"}:
