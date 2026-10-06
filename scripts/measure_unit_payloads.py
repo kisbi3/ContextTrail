@@ -8,11 +8,11 @@ synthetic project so far: check its output before trusting it.
 import sys, json, time, threading, dataclasses, random, statistics
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from projectflow.git_context import Scope
-from projectflow.store import Store
-from projectflow import analysis as A
-from projectflow.util import dumps
-from projectflow.model import is_user_prompt
+from contexttrail.git_context import Scope
+from contexttrail.store import Store
+from contexttrail import analysis as A
+from contexttrail.util import dumps
+from contexttrail.model import is_user_prompt
 
 HERE = Path(sys.argv[1]); SAMPLE = int(sys.argv[2]) if len(sys.argv) > 2 else 20
 PROJECT = sys.argv[3]; STATE = Path(sys.argv[4]); CODEX = sys.argv[5] if len(sys.argv) > 5 else None; CLAUDE = sys.argv[6] if len(sys.argv) > 6 else None

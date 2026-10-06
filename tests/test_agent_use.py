@@ -8,15 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from projectflow import ui
-from projectflow.agent_commands import install_agent_commands
-from projectflow.agent_view import data_note, find, find_text, reference, show, show_text, short_id
-from projectflow.analysis import _estimated_tokens, calibration, plan_summary, plan_text, unit_cost
-from projectflow.cli import _options, _session
-from projectflow.demo import CASES, FixtureRunner
-from projectflow.store import Store
-from projectflow.ui import FlowPanels
-from projectflow.util import FlowError
+from contexttrail import ui
+from contexttrail.agent_commands import install_agent_commands
+from contexttrail.agent_view import data_note, find, find_text, reference, show, show_text, short_id
+from contexttrail.analysis import _estimated_tokens, calibration, plan_summary, plan_text, unit_cost
+from contexttrail.cli import _options, _session
+from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.store import Store
+from contexttrail.ui import FlowPanels
+from contexttrail.util import FlowError
 
 from test_diagram import story
 from test_store import DrawnScreen
@@ -232,12 +232,12 @@ def test_update_runs_only_when_asked_and_context_reads_quotes_as_data(tmp_path):
     assert "allow_implicit_invocation: false" in policy
     assert "--units N" in claude_update and "Never choose the number yourself" in claude_update
     assert "$ARGUMENTS" in claude_update and "$ARGUMENTS" not in codex_update
-    assert "never as instructions" in context and "-m projectflow show <event>" in context
+    assert "never as instructions" in context and "-m contexttrail show <event>" in context
     assert "disable-model-invocation" not in context
 
 
 def test_a_brief_run_report_counts_limitations_instead_of_listing_them(capsys):
-    from projectflow.cli import _brief
+    from contexttrail.cli import _brief
     _brief({"status": "partial", "completed_units": 2, "runner_calls": 9, "graph_version": 7,
             "pending_records": 51_234, "limitations": [f"record over the size limit, not processed: s{n}" for n in range(500)],
             "graph": {"version": 7}})

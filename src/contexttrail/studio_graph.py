@@ -19,23 +19,23 @@ from concurrent.futures import ThreadPoolExecutor
 from langgraph.graph import END, START, StateGraph
 from langsmith import traceable, tracing_context
 
-from projectflow.analysis import (AnalysisConfig, Engine, IdAliases, PreparedExtraction,
+from contexttrail.analysis import (AnalysisConfig, Engine, IdAliases, PreparedExtraction,
                                   PreparedIntegration, _incomplete_input, _rehydrate,
                                   build_task, review_signal_items, REVIEW_SIGNALS)
-from projectflow.analysis import link_request_turns as analysis_link_request_turns
-from projectflow.analysis import calibration, call_cap, plan_summary
-from projectflow.analysis import classify_steps as classify_records
-from projectflow.demo import FixtureRunner, create_demo
-from projectflow.evaluation import fixture_records, load_fixture
-from projectflow.git_context import Scope
-from projectflow.i18n import tr
-from projectflow.model import Snapshot
-from projectflow.render import graph_summary
-from projectflow.runners.cli_runner import CLIRunner
-from projectflow.routing import RunnerPool
-from projectflow.schema import EXTRACT_SCHEMA, EvidenceValidator, delta_schema
-from projectflow.store import Store
-from projectflow.util import Cancelled, FlowError, ident, private_dir
+from contexttrail.analysis import link_request_turns as analysis_link_request_turns
+from contexttrail.analysis import calibration, call_cap, plan_summary
+from contexttrail.analysis import classify_steps as classify_records
+from contexttrail.demo import FixtureRunner, create_demo
+from contexttrail.evaluation import fixture_records, load_fixture
+from contexttrail.git_context import Scope
+from contexttrail.i18n import tr
+from contexttrail.model import Snapshot
+from contexttrail.render import graph_summary
+from contexttrail.runners.cli_runner import CLIRunner
+from contexttrail.routing import RunnerPool
+from contexttrail.schema import EXTRACT_SCHEMA, EvidenceValidator, delta_schema
+from contexttrail.store import Store
+from contexttrail.util import Cancelled, FlowError, ident, private_dir
 
 
 ROOT = Path(tempfile.gettempdir()) / "contexttrail-studio-fixtures"
@@ -929,8 +929,8 @@ def run_engine(engine: Engine, runner_factory: Callable[[], Any], *,
                                  project_name=tracer.project if trace_client is not None else None):
                 state = graph.invoke({"mode": "cli", "run_id": run_id}, config={
                     "recursion_limit": 1_000_000, "run_name": "ContextTrail analysis",
-                    "tags": ["projectflow", "content" if engine.config.langsmith_include_content else "metadata_only"],
-                    "metadata": {"projectflow_run_id": run_id,
+                    "tags": ["contexttrail", "content" if engine.config.langsmith_include_content else "metadata_only"],
+                    "metadata": {"contexttrail_run_id": run_id,
                                  "runner": engine.config.runner_name or "unknown",
                                  "content_included": engine.config.langsmith_include_content}})
             return state["result"]

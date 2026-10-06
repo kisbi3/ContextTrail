@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from projectflow import i18n
-from projectflow.analysis import AnalysisConfig, Engine
-from projectflow.git_context import Scope
-from projectflow.model import Snapshot, SourceRecord
-from projectflow.store import Store
+from contexttrail import i18n
+from contexttrail.analysis import AnalysisConfig, Engine
+from contexttrail.git_context import Scope
+from contexttrail.model import Snapshot, SourceRecord
+from contexttrail.store import Store
 
 
 @pytest.fixture(autouse=True)

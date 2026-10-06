@@ -5,12 +5,12 @@ import threading
 
 import pytest
 
-from projectflow.analysis import AnalysisConfig, Harness, _evidence_ids
-from projectflow.demo import CASES, FixtureRunner
-from projectflow.evaluation import run_eval, demo_fixture
-from projectflow.model import Snapshot
-from projectflow.runners.cli_runner import parse_codex_output, parse_claude_output
-from projectflow.util import FlowError
+from contexttrail.analysis import AnalysisConfig, Harness, _evidence_ids
+from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.evaluation import run_eval, demo_fixture
+from contexttrail.model import Snapshot
+from contexttrail.runners.cli_runner import parse_codex_output, parse_claude_output
+from contexttrail.util import FlowError
 
 
 def new_harness(store, records, assigned, config=None, graph=None):
@@ -83,7 +83,7 @@ def setup_review_reader(laboratory):
                 assert 'UNQUOTED_READ_SENTINEL' in json.dumps(task,ensure_ascii=False)
             return output
     # Use _extract_unit directly to exclude 'extra' from assigned raw text.
-    from projectflow.routing import RunnerPool
+    from contexttrail.routing import RunnerPool
     unit={'id':'unit_target','sources':['target'],'dependencies':{},'status':'parsed','result':None}
     pool={r.source_id:r for r in records}
     snapshot=Snapshot(records)
@@ -136,12 +136,12 @@ def test_evidence_export_includes_resolution_and_invalidation():
 def test_malformed_expectations_fail_before_any_model_factory(monkeypatch,tmp_path):
     data=demo_fixture()
     data['expectations']={'events':[{'label':'broken_without_title'}]}
-    monkeypatch.setattr('projectflow.evaluation.load_fixture',lambda _: data)
+    monkeypatch.setattr('contexttrail.evaluation.load_fixture',lambda _: data)
     made=[]
     def factory():
         made.append(1)
         return FixtureRunner()
-    monkeypatch.setattr('projectflow.evaluation.FixtureRunner',factory)
+    monkeypatch.setattr('contexttrail.evaluation.FixtureRunner',factory)
     with pytest.raises(FlowError):
         run_eval('demo',tmp_path/'bad-eval','mock',AnalysisConfig())
     assert made==[]
@@ -198,7 +198,7 @@ def test_reply_over_budget_does_not_authorize_unsent_citation(laboratory):
                 output['event_candidates'][0]['evidence']=[{
                     'source_id':'other','start_line':1,'end_line':1,'quote':other.content}]
             return output
-    from projectflow.schema import EvidenceValidator
+    from contexttrail.schema import EvidenceValidator
     h=Harness(UnsentCitation(),{r.source_id:r for r in records},store.graph(),store,
               AnalysisConfig(read_chars=500),threading.Event())
     context=h.context([target])
@@ -270,7 +270,7 @@ def subagent_metadata_fixture(tmp_path,session='session',meta=None):
 
 
 def test_subagent_metadata_symlink_is_not_read(tmp_path):
-    from projectflow.sources.local import _claude_subagent_links
+    from contexttrail.sources.local import _claude_subagent_links
     root,meta=subagent_metadata_fixture(tmp_path)
     secret=tmp_path/'unrelated.json';secret.write_text('{"toolUseId":"call","description":"SECRET_SENTINEL"}')
     meta.unlink();meta.symlink_to(secret)
@@ -278,25 +278,25 @@ def test_subagent_metadata_symlink_is_not_read(tmp_path):
 
 
 def test_subagent_session_id_cannot_escape_root(tmp_path):
-    from projectflow.sources.local import _claude_subagent_links
+    from contexttrail.sources.local import _claude_subagent_links
     root,_=subagent_metadata_fixture(tmp_path,session='../../outside')
     assert _claude_subagent_links(root)=={}
 
 
 def test_subagent_metadata_nonobject_is_skipped(tmp_path):
-    from projectflow.sources.local import _claude_subagent_links
+    from contexttrail.sources.local import _claude_subagent_links
     root,_=subagent_metadata_fixture(tmp_path,meta=[])
     assert _claude_subagent_links(root)=={}
 
 
 def test_subagent_metadata_size_is_bounded(tmp_path):
-    from projectflow.sources.local import _claude_subagent_links
+    from contexttrail.sources.local import _claude_subagent_links
     root,_=subagent_metadata_fixture(tmp_path,meta={'toolUseId':'call','description':'x'*130000})
     assert _claude_subagent_links(root)=={}
 
 
 def test_safe_subagent_metadata_still_connects(tmp_path):
-    from projectflow.sources.local import _claude_subagent_links
+    from contexttrail.sources.local import _claude_subagent_links
     root,_=subagent_metadata_fixture(tmp_path)
     result=_claude_subagent_links(root)
     assert len(result)==1 and next(iter(result.values()))['parent_tool_call_id']=='call'

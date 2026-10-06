@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Synthetic, scripted stage handoff walkthrough. ZERO real model/subagent calls.
 
-Usage after installing Project Flow:
+Usage after installing ContextTrail:
   python scripts/prelive_walkthrough.py --output /tmp/pf-prelive-walkthrough
 
 Inputs/outputs here are intentionally captured because ALL source data is synthetic.
@@ -14,13 +14,13 @@ import copy
 import json
 from pathlib import Path
 
-from projectflow.analysis import AnalysisConfig, Engine, _evidence_ids
-from projectflow.demo import CASES, FixtureRunner
-from projectflow.evaluation import summarize_calls
-from projectflow.git_context import Scope
-from projectflow.model import Snapshot, SourceRecord
-from projectflow.store import Store
-from projectflow.util import FlowError, digest, dumps, private_dir
+from contexttrail.analysis import AnalysisConfig, Engine, _evidence_ids
+from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.evaluation import summarize_calls
+from contexttrail.git_context import Scope
+from contexttrail.model import Snapshot, SourceRecord
+from contexttrail.store import Store
+from contexttrail.util import FlowError, digest, dumps, private_dir
 
 
 def walkthrough(output: Path) -> dict:

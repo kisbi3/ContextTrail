@@ -3,8 +3,8 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "projectflow-contexttrail"
-version = "0.1.0a4"
+name = "contexttrail"
+version = "0.1.0a5"
 description = "Evidence-linked project history from local Codex and Claude Code transcripts"
 readme = "README.md"
 license = "MIT"
@@ -21,15 +21,14 @@ studio = ["langgraph-cli[inmem]>=0.4,<1", "langsmith>=0.14,<1",
           "python-dotenv[cli]>=1,<2"]
 
 [project.scripts]
-project = "projectflow.cli:main"
-projectflow = "projectflow.cli:main"
-contexttrail = "projectflow.cli:main"
+contexttrail = "contexttrail.cli:main"
+ct = "contexttrail.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-projectflow = ["prompts/*.md", "assets/*.html", "assets/*.js", "assets/*.css"]
+contexttrail = ["prompts/*.md", "assets/*.html", "assets/*.js", "assets/*.css"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -7,15 +7,15 @@ from dataclasses import replace
 
 import pytest
 
-from projectflow.analysis import (AnalysisConfig, Engine, EVIDENCE_POLICY_REUSE, _session_unit_chunks,
+from contexttrail.analysis import (AnalysisConfig, Engine, EVIDENCE_POLICY_REUSE, _session_unit_chunks,
                                    build_task, prompt)
-from projectflow.demo import CASES, FixtureRunner
-from projectflow.model import Snapshot
-from projectflow.schema import (DELTA_ITEM_ARRAYS, DELTA_SCHEMA, PATCH_ARRAYS, REUSABLE_EVIDENCE_SECTIONS,
+from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.model import Snapshot
+from contexttrail.schema import (DELTA_ITEM_ARRAYS, DELTA_SCHEMA, PATCH_ARRAYS, REUSABLE_EVIDENCE_SECTIONS,
                                 REVIEW_PATCH_SCHEMA, EvidenceValidator, EXTRACT_SCHEMA, merge_review_patch,
                                 review_patch_audit)
-from projectflow.store import Store
-from projectflow.util import FlowError, dumps
+from contexttrail.store import Store
+from contexttrail.util import FlowError, dumps
 
 
 def test_no_data_never_constructs_runner(laboratory):
@@ -145,7 +145,7 @@ def test_unit_planner_does_not_leave_a_sliver_for_a_meaningful_cut(laboratory):
 
 
 def test_unit_planner_window_follows_the_estimated_payload(laboratory):
-    from projectflow.analysis import estimated_payload, payload_budget
+    from contexttrail.analysis import estimated_payload, payload_budget
     _, _, engine, _, make = laboratory
     engine.config.task_chars = 100_000
     records = [make("x" * 1000, key=f"a{i}", role="assistant") for i in range(50)]
@@ -161,7 +161,7 @@ def test_unit_planner_window_follows_the_estimated_payload(laboratory):
 
 
 def test_unit_planner_ids_do_not_depend_on_the_budget_only_on_the_records(laboratory):
-    from projectflow.util import ident
+    from contexttrail.util import ident
     _, _, engine, _, make = laboratory
     records = [make(f"m{i}", key=f"a{i}", role="assistant") for i in range(4)]
     first = _ids(_session_unit_chunks(records, engine.config, []))
@@ -819,7 +819,7 @@ def test_merge_review_patch_replaces_adds_and_removes_items():
 
 
 def test_review_patch_bookkeeping_with_one_reading_is_settled_in_code():
-    from projectflow.schema import reconcile_review_patch
+    from contexttrail.schema import reconcile_review_patch
     empty = {"events_to_update": [], "edges_to_invalidate": [], "open_items_to_upsert": [], "open_items_to_resolve": []}
     cite = {"source_id": "s1", "start_line": 1, "end_line": 1, "quote": "the run passed"}
     proposed = {**empty, "events_to_add": [{"id": "tmp:a", "evidence": [cite]}], "edges_to_add": [{"id": "tmp:e"}]}
@@ -902,7 +902,7 @@ def test_integrate_draft_needs_no_call_while_the_graph_is_empty(laboratory):
 
 
 def test_draft_delta_follows_one_existing_match_and_drops_a_link_it_folds_onto_itself():
-    from projectflow.schema import draft_delta
+    from contexttrail.schema import draft_delta
     quote = [{"source_id": "s", "start_line": 1, "end_line": 1, "quote": "q"}]
     event = lambda i: {"id": i, "kind": "action", "title": i, "summary": "", "actor": "assistant",
                        "status": "applied", "basis": "tool_record", "session_ids": [], "worktree_ids": [],

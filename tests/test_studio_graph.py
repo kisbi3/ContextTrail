@@ -5,16 +5,16 @@ import pytest
 
 pytest.importorskip("langgraph")
 
-from projectflow.git_context import Scope
-from projectflow.demo import create_demo
-from projectflow.demo import CASES, FixtureRunner
-from projectflow.evaluation import demo_fixture
-from projectflow.store import Store
-from projectflow import studio_graph
-from projectflow import analysis
-from projectflow.studio_graph import _context, graph
-from projectflow.util import FlowError
-from projectflow.util import dumps
+from contexttrail.git_context import Scope
+from contexttrail.demo import create_demo
+from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.evaluation import demo_fixture
+from contexttrail.store import Store
+from contexttrail import studio_graph
+from contexttrail import analysis
+from contexttrail.studio_graph import _context, graph
+from contexttrail.util import FlowError
+from contexttrail.util import dumps
 
 
 def test_studio_graph_runs_real_pipeline_with_synthetic_fixture():

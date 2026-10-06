@@ -960,7 +960,7 @@ class TerminalApp:
                 self.messages.put(("done", result))
             except Exception as exc:
                 self.messages.put(("error", str(exc) if isinstance(exc, FlowError) else type(exc).__name__))
-        self.worker = threading.Thread(target=run, name="projectflow-analysis", daemon=True)
+        self.worker = threading.Thread(target=run, name="contexttrail-analysis", daemon=True)
         self.worker.start()
 
     def ask_units(self, screen, plan: dict) -> bool | int:

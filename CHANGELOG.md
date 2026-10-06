@@ -4,6 +4,9 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 
 ## Unreleased
 
+### Changed
+- **One name: ContextTrail.** The PyPI package, the import name and the command are `contexttrail`, with `ct` as a short alias; the `project` and `projectflow` commands and the "Project Flow" product name are gone. Version `0.1.0a5`. Compatibility kept: an existing `.git/projectflow/` (or `.projectflow/`) state directory is still used, `projectflow-eval-v1` fixtures and `projectflow-eval-report-v1` reports still load, and the tool's own `projectflow-run-` runner sessions stay excluded from analysis. `install.sh` links `ct` and removes `project`/`projectflow` links that pointed at this install.
+
 ### Added
 - **English screen text.** The terminal output, TUI, browser view, CLI help, `find`/`show` output, eval review and input preview are in English or Korean, chosen once per process (`i18n.resolve`): `--language`, else `CONTEXTTRAIL_LANGUAGE`, else the project's saved output language, else the locale, else English. Korean output is byte-identical to before. Text the model reads is now English in one language, no switch: validation messages returned for repair, the input-scope limitations and log-parser warnings that enter the extract input, read-request denials, review questions, and the text code writes into the graph (dialog-turn rationales, unit warnings, dropped-candidate notes). Message shapes and the matchers over them (`QUOTE_MISMATCH_HEADS`, the `informational` tuple, `error_kinds`) changed together. This is a model-input change; the owner's evaluation is pending. The synthetic demo's content is still Korean.
 - The synthetic demo has an English story, chosen by the screen language (`demo.cases()`); the mock runner recognises both.

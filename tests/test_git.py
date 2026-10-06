@@ -1,9 +1,9 @@
 import subprocess
 from pathlib import Path
 
-from projectflow.git_context import Scope, collect_git
-from projectflow.util import FlowError
-import projectflow.git_context as git_context
+from contexttrail.git_context import Scope, collect_git
+from contexttrail.util import FlowError
+import contexttrail.git_context as git_context
 
 
 def run(folder, *args):
@@ -146,3 +146,17 @@ def test_unicode_and_space_export_paths_excluded(tmp_path):
         (folder/name).write_text('SECRET_EXPORT_CONTENT\n'); outputs.append(str(folder/name))
     result=collect_git(Scope.resolve(folder),exclude=outputs)
     assert all('SECRET_EXPORT_CONTENT' not in r.content for r in result.records)
+
+
+def test_a_state_directory_from_the_earlier_name_keeps_being_used(tmp_path):
+    """A folder analysed under the `projectflow` name keeps its state; a fresh folder gets the current name."""
+    earlier = tmp_path / "earlier"
+    (earlier / ".projectflow").mkdir(parents=True)
+    assert Scope.resolve(earlier).state_dir == earlier / ".projectflow"
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    assert Scope.resolve(fresh).state_dir == fresh / ".contexttrail"
+    both = tmp_path / "both"
+    (both / ".projectflow").mkdir(parents=True)
+    (both / ".contexttrail").mkdir()
+    assert Scope.resolve(both).state_dir == both / ".contexttrail"

@@ -76,7 +76,7 @@ class Scope:
             raise FlowError(tr(f"프로젝트 디렉터리가 없습니다: {folder}", f"Project directory does not exist: {folder}"))
         root_text = git(folder, "rev-parse", "--show-toplevel", ok=True)
         if not root_text:
-            return cls(folder, None, None, "", [folder], folder / ".projectflow",
+            return cls(folder, None, None, "", [folder], _state_dir(folder / ".contexttrail", folder / ".projectflow"),
                        ident("scope_", str(folder)))
         root = Path(root_text).resolve()
         relative = str(folder.relative_to(root))
@@ -86,8 +86,14 @@ class Scope:
         roots = [Path(x[9:]).resolve() for x in raw.split("\0") if x.startswith("worktree ")]
         roots = [p for p in roots if (p / relative).is_dir()] or [root]
         key = digest(relative)[:16]
-        return cls(folder, root, common, relative, roots, common / "projectflow" / key,
+        return cls(folder, root, common, relative, roots,
+                   _state_dir(common / "contexttrail" / key, common / "projectflow" / key),
                    ident("scope_", str(common), relative))
+
+
+def _state_dir(current: Path, earlier: Path) -> Path:
+    """The state directory: the current name, unless only the earlier name (`projectflow`) exists."""
+    return earlier if earlier.is_dir() and not current.exists() else current
 
 
 def collect_git(scope: Scope, *, history_limit: int = 50, exclude: list[str] | None = None) -> Snapshot:
@@ -145,7 +151,7 @@ def collect_git(scope: Scope, *, history_limit: int = 50, exclude: list[str] | N
                 elif " b/" in first:
                     left, right = first.rsplit(" b/", 1)
                     candidates = [left[2:], right]
-            if any(str((root / path).resolve()) in excluded or ".projectflow" in Path(path).parts
+            if any(str((root / path).resolve()) in excluded or {".contexttrail", ".projectflow"} & set(Path(path).parts)
                    for path in candidates):
                 continue
             out.append("diff --git " + chunk)

@@ -1,4 +1,4 @@
-"""Explicit, host-side LangSmith tracing for Project Flow runs and model calls.
+"""Explicit, host-side LangSmith tracing for ContextTrail runs and model calls.
 
 Traces attach to the code that actually runs: the LangGraph nodes, the harness steps
 inside them and each model call. Without `--langsmith-content` every payload passes
@@ -126,7 +126,7 @@ def _metadata_fields(metadata: dict) -> dict:
             continue
         if value is None or isinstance(value, (bool, int, float)):
             kept[key] = value
-        elif key.startswith(("langgraph_", "ls_", "projectflow_")) or key in ENUM_KEYS | NAME_KEYS:
+        elif key.startswith(("langgraph_", "ls_", "contexttrail_")) or key in ENUM_KEYS | NAME_KEYS:
             if isinstance(value, str) and _SAFE_NAME.match(value):
                 kept[key] = value
             elif isinstance(value, (list, tuple)) and all(isinstance(v, str) and _SAFE_NAME.match(v) for v in value):
@@ -209,7 +209,7 @@ class LangSmithTracer:
                     "response_summary": metadata_only(output) if output is not None else None})
         if usage_metadata:
             outputs["usage_metadata"] = usage_metadata
-        trace_meta = {"projectflow_run_id": run_id, "projectflow_unit_id": unit_id,
+        trace_meta = {"contexttrail_run_id": run_id, "contexttrail_unit_id": unit_id,
                       "stage": stage, "status": status, "requested_model": metadata.get("requested_model"),
                       "reasoning_effort": metadata.get("reasoning_effort"),
                       "actual_model": details.get("actual_model"), "read_round": metadata.get("read_round", 0),
@@ -232,11 +232,11 @@ class LangSmithTracer:
                                       auto_batch_tracing=False, timeout_ms=(2000, 5000),
                                       omit_traced_runtime_info=True)
         try:
-            client.create_run(name=f"Project Flow {stage}", inputs=inputs, outputs=outputs,
+            client.create_run(name=f"ContextTrail {stage}", inputs=inputs, outputs=outputs,
                               run_type="llm", project_name=self.project,
                               id=run_uuid, **placement,
                               start_time=started_at, end_time=finished_at,
-                              tags=["projectflow", stage, status], extra={"metadata": trace_meta},
+                              tags=["contexttrail", stage, status], extra={"metadata": trace_meta},
                               error=status if status in {"failed", "validation_error"} else None)
             client.flush(timeout=5)
         finally:

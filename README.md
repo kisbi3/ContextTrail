@@ -6,7 +6,7 @@
 
 ContextTrail reads the transcripts the two CLIs keep locally, plus the project's Git history, and asks the CLI you already have installed (sandboxed, read-only) to reconstruct the flow. Every event and every arrow carries a quote from the source, and the code checks each quote against the record before anything is stored. You get a terminal view, a local browser view, `find`/`show` commands, and two agent skills so Codex and Claude Code can answer "why did we drop X?" from the saved graph instead of from memory.
 
-Development alpha `0.1.0a4`. Linux and macOS, Python 3.11+. [What has been measured](#6-what-has-been-measured) is further down; nothing on this page is an estimate presented as a result.
+Development alpha `0.1.0a5`. Linux and macOS, Python 3.11+. [What has been measured](#6-what-has-been-measured) is further down; nothing on this page is an estimate presented as a result.
 
 ![The terminal view on the synthetic demo: the event flow on top, the selected event with its links and quoted evidence below](docs/images/tui-demo-en.png)
 
@@ -156,7 +156,7 @@ Earlier in the same flow a change is `applied · unverified` because its tests w
 
 ## What it does and does not do
 
-- **Reads only.** It never modifies the project, the transcripts, or Git refs, index or config. Its own state lives under `.git/projectflow/` (or `.projectflow/` without Git).
+- **Reads only.** It never modifies the project, the transcripts, or Git refs, index or config. Its own state lives under `.git/contexttrail/` (or `.contexttrail/` without Git).
 - **Calls a model only when you ask.** Viewing, exporting, the browser page and node selection make zero calls. Analysis runs on `analyze`, on `R` in the terminal view, or when an agent runs the `contexttrail-update` skill with a unit count you gave it; before sending it shows what it will send and asks.
 - **Runs your CLI in a sandbox.** The Codex or Claude CLI runs under bubblewrap (Linux) or a deny-default `sandbox-exec` profile (macOS) with its credential file bind-mounted read-only. If the sandbox is unavailable it refuses to run; there is no unsandboxed fallback, and it never reads or copies credential contents.
 - **Sends only this project's records.** A record is attributed to the project by the working directory the CLI recorded, never by keyword guessing. Out-of-scope conversations never reach the model.
@@ -164,11 +164,11 @@ Earlier in the same flow a change is `applied · unverified` because its tests w
 - **Costs tokens from your own account.** The pipeline is tuned so a cheap model does the work: on the measured fixture, Claude Sonnet finishes a work unit in about a minute. The plan shown before a run estimates calls, tokens and minutes.
 - **Is incremental.** Finished work units are never re-sent. Re-running with no new records makes zero calls.
 
-Version: `0.1.0a4` · Linux / SSH primary, macOS measured · names are provisional.
+Version: `0.1.0a5` · Linux / SSH primary, macOS measured · names are provisional.
 
 **Languages:** the terminal, TUI, browser view and CLI help are in English or Korean, chosen from `--language`, `CONTEXTTRAIL_LANGUAGE`, the project's saved output language, or the locale. Event titles and summaries are written in the language of your own messages (`--language` overrides). Everything the model reads is English. A Korean README is not written yet.
 
-**More:** [model tiering, project filters, and test usage](docs/guides/TIERED_ANALYSIS.md). Before opening the UI on a real project, run `project scan .` to review input selection.
+**More:** [model tiering, project filters, and test usage](docs/guides/TIERED_ANALYSIS.md). Before opening the UI on a real project, run `contexttrail scan .` to review input selection.
 
 ---
 
@@ -184,21 +184,21 @@ contexttrail --version
 
 `install.sh` installs the package into `~/.local/share/contexttrail/venv`, links `~/.local/bin/contexttrail` and (where possible) the `project` command, and registers Codex/Claude Code agent commands. Existing user command files are preserved; files created by ContextTrail are updated on reinstall. Package repository access may be required. If `~/.local/bin` is not in `PATH`, follow the instructions printed during installation. Running `pip install` or `pip install git+...` directly does not register agent commands — run `contexttrail install-commands` afterward.
 
-After installation, running `contexttrail` with no arguments in a project directory opens its saved flow view — equivalent to `project view .`. AI is called only when you press `R` in the TUI. To open a different directory, pass it as the first argument: `contexttrail /path/to/project`.
+After installation, running `contexttrail` with no arguments in a project directory opens its saved flow view — equivalent to `contexttrail view .`. AI is called only when you press `R` in the TUI. To open a different directory, pass it as the first argument: `contexttrail /path/to/project`.
 
 ```bash
 cd /path/to/project
 contexttrail
 ```
 
-In a non-Git directory, state is stored in `.projectflow/`. In a Git repository, it goes under `.git/projectflow/`.
+In a non-Git directory, state is stored in `.contexttrail/`. In a Git repository, it goes under `.git/contexttrail/`.
 
-Code was tested on Python 3.13.5. Python 3.11 and 3.12 compatibility is pending verification. If another program already uses the `project` command, use `contexttrail` or `python -m projectflow` instead.
+Code was tested on Python 3.13.5. Python 3.11 and 3.12 compatibility is pending verification. The command is `contexttrail`, with `ct` as a short alias; `python -m contexttrail` also works.
 
 ### Running the demo without AI or credentials
 
 ```bash
-project demo --path /tmp/projectflow-demo
+contexttrail demo --path /tmp/contexttrail-demo
 ```
 
 Specify a new or empty directory. This generates synthetic Codex/Claude logs and a demo project **without calling any external model** — it uses a test-only Mock Runner that handles a fixed set of cases. This Mock cannot be selected as the analyzer for a real project.
@@ -218,8 +218,8 @@ Example flow:
 Viewing saved results and re-running without changes:
 
 ```bash
-project view /tmp/projectflow-demo/sample-project
-project analyze /tmp/projectflow-demo/sample-project --no-tui
+contexttrail view /tmp/contexttrail-demo/sample-project
+contexttrail analyze /tmp/contexttrail-demo/sample-project --no-tui
 # noop if no new records — 0 runner calls
 ```
 
@@ -232,15 +232,15 @@ project analyze /tmp/projectflow-demo/sample-project --no-tui
 **Install and log in to the Codex or Claude Code CLI yourself** before use. ContextTrail does not handle token issuance, copying, or login. On Linux, real AI execution requires `bubblewrap` (`bwrap`) and available user namespaces. On macOS, `sandbox-exec` and file-based CLI credentials are required. If isolation tools or required CLI options are missing, execution is blocked. The macOS path uses a deny-default Seatbelt profile with a temporary HOME; it has passed Codex `doctor --smoke` and a small live-segment analysis. Blocking of malicious tools and config is not yet validated.
 
 ```bash
-project doctor --runner codex
-project doctor --runner claude
+contexttrail doctor --runner codex
+contexttrail doctor --runner claude
 ```
 
 The default `doctor` run checks CLI version, help output, and isolation feasibility — no model calls. **The presence of a credential file does not guarantee successful authentication.** The following commands make explicit real-account calls, sending a small synthetic input (not your project data):
 
 ```bash
-project doctor --runner codex --smoke --yes
-project doctor --runner claude --smoke --yes
+contexttrail doctor --runner codex --smoke --yes
+contexttrail doctor --runner claude --smoke --yes
 ```
 
 This smoke test is a simple structured JSON round-trip. **It does not substitute for full integration validation of mixed-log analysis, all ReadRequests, or permission blocking.** Per-CLI flags and unvalidated items are in [Implementation Status](docs/reports/IMPLEMENTATION_STATUS.md); isolation constraints are in [Security](docs/SECURITY.md).
@@ -255,57 +255,57 @@ Current alpha authentication constraints:
 
 ```bash
 # Check relevant record count, linked worktrees, and limitations — no AI calls
-project scan /path/to/project
+contexttrail scan /path/to/project
 
 # Read logs from both sources and analyze with one chosen runner
-project analyze /path/to/project --runner codex
+contexttrail analyze /path/to/project --runner codex
 # or
-project analyze /path/to/project --runner claude
+contexttrail analyze /path/to/project --runner claude
 ```
 
 Replace `/path/to/project` with the actual path on your server. The first analysis prompts for transmission consent. **Conversation turns, tool outputs, and code fragments may be sent to the model service of the chosen CLI.** This is not an automatic secret redactor — verify your project's transmission policy before proceeding with sensitive material.
 
-The chosen runner, settings, and consent are stored in the per-scope local DB. Analysis proceeds oldest-first through **work units**. Each run first shows a summary such as "1,480 units pending · 15 this run (≤30 AI calls) · ~2.39M input tokens · ~120 min (estimated)" along with token/time projections for 5, 15, and 30 units, then prompts for the number of units to process (Enter = shown count, `n` = cancel, `--yes` = no prompt). Use `--units N` to specify in advance. Once units are set, the per-unit AI call cap is 6; `--max-calls` overrides that. Both values apply only to the current run and are not saved. Estimates are calibrated from actual input tokens and timing if ≥3 units with usage records exist. Use `project scan` to preview the plan without sending anything (`plan_text`, `plan_choices`).
+The chosen runner, settings, and consent are stored in the per-scope local DB. Analysis proceeds oldest-first through **work units**. Each run first shows a summary such as "1,480 units pending · 15 this run (≤30 AI calls) · ~2.39M input tokens · ~120 min (estimated)" along with token/time projections for 5, 15, and 30 units, then prompts for the number of units to process (Enter = shown count, `n` = cancel, `--yes` = no prompt). Use `--units N` to specify in advance. Once units are set, the per-unit AI call cap is 6; `--max-calls` overrides that. Both values apply only to the current run and are not saved. Estimates are calibrated from actual input tokens and timing if ≥3 units with usage records exist. Use `contexttrail scan` to preview the plan without sending anything (`plan_text`, `plan_choices`).
 
 **Output language.** Event titles and summaries are written in one language per project, determined by the dominant language of user messages during the first analysis run. Script-distinct languages (Korean, Japanese, etc.) are identified directly; for Latin-script languages (English, Spanish, etc.) the system locale is used as a tiebreaker. Source text in other languages is still summarized in the chosen language. Code names, filenames, commands, and quotations remain verbatim. Use `--language Korean` to change; `--language auto` re-detects. Already-analyzed events are not re-translated unless re-analyzed.
 
 **Speed.** While integrating one work unit, extraction for the next unit begins in parallel (with one extraction worker). Token cost is identical; only wall-clock time is reduced. For read-only tool calls (file reads, listings, searches), only the first 400 and last 200 characters are sent; the model may request the rest via a ReadRequest.
 
-`--session <session-id>` prioritizes that session and its sub-agents over older records. `--session current` refers to the Codex/Claude Code conversation that invoked this command. Events added this way are marked "out-of-order analysis" — relationships to earlier unanalyzed records may be missing. Use `project analyze /path/to/project` for subsequent runs. Runner does not switch silently; completed segments are not re-analyzed just because settings changed.
+`--session <session-id>` prioritizes that session and its sub-agents over older records. `--session current` refers to the Codex/Claude Code conversation that invoked this command. Events added this way are marked "out-of-order analysis" — relationships to earlier unanalyzed records may be missing. Use `contexttrail analyze /path/to/project` for subsequent runs. Runner does not switch silently; completed segments are not re-analyzed just because settings changed.
 
-**Analysis model and reasoning level.** ContextTrail always specifies the model by name because the isolation environment does not carry the user's CLI config file (`~/.codex/config.toml`, etc.). Defaults: Codex `gpt-6-sol`, Claude `sonnet`; override with `--model`. Per-stage reasoning level defaults to `medium` for all stages (lowered from `high` for integrate/re-review on 2026-09-27). Adjust with `--extract-effort`, `--integrate-effort`, `--escalation-effort` (`low`·`medium`·`high`·`xhigh`·`max`). Every call logs the requested model and reasoning level in the local call ledger (`project ops --details`) and evaluation reports. Claude records the responding model; Codex does not report it in its response.
+**Analysis model and reasoning level.** ContextTrail always specifies the model by name because the isolation environment does not carry the user's CLI config file (`~/.codex/config.toml`, etc.). Defaults: Codex `gpt-6-sol`, Claude `sonnet`; override with `--model`. Per-stage reasoning level defaults to `medium` for all stages (lowered from `high` for integrate/re-review on 2026-09-27). Adjust with `--extract-effort`, `--integrate-effort`, `--escalation-effort` (`low`·`medium`·`high`·`xhigh`·`max`). Every call logs the requested model and reasoning level in the local call ledger (`contexttrail ops --details`) and evaluation reports. Claude records the responding model; Codex does not report it in its response.
 
 **Change re-review.** If integration results contain unlinked execution results, unlinked fixes, or modifications to existing events/relationships, the same runner reviews the proposed changes one more time. This adds one call to that work unit. Use `--no-review` to skip for the current run only.
 
 For non-interactive use, consent can be given with explicit `--yes`. The following command goes beyond a simple example and allows real transmission — confirm scope first:
 
 ```bash
-project analyze /path/to/project --runner codex --yes --no-tui
+contexttrail analyze /path/to/project --runner codex --yes --no-tui
 ```
 
 Default log paths: `CODEX_HOME` or `~/.codex` (`sessions/`, `archived_sessions/`) and `CLAUDE_CONFIG_DIR` or `~/.claude` (`projects/`). Override when paths differ per server:
 
 ```bash
-project scan /path/to/project \
+contexttrail scan /path/to/project \
   --codex-home /path/to/codex-home \
   --claude-home /path/to/claude-home
 ```
 
 Only the project currently being worked on is analyzed. If logs are on a local PC and the project is on a Linux server, the server does not automatically collect logs from the PC. Cross-machine/repo auto-merge is not a feature of this version.
 
-Extraction input contains the source text for the work unit plus limited surrounding context. Up to 4 conversation/Git records from the same worktree within 15 minutes are placed at the front of the surrounding context and additional read list. **Temporal proximity alone does not imply causation.** Long Git diffs are split into citable fragments of ≤32,000 characters, the same as logs. Commits whose Git command output exceeds the 4 MB safety limit are deferred while the next commit continues — check `project scan` for limitations.
+Extraction input contains the source text for the work unit plus limited surrounding context. Up to 4 conversation/Git records from the same worktree within 15 minutes are placed at the front of the surrounding context and additional read list. **Temporal proximity alone does not imply causation.** Long Git diffs are split into citable fragments of ≤32,000 characters, the same as logs. Commits whose Git command output exceeds the 4 MB safety limit are deferred while the next commit continues — check `contexttrail scan` for limitations.
 
 Work units are first grouped by session and worktree. Within a session, summary compression, gaps ≥3 hours, and date changes with sufficient gaps are used as boundaries. When the input budget is reached, breaks are made at user-turn boundaries where possible; tool calls/results and source fragments are kept together. Work unit boundaries do not correspond to event node boundaries in the final graph. Already-analyzed segments are not re-chunked in incremental analysis.
 
-To preview a small fixed evaluation fixture before model calls, run `project eval --fixture /tmp/case.json --preview --output /tmp/case-preview`. The output `input-preview.html` shows WorkUnit boundaries and source text, the common system instruction, the extraction instruction, `new_records`/`context_only`, existing events, evidence, manifest, the response JSON Schema, the full task JSON, and the generation path of each part. **The first unit's input is the exact initial request; subsequent units' existing-graph sections are estimates that depend on earlier model responses.** Preview includes private source text; no AI calls are made.
+To preview a small fixed evaluation fixture before model calls, run `contexttrail eval --fixture /tmp/case.json --preview --output /tmp/case-preview`. The output `input-preview.html` shows WorkUnit boundaries and source text, the common system instruction, the extraction instruction, `new_records`/`context_only`, existing events, evidence, manifest, the response JSON Schema, the full task JSON, and the generation path of each part. **The first unit's input is the exact initial request; subsequent units' existing-graph sections are estimates that depend on earlier model responses.** Preview includes private source text; no AI calls are made.
 
-After `project eval`, `review.html` is generated automatically. It shows event/relationship candidates, citation strings vs. actual source lines, and validation errors for each model call side by side. Eval runs also save failed structured responses to `call-review/` with private user permissions. You can regenerate HTML for earlier evals with `project review /path/to/eval-output`, but source model response text not saved at the time cannot be recovered. This local review view makes no AI calls or external transmissions.
+After `contexttrail eval`, `review.html` is generated automatically. It shows event/relationship candidates, citation strings vs. actual source lines, and validation errors for each model call side by side. Eval runs also save failed structured responses to `call-review/` with private user permissions. You can regenerate HTML for earlier evals with `contexttrail review /path/to/eval-output`, but source model response text not saved at the time cannot be recovered. This local review view makes no AI calls or external transmissions.
 
 ---
 
 ## 3. Using the Terminal UI
 
-`project view`, `project analyze`, and `project graph` share the same screen. When user messages exist in the graph, the left panel shows a **request list**; the center **event flow** panel renders only the span of the selected request — from that message to the next message in the same session. Use `[`/`]` to navigate requests, and `A` to toggle between full-flow and per-request views. Connections to out-of-span events are annotated inline as `← [02] motivates`. Events before any recorded request are grouped under "Events without request record."
+`contexttrail view`, `contexttrail analyze`, and `contexttrail graph` share the same screen. When user messages exist in the graph, the left panel shows a **request list**; the center **event flow** panel renders only the span of the selected request — from that message to the next message in the same session. Use `[`/`]` to navigate requests, and `A` to toggle between full-flow and per-request views. Connections to out-of-span events are annotated inline as `← [02] motivates`. Events before any recorded request are grouped under "Events without request record."
 
 The **event flow** panel draws events as boxes with labeled arrows. The left column lists events in record order; execution results that verified a change but do not continue elsewhere are attached to the right of that change as `──verified──▶`. Results that lead to the next story beat (e.g. a failure motivating a fix) remain in the column, so `failure → motivates → fix` reads downward. Adjacent boxes connect with downward arrows; distant boxes connect via a margin line. The margin line notes the source box number and relationship as `[02] motivates ▶` before the destination, so the origin is visible without scrolling back. Unrendered connections are annotated on both boxes as `→ [06] motivates` / `← [05] motivates`. Events with no relationships show "No connected events." Every user message becomes a `request` box; events in the same session span with no other relationships are connected from that request as `follow-up` — this reflects conversational structure, not causal claims. Groups of events sharing no session or relationship (e.g. independent features from separate sessions) are rendered under `══ Flow 1/2 ══` headings. Titles and status are never truncated — they wrap. The selected box is drawn with a bold border; only its connected lines, annotations, and boxes are highlighted. When a panel is too narrow for boxes, it falls back to a branch list.
 
@@ -346,7 +346,7 @@ The UI does not depend on terminal image protocols or specific emulators. Mouse 
 
 **Compatibility targets:** standard SSH, Windows Terminal, IDE terminals, tmux, screen. Tested: `xterm-256color`, `screen-256color`, `tmux-256color`, `linux`, `vt100` TERM values, and resize on a Linux PTY. This does not imply complete screen/keyboard compatibility verification on each product. `TERM`, CJK width, and font issues must be verified on real servers separately.
 
-In `TERM=dumb` or when output is piped, the UI falls back to plain text. The `project graph` text output follows the flow with per-event description, verification, connections, and evidence — the same content as the right panel. ContextTrail agent commands installed into Codex/Claude Code read this output. If curses initialization fails on an unknown terminfo, a clear error is shown; use `--no-tui` to view saved results.
+In `TERM=dumb` or when output is piped, the UI falls back to plain text. The `contexttrail graph` text output follows the flow with per-event description, verification, connections, and evidence — the same content as the right panel. ContextTrail agent commands installed into Codex/Claude Code read this output. If curses initialization fails on an unknown terminfo, a clear error is shown; use `--no-tui` to view saved results.
 
 The **analysis tokens** counter at the bottom of the screen is the sum of calls where the runner reported both input and output tokens in this project's local LLM call ledger. If some calls lack usage data, `+ (confirmed calls/total calls)` is appended. It does not include tokens used in the original Codex/Claude conversations or estimated costs.
 
@@ -356,7 +356,7 @@ LangSmith tracing (`--langsmith`) is a developer tool for inspecting analysis st
 
 ### Viewing Analysis Runs in Studio (Developer)
 
-`project analyze` and `project eval` invoke the **same LangGraph execution graph** as Studio's `contexttrail_analysis`. The LangGraph runtime is included in the base install; the optional `studio` install adds a development server. You can inspect extraction input preparation, model calls, candidate evidence validation, integration input preparation, graph change summaries, and SQLite publishing in live execution nodes. `extract_input.request` and `integrate_input.request` in node state are the exact tasks to be sent; `candidate_audit` and `graph_change_audit` contain source citations and reflected events/relationships. Additional read and repair calls appear in sub-traces. Claude can be read as log input but only Codex is used as the model runner. Project paths and eval fixtures for live mode are fixed via server environment variables, not Studio input.
+`contexttrail analyze` and `contexttrail eval` invoke the **same LangGraph execution graph** as Studio's `contexttrail_analysis`. The LangGraph runtime is included in the base install; the optional `studio` install adds a development server. You can inspect extraction input preparation, model calls, candidate evidence validation, integration input preparation, graph change summaries, and SQLite publishing in live execution nodes. `extract_input.request` and `integrate_input.request` in node state are the exact tasks to be sent; `candidate_audit` and `graph_change_audit` contain source citations and reflected events/relationships. Additional read and repair calls appear in sub-traces. Claude can be read as log input but only Codex is used as the model runner. Project paths and eval fixtures for live mode are fixed via server environment variables, not Studio input.
 
 ```bash
 python -m pip install -e '.[dev,studio]'
@@ -376,7 +376,7 @@ dotenv -f /path/to/private/.env run -- env -u OPENAI_API_KEY \
   langgraph dev --no-browser --host 127.0.0.1 --port 2025
 ```
 
-Studio input `{"mode":"eval","confirm_live":true,"max_units":1,"max_calls":10}` analyzes the reviewed small fixture with **real Codex** and saves to a separate temporary state. `{"mode":"live","confirm_live":true,"max_units":1,"max_calls":10}` scans the full project and publishes to the existing ContextTrail state DB. Only one work unit is processed by default; if units remain, the run ends with `partial`. Actual model input/output is visible in the `Codex structured response` sub-trace in Studio. Records from `project analyze` run separately in the terminal do not appear retroactively in Studio UI (see [LLM Ops](docs/guides/LLM_OPS.md) for developer tracing). The Studio dev server has no user authentication — bind only to `127.0.0.1` and shut down after use. See [Studio Architecture](docs/guides/STUDIO_ARCHITECTURE.md) for details.
+Studio input `{"mode":"eval","confirm_live":true,"max_units":1,"max_calls":10}` analyzes the reviewed small fixture with **real Codex** and saves to a separate temporary state. `{"mode":"live","confirm_live":true,"max_units":1,"max_calls":10}` scans the full project and publishes to the existing ContextTrail state DB. Only one work unit is processed by default; if units remain, the run ends with `partial`. Actual model input/output is visible in the `Codex structured response` sub-trace in Studio. Records from `contexttrail analyze` run separately in the terminal do not appear retroactively in Studio UI (see [LLM Ops](docs/guides/LLM_OPS.md) for developer tracing). The Studio dev server has no user authentication — bind only to `127.0.0.1` and shut down after use. See [Studio Architecture](docs/guides/STUDIO_ARCHITECTURE.md) for details.
 
 ---
 
@@ -385,7 +385,7 @@ Studio input `{"mode":"eval","confirm_live":true,"max_units":1,"max_calls":10}` 
 Press `B` in the TUI, or run in a separate terminal:
 
 ```bash
-project serve /path/to/project --port 8765
+contexttrail serve /path/to/project --port 8765
 ```
 
 The server binds to `127.0.0.1` only by default. Set up SSH port forwarding from your PC (replace `user@server` with your actual connection details):
@@ -407,21 +407,21 @@ No external CDNs or web fonts are used. The browser graph is a custom SVG layout
 To open the saved event flow directly in the terminal:
 
 ```bash
-project graph /path/to/project
-project graph /path/to/eval-output
+contexttrail graph /path/to/project
+contexttrail graph /path/to/eval-output
 ```
 
 In a terminal, this opens an interactive view with the event flow and selected event's description and evidence side by side. Use arrow keys to select events, `Tab` to focus the detail panel, and `Q` to close. When a screen cannot be opened (e.g. when piped or run from a coding agent), the same command prints event summaries, relationships, and evidence excerpts to stdout. No AI calls or external transmissions are made.
 
-The same command works on `project eval` output directories. Stdout may contain private source citations — review before sharing.
+The same command works on `contexttrail eval` output directories. Stdout may contain private source citations — review before sharing.
 
 To find or inspect individual events:
 
 ```bash
-project find "install script"        # events with all words in title, description, or source evidence — newest first
-project find                         # recent events and open items
-project show ev_6226b954             # status, connections, and source evidence for one event
-project show contexttrail:ev_6226b954@v12   # copied reference; notifies if event changed since v12
+contexttrail find "install script"        # events with all words in title, description, or source evidence — newest first
+contexttrail find                         # recent events and open items
+contexttrail show ev_6226b954             # status, connections, and source evidence for one event
+contexttrail show contexttrail:ev_6226b954@v12   # copied reference; notifies if event changed since v12
 ```
 
 Output is brief and machine-friendly by default; `--json` is also supported. No AI calls are made — reads only from stored results.
@@ -445,14 +445,14 @@ The legacy slash-style variants `/prompts:contexttrail-update` and `/prompts:con
 ### Export
 
 ```bash
-project export /path/to/project --format md --output ./project-flow.md
-project export /path/to/project --format mmd --output ./project-flow.mmd
-project export /path/to/project --format json --output ./project-flow.json
+contexttrail export /path/to/project --format md --output ./project-flow.md
+contexttrail export /path/to/project --format mmd --output ./project-flow.mmd
+contexttrail export /path/to/project --format json --output ./project-flow.json
 ```
 
 All formats are generated from the same stored graph — no AI calls. Markdown includes events, relationships, source evidence, and limitations. JSON includes the graph and cited evidence. MMD is Mermaid code. Use `--force` to overwrite an existing file. Export to DB, raw logs, or Git internal files is blocked.
 
-**Storage locations:** Git repos use `<git-common-dir>/projectflow/<scope-key>/`; plain directories use `<folder>/.projectflow/`. The same repo root/worktree set shares state; different specified sub-paths get separate scopes. Full source text is not permanently copied — only metadata, digests, cited excerpts, and stage results are stored.
+**Storage locations:** Git repos use `<git-common-dir>/contexttrail/<scope-key>/`; plain directories use `<folder>/.contexttrail/`. The same repo root/worktree set shares state; different specified sub-paths get separate scopes. Full source text is not permanently copied — only metadata, digests, cited excerpts, and stage results are stored.
 
 Permissions: state directory `0700`, DB and new exports `0600`. This does not imply disk encryption or automatic secret redaction. SQLite locking on network filesystems (NFS, etc.) is not validated.
 
@@ -494,7 +494,7 @@ A zero-real-model walkthrough is available after installation: `python scripts/p
 Budget tuning example (review increased data transmission and model limit effects together):
 
 ```bash
-project analyze /path/to/project --history-limit 100 --record-chars 64000 --unit-chars 80000
+contexttrail analyze /path/to/project --history-limit 100 --record-chars 64000 --unit-chars 80000
 ```
 
 The constraint `record_chars ≤ unit_chars < task_chars` must hold. `task_chars` and detailed context values are adjusted in the Python `AnalysisConfig`. Code or config changes alone do not trigger automatic re-analysis of completed records.
@@ -519,7 +519,7 @@ The mouse assertion in `tests/test_cli_ui.py` checks the portable invariant — 
 Structure:
 
 ```text
-src/projectflow/
+src/contexttrail/
   sources/           local log adapters
   runners/           Codex·Claude CLI / bubblewrap isolation
   analysis.py        incremental planning, ReadRequest, extract/integrate

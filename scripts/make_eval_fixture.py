@@ -3,7 +3,7 @@
 
 Run from the installed source checkout:
   python scripts/make_eval_fixture.py /path/to/project --session ID --output /tmp/case.json
-Review the exported records and add expectations before running project eval.
+Review the exported records and add expectations before running contexttrail eval.
 """
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ import dataclasses
 import os
 from pathlib import Path
 
-from projectflow.evaluation import fixture_integrity
-from projectflow.git_context import Scope
-from projectflow.sources import collect_logs
-from projectflow.util import FlowError, dumps
+from contexttrail.evaluation import fixture_integrity
+from contexttrail.git_context import Scope
+from contexttrail.sources import collect_logs
+from contexttrail.util import FlowError, dumps
 
 
 def main() -> None:
@@ -39,7 +39,7 @@ def main() -> None:
     if sum(len(r.content) for r in selected) > 120_000:
         raise FlowError('선택한 원문이 120,000 chars를 넘습니다. --max-records를 줄이세요.')
     integrity = fixture_integrity(selected)
-    data = {'format':'projectflow-eval-v1', 'name':'local-session-slice',
+    data = {'format':'contexttrail-eval-v1', 'name':'local-session-slice',
             'records':[{k:v for k,v in dataclasses.asdict(r).items() if k != 'pinned_hash'} for r in selected],
             'expectations':{}, 'notes':{'selected_scope':str(scope.folder), 'session':args.session,
             'slice_start':args.start, 'records':len(selected), 'limitations':snapshot.limitations,

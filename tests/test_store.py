@@ -1,9 +1,9 @@
 import sqlite3
 import time
 
-from projectflow import ui
-from projectflow.model import SourceRecord
-from projectflow.store import Store
+from contexttrail import ui
+from contexttrail.model import SourceRecord
+from contexttrail.store import Store
 
 from test_tui_keys import Screen
 
@@ -99,7 +99,7 @@ def test_the_screen_keeps_its_last_values_when_a_read_is_locked_out(tmp_path):
 
 def test_the_call_cap_is_for_one_run_and_an_old_saved_cap_is_dropped(tmp_path):
     import argparse
-    from projectflow.cli import _options
+    from contexttrail.cli import _options
     store = Store(tmp_path / "state", "scope")
     store.set_meta("options", {"runner": "codex", "max_calls": 2})
     assert _options(argparse.Namespace(max_calls=None), store).max_calls == 30

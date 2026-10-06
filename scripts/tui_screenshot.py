@@ -13,10 +13,10 @@ from pathlib import Path
 
 from wcwidth import wcwidth
 
-from projectflow import i18n
-from projectflow.git_context import Scope
-from projectflow.store import Store
-from projectflow.ui import GraphApp
+from contexttrail import i18n
+from contexttrail.git_context import Scope
+from contexttrail.store import Store
+from contexttrail.ui import GraphApp
 
 FG = {"": "#d6dde6", "bold": "#ffffff", "dim": "#7f8a96"}
 BG = "#10151b"

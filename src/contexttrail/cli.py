@@ -68,7 +68,7 @@ def langsmith_options(sub) -> None:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="project",
+    root = argparse.ArgumentParser(prog="contexttrail",
                                    description=tr("Codex·Claude Code 기록의 근거 기반 프로젝트 흐름",
                                                   "Evidence-linked project flow from Codex and Claude Code transcripts"),
                                    epilog=tr("명령 없이 실행하면 현재 폴더(또는 첫 인자로 준 폴더)의 저장 결과를 엽니다(view). "
@@ -120,7 +120,7 @@ def parser() -> argparse.ArgumentParser:
             langsmith_options(sub)
     sub = commands.add_parser("eval", help=tr("별도 상태에서 고정 fixture 평가. 기본 mock, live는 --yes 필요",
                                               "Evaluate a fixed fixture in a separate state; mock by default, live needs --yes"))
-    sub.add_argument("--fixture", default="demo", help=tr("demo 또는 projectflow-eval-v1 JSON 경로", "demo or the path of a projectflow-eval-v1 JSON"))
+    sub.add_argument("--fixture", default="demo", help=tr("demo 또는 contexttrail-eval-v1 JSON 경로", "demo or the path of a contexttrail-eval-v1 JSON"))
     sub.add_argument("--output", type=Path, required=True, help=tr("새/빈 평가 디렉터리", "New or empty evaluation directory"))
     sub.add_argument("--runner", choices=["mock", "codex", "claude"], default="mock")
     sub.add_argument("--model")
@@ -187,14 +187,14 @@ def parser() -> argparse.ArgumentParser:
 
 def plain(store: Store, *, ascii_only: bool = False) -> None:
     graph, check = store.graph(), store.get_meta("last_check", {})
-    print(f"Project Flow | v{graph['version']} | {check.get('status', graph['analysis_status'])}")
+    print(f"ContextTrail | v{graph['version']} | {check.get('status', graph['analysis_status'])}")
     if graph.get("analysis_mode") == "synthetic_mock":
         print(tr("[합성 데이터 / Mock 분석 — 실제 AI 결과가 아닙니다]", "[Synthetic data / mock analysis — not a real AI result]"))
     print(tr("분석 기준:", "Analyzed at:"), graph.get("analyzed_at") or tr("없음", "none"), tr("| 마지막 확인:", "| Last check:"),
           check.get("at", tr("없음", "none")))
     _print_flow(graph, ascii_only=ascii_only)
     if graph["events"]:
-        print(tr("사건별 설명과 원문 근거: project graph", "Per-event summary and quoted evidence: project graph"),
+        print(tr("사건별 설명과 원문 근거: contexttrail graph", "Per-event summary and quoted evidence: contexttrail graph"),
               tr("(대화형 터미널에서는 view 화면의 오른쪽 칸)", "(the right pane of the view screen in an interactive terminal)"))
     print()
     if "runner_calls" in check:
@@ -221,7 +221,7 @@ def _graph(args) -> int:
             report = json.loads(report_file.read_text(encoding="utf-8"))
         except (ValueError, UnicodeError) as exc:
             raise FlowError(tr("eval 결과 JSON을 읽을 수 없습니다.", "Cannot read the eval result JSON.")) from exc
-        if not isinstance(result, dict) or not isinstance(result.get("graph"), dict) or not isinstance(result.get("evidence"), dict) or not isinstance(report, dict) or report.get("format") != "projectflow-eval-report-v1":
+        if not isinstance(result, dict) or not isinstance(result.get("graph"), dict) or not isinstance(result.get("evidence"), dict) or not isinstance(report, dict) or report.get("format") not in ("contexttrail-eval-report-v1", "projectflow-eval-report-v1"):
             raise FlowError(tr("지원하지 않는 eval 결과 형식입니다.", "Unsupported eval result format."))
         graph, evidence = result["graph"], result["evidence"]
         title = report.get("name") or folder.name
@@ -557,8 +557,8 @@ def main(argv: list[str] | None = None) -> int:
             options = store.get_meta("options", {})
             name = options.get("runner")
             if not name:
-                raise FlowError(tr("Runner 선택이 필요합니다. project analyze . --runner codex 또는 claude를 사용하세요.",
-                                   "A runner must be chosen: use project analyze . --runner codex or claude."))
+                raise FlowError(tr("Runner 선택이 필요합니다. contexttrail analyze . --runner codex 또는 claude를 사용하세요.",
+                                   "A runner must be chosen: use contexttrail analyze . --runner codex or claude."))
             return CLIRunner(name, model=options.get("model"), timeout=options.get("timeout", 600))
         def consent(snapshot, plan):
             if is_demo:

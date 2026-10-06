@@ -2,10 +2,10 @@ import copy
 import re
 import xml.etree.ElementTree as ET
 import pytest
-from projectflow.demo import CASES, FixtureRunner
-from projectflow.render import (MAX_DETOUR_LANES, mermaid, parse_safe_mermaid,
+from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.render import (MAX_DETOUR_LANES, mermaid, parse_safe_mermaid,
                                  terminal_graph, svg)
-from projectflow.util import FlowError, safe_text, cell_slice
+from contexttrail.util import FlowError, safe_text, cell_slice
 
 
 def sample(laboratory):
@@ -68,7 +68,7 @@ def test_korean_cell_width_and_ansi_removal():
 
 
 def test_long_evidence_shows_cited_focus_with_context():
-    from projectflow.render import EXCERPT_CONTEXT, evidence_excerpt
+    from contexttrail.render import EXCERPT_CONTEXT, evidence_excerpt
     quote = "A" * 500 + "CITED PART" + "B" * 500
     item = {"quote": quote, "focus": [[500, 510]]}
     excerpt = evidence_excerpt(item)

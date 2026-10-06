@@ -20,7 +20,7 @@ def _arguments(host: str) -> str:
 
 
 def _body(role: str, python: Path, host: str) -> str:
-    command = f"{shlex.quote(str(python))} -m projectflow"
+    command = f"{shlex.quote(str(python))} -m contexttrail"
     if role == "update":
         return f"""The user explicitly invoked this command to add to the current project's saved ContextTrail graph. Run it only because they invoked it by name; never start an analysis on your own. {_arguments(host)}
 

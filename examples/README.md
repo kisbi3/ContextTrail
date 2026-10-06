@@ -1,5 +1,5 @@
 # 합성 예시
 
-`demo-flow.*`는 내장된 JSON 저장→실패→SQLite 전환 fixture와 결정적 Mock Runner로 생성한 같은 그래프다. 실제 AI 분석 결과가 아니다. JSON/Markdown의 임시 경로는 제작 당시 합성 데이터의 위치이며 사용자의 경로로 유효하지 않다. 실제 실행용 fixture는 `project demo --path <새 디렉터리>`가 현재 환경에 맞게 생성한다.
+`demo-flow.*`는 내장된 JSON 저장→실패→SQLite 전환 fixture와 결정적 Mock Runner로 생성한 같은 그래프다. 실제 AI 분석 결과가 아니다. JSON/Markdown의 임시 경로는 제작 당시 합성 데이터의 위치이며 사용자의 경로로 유효하지 않다. 실제 실행용 fixture는 `contexttrail demo --path <새 디렉터리>`가 현재 환경에 맞게 생성한다.
 
 SVG는 외부 폰트를 포함하지 않는다. 운영체제의 한글 폰트에 의존하며, 실제 브라우저 시험은 남아 있다. 이 폴더에 원본 사용자 로그·인증 자료·폰트 파일은 없다.

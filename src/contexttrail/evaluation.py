@@ -162,7 +162,7 @@ def demo_fixture() -> dict:
                         'locator': {'kind': 'frozen_fixture', 'line': i + 1}})
         expected.append({'label': f'event{i}', 'title_contains': title, 'status': status,
                          'kind': kind, 'actor': actor, 'source_ids': [f'eval-s{i}']})
-    return {'format': 'projectflow-eval-v1', 'name': 'synthetic-storage-revision', 'records': records,
+    return {'format': 'contexttrail-eval-v1', 'name': 'synthetic-storage-revision', 'records': records,
             'expectations': {'events': expected, 'relations': [
                 {'from': 'event3', 'to': 'event4', 'relation': 'motivates'}]},
             'notes': '合成 / synthetic fixture. Mock passes do not measure LLM understanding.'}
@@ -179,9 +179,9 @@ def load_fixture(value: str) -> dict:
         data = json.loads(path.read_text(encoding='utf-8'))
     except (ValueError, UnicodeError) as exc:
         raise FlowError(tr('평가 fixture JSON을 읽을 수 없습니다.', 'The eval fixture JSON cannot be read.')) from exc
-    if not isinstance(data, dict) or data.get('format') != 'projectflow-eval-v1':
-        raise FlowError(tr('fixture format은 projectflow-eval-v1이어야 합니다.',
-                           'The fixture format must be projectflow-eval-v1.'))
+    if not isinstance(data, dict) or data.get('format') not in ('contexttrail-eval-v1', 'projectflow-eval-v1'):
+        raise FlowError(tr('fixture format은 contexttrail-eval-v1이어야 합니다.',
+                           'The fixture format must be contexttrail-eval-v1.'))
     if not isinstance(data.get('records'), list) or not 1 <= len(data['records']) <= 2000:
         raise FlowError(tr('fixture에는 1~2000개의 고정된 records가 필요합니다.',
                            'A fixture needs 1 to 2000 frozen records.'))
@@ -449,7 +449,7 @@ def run_eval(fixture: str, output: Path, runner_name: str, config: AnalysisConfi
         second = engine.analyze(forbid_call)
     graph = store.graph()
     evidence = store.evidence_many(_evidence_ids(graph))
-    report = {'format': 'projectflow-eval-report-v1', 'name': data.get('name'),
+    report = {'format': 'contexttrail-eval-report-v1', 'name': data.get('name'),
               'fixture_digest': digest(data), 'source_snapshot_id': snapshot.id,
               'initial_graph_version': 0, 'mode': 'synthetic_mock' if runner_name == 'mock' else 'live_cli',
               'config': {k: str(v) if isinstance(v, Path) else v for k, v in dataclasses.asdict(config).items()},

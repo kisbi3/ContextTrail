@@ -18,17 +18,17 @@ What this module does and does not guarantee:
 - It does NOT enumerate every type the upstream CLIs can emit, so a brand new
   type will surface as an "unsupported" warning at scan time rather than
   failing CI. Closing that gap needs a recorded corpus of real logs, which this
-  repository does not ship. Until then, `project scan` output is the signal.
+  repository does not ship. Until then, `contexttrail scan` output is the signal.
 """
 
 import json
 
 import pytest
 
-from projectflow.git_context import Scope
-from projectflow.sources.local import (IGNORED_NO_ANALYSIS_VALUE, KNOWN_UNPARSED,
+from contexttrail.git_context import Scope
+from contexttrail.sources.local import (IGNORED_NO_ANALYSIS_VALUE, KNOWN_UNPARSED,
                                        parse_codex)
-from projectflow.util import dumps
+from contexttrail.util import dumps
 
 
 def write(path, rows, tail=""):
@@ -174,7 +174,7 @@ def test_no_record_type_is_silently_dropped(tmp_path):
     types still produce records, so a parser that dropped everything would fail
     here rather than pass.
     """
-    from projectflow.sources.local import parse_claude
+    from contexttrail.sources.local import parse_claude
     codex_types = {
         "token_usage_record": {"type": "token_usage_record", "payload": {}},
         "event_msg:thread_settings_applied": {
@@ -212,7 +212,7 @@ def test_a_malformed_attachment_is_reported_not_raised(tmp_path, malformed):
     A truthy non-dict attachment used to reach .get() and raise; a falsey one
     used to disappear silently. Keyed on presence, not truthiness.
     """
-    from projectflow.sources.local import parse_claude
+    from contexttrail.sources.local import parse_claude
     folder = tmp_path / "app"
     folder.mkdir()
     path = tmp_path / "session.jsonl"
@@ -236,7 +236,7 @@ def test_a_summary_carrying_system_record_still_becomes_a_record(tmp_path):
     that carry summary text, which the `{"summary", "system"}` branch turns
     into a compaction record.
     """
-    from projectflow.sources.local import parse_claude
+    from contexttrail.sources.local import parse_claude
     folder = tmp_path / "app"
     folder.mkdir()
     path = tmp_path / "session.jsonl"
@@ -252,7 +252,7 @@ def test_a_summary_carrying_system_record_still_becomes_a_record(tmp_path):
 
 
 def test_deferred_warning_labels_differ_for_same_basename_deeper_paths(tmp_path):
-    from projectflow.sources.local import _warning_path
+    from contexttrail.sources.local import _warning_path
     a = tmp_path / "sessions" / "2026" / "01" / "01" / "rollout.jsonl"
     b = tmp_path / "sessions" / "2026" / "02" / "01" / "rollout.jsonl"
     assert _warning_path(a) != _warning_path(b)
@@ -269,7 +269,7 @@ def test_compact_boundary_still_becomes_a_record(tmp_path):
     Checked twice: with a summary, and with no summary so the
     "Compaction boundary" fallback text and the compaction lineage are used.
     """
-    from projectflow.sources.local import parse_claude
+    from contexttrail.sources.local import parse_claude
     for label, row in (
             ("with summary", {"summary": "Compaction boundary"}),
             ("no summary", {})):
@@ -296,7 +296,7 @@ def test_compact_boundary_is_not_in_the_unread_registry():
 
 
 def test_bridge_session_account_identifiers_are_never_records(tmp_path):
-    from projectflow.sources.local import parse_claude
+    from contexttrail.sources.local import parse_claude
     folder = tmp_path / "app"
     folder.mkdir()
     path = tmp_path / "session.jsonl"
@@ -310,7 +310,7 @@ def test_bridge_session_account_identifiers_are_never_records(tmp_path):
 
 def test_claude_ignored_types_are_dropped_without_warned(tmp_path):
     """Same contract for the Claude parser, which had no coverage at all."""
-    from projectflow.sources.local import parse_claude
+    from contexttrail.sources.local import parse_claude
     folder = tmp_path / "app"
     folder.mkdir()
     path = tmp_path / "session.jsonl"
@@ -327,7 +327,7 @@ def test_claude_ignored_types_are_dropped_without_warned(tmp_path):
 
 
 def test_claude_queue_operation_and_stop_hook_are_reported(tmp_path):
-    from projectflow.sources.local import parse_claude
+    from contexttrail.sources.local import parse_claude
     folder = tmp_path / "app"
     folder.mkdir()
     path = tmp_path / "session.jsonl"
@@ -348,7 +348,7 @@ def test_two_files_with_the_same_deferred_count_do_not_collapse(tmp_path):
     Uses the same basename in two different session directories, which is the
     case a bare `path.name` would still merge.
     """
-    from projectflow.sources.local import collect_logs
+    from contexttrail.sources.local import collect_logs
     home = tmp_path / "codex"
     folder = tmp_path / "app"
     folder.mkdir()

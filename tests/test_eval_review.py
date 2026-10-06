@@ -1,10 +1,10 @@
 import json
 from pathlib import Path
 
-from projectflow.analysis import AnalysisConfig
-from projectflow.cli import main
-from projectflow.demo import FixtureRunner
-from projectflow.evaluation import run_eval
+from contexttrail.analysis import AnalysisConfig
+from contexttrail.cli import main
+from contexttrail.demo import FixtureRunner
+from contexttrail.evaluation import run_eval
 
 
 def test_eval_writes_private_model_review_with_candidates(tmp_path):
@@ -23,7 +23,7 @@ def test_eval_writes_private_model_review_with_candidates(tmp_path):
 
 
 def test_rejected_model_response_is_visible_and_old_eval_can_be_reviewed(tmp_path, monkeypatch, capsys):
-    import projectflow.evaluation as evaluation
+    import contexttrail.evaluation as evaluation
 
     class WrongQuote(FixtureRunner):
         def run(self, task, schema, cancel):
@@ -60,8 +60,8 @@ def test_eval_reports_progress_messages_while_it_runs(tmp_path):
 
 
 def test_eval_review_and_preview_read_english_when_the_screen_language_is_english(tmp_path):
-    from projectflow import i18n
-    from projectflow.input_preview import preview_eval
+    from contexttrail import i18n
+    from contexttrail.input_preview import preview_eval
 
     i18n.set_language("en")
     output = tmp_path / "eval"

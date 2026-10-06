@@ -1,12 +1,12 @@
 import json
 from pathlib import Path
 
-from projectflow.analysis import AnalysisConfig, Engine
-from projectflow.demo import FixtureRunner
-from projectflow.git_context import Scope
-from projectflow.sources import collect_logs
-from projectflow.sources.local import parse_codex
-from projectflow.store import Store
+from contexttrail.analysis import AnalysisConfig, Engine
+from contexttrail.demo import FixtureRunner
+from contexttrail.git_context import Scope
+from contexttrail.sources import collect_logs
+from contexttrail.sources.local import parse_codex
+from contexttrail.store import Store
 
 
 def write(path, rows):

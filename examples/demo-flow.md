@@ -1,4 +1,4 @@
-# Project Flow
+# ContextTrail
 
 > 민감한 대화·코드가 포함될 수 있습니다. 공유 전에 확인하세요.
 

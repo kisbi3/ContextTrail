@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from projectflow.agent_commands import install_agent_commands
-from projectflow.util import FlowError
+from contexttrail.agent_commands import install_agent_commands
+from contexttrail.util import FlowError
 
 
 def test_install_agent_commands_preserves_existing_user_commands(tmp_path):

@@ -21,14 +21,14 @@ MOUSE_ENABLE = (b'\x1b[?1000h', b'\x1b[?1002h', b'\x1b[?1003h',
 MOUSE_DISABLE = (b'\x1b[?1000l', b'\x1b[?1002l', b'\x1b[?1003l',
                  b'\x1b[?1005l', b'\x1b[?1006l', b'\x1b[?1015l')
 import pytest
-from projectflow.cli import main
-from projectflow.git_context import Scope
-from projectflow.store import Store
-from projectflow.ui import token_usage_label
+from contexttrail.cli import main
+from contexttrail.git_context import Scope
+from contexttrail.store import Store
+from contexttrail.ui import token_usage_label
 
 
 def test_stage_effort_is_saved_but_skipping_review_is_per_run(tmp_path):
-    from projectflow.cli import _options, parser
+    from contexttrail.cli import _options, parser
     store = Store(tmp_path / 'state', 'scope')
     first = _options(parser().parse_args(['analyze', '.', '--integrate-effort', 'xhigh', '--no-review']), store)
     assert first.integrate_effort == 'xhigh' and first.semantic_review is False
@@ -38,7 +38,7 @@ def test_stage_effort_is_saved_but_skipping_review_is_per_run(tmp_path):
 
 
 def test_integrate_evidence_option_is_saved_for_later_runs_and_stays_hidden(tmp_path, capsys):
-    from projectflow.cli import _options, parser
+    from contexttrail.cli import _options, parser
     store = Store(tmp_path / 'state', 'scope')
     assert _options(parser().parse_args(['analyze', '.']), store).integrate_evidence == 'full'
     chosen = _options(parser().parse_args(['analyze', '.', '--integrate-evidence', 'reuse']), store)
@@ -55,7 +55,7 @@ def test_integrate_evidence_option_is_saved_for_later_runs_and_stays_hidden(tmp_
 
 
 def test_review_output_option_is_saved_for_later_runs_and_stays_hidden(tmp_path, capsys):
-    from projectflow.cli import _options, parser
+    from contexttrail.cli import _options, parser
     store = Store(tmp_path / 'state', 'scope')
     assert _options(parser().parse_args(['analyze', '.']), store).review_output == 'patch'
     assert _options(parser().parse_args(['analyze', '.', '--review-output', 'full']),
@@ -77,7 +77,7 @@ def test_review_output_option_is_saved_for_later_runs_and_stays_hidden(tmp_path,
 
 
 def test_developer_tracing_flags_work_but_are_not_advertised(capsys):
-    from projectflow.cli import parser
+    from contexttrail.cli import parser
     assert parser().parse_args(['analyze', '.', '--langsmith']).langsmith_enabled
     with pytest.raises(SystemExit):
         parser().parse_args(['analyze', '--help'])
@@ -138,7 +138,7 @@ def test_graph_command_opens_curses_browser_on_tty(tmp_path, columns):
     assert main(['demo','--path',str(directory),'--no-tui'])==0
     master,slave=pty.openpty()
     fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',28,columns,0,0))
-    process=subprocess.Popen([sys.executable,'-m','projectflow','graph',str(directory/'sample-project')],
+    process=subprocess.Popen([sys.executable,'-m','contexttrail','graph',str(directory/'sample-project')],
                              stdin=slave,stdout=slave,stderr=slave,
                              env={**os.environ,'TERM':'xterm-256color','LANG':'C.UTF-8',
                                   'PYTHONPATH':str(Path(__file__).resolve().parents[1]/'src')+os.pathsep+os.environ.get('PYTHONPATH','')},
@@ -189,7 +189,7 @@ def test_curses_pty_resize_and_exit(tmp_path,capsys,term,ascii_only):
     directory=tmp_path/'demo';main(['demo','--path',str(directory),'--no-tui'])
     master,slave=pty.openpty()
     fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',30,100,0,0))
-    args=[sys.executable,'-m','projectflow','view',str(directory/'sample-project')]
+    args=[sys.executable,'-m','contexttrail','view',str(directory/'sample-project')]
     if ascii_only:args.append('--ascii')
     process=subprocess.Popen(args,stdin=slave,stdout=slave,stderr=slave,env={**os.environ,'TERM':term,'LANG':'C.UTF-8', 'PYTHONPATH':str(Path(__file__).resolve().parents[1]/'src')+os.pathsep+os.environ.get('PYTHONPATH','')},close_fds=True)
     os.close(slave);output=bytearray();start=time.monotonic();sent=False;resized=False
@@ -213,7 +213,7 @@ def test_curses_pty_resize_and_exit(tmp_path,capsys,term,ascii_only):
 
 
 def test_flow_panel_keeps_the_status_when_a_title_is_too_long():
-    from projectflow.ui import FlowPanels
+    from contexttrail.ui import FlowPanels
     graph = {"events": [{"id": "a", "kind": "action", "status": "applied", "title": "아주 긴 제목 " * 8,
                          "summary": "", "actor": "assistant", "evidence_ids": []}],
              "edges": [], "open_items": []}
@@ -232,7 +232,7 @@ def test_new_keys_mouse_and_korean_quit_in_a_real_terminal(tmp_path, mouse):
     assert main(['demo','--path',str(directory),'--no-tui'])==0
     master,slave=pty.openpty()
     fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',32,120,0,0))
-    args=[sys.executable,'-m','projectflow','graph',str(directory/'sample-project')]+([] if mouse else ['--no-mouse'])
+    args=[sys.executable,'-m','contexttrail','graph',str(directory/'sample-project')]+([] if mouse else ['--no-mouse'])
     process=subprocess.Popen(args,stdin=slave,stdout=slave,stderr=slave,
                              env={**os.environ,'TERM':'xterm-256color','LANG':'C.UTF-8',
                                   'PYTHONPATH':str(Path(__file__).resolve().parents[1]/'src')+os.pathsep+os.environ.get('PYTHONPATH','')},
@@ -281,7 +281,7 @@ def test_start_screen_requests_mouse_reporting_only_when_asked(monkeypatch):
     """
     import curses
 
-    from projectflow import ui
+    from contexttrail import ui
 
     def screen():
         class Fake:
@@ -300,7 +300,7 @@ def test_start_screen_requests_mouse_reporting_only_when_asked(monkeypatch):
 
 
 def test_no_command_opens_the_current_or_given_folder_without_ai(tmp_path, monkeypatch, capsys):
-    from projectflow.cli import _default_command
+    from contexttrail.cli import _default_command
     directory=tmp_path/'demo'
     assert main(['demo','--path',str(directory),'--no-tui'])==0
     folder=directory/'sample-project'
@@ -316,7 +316,7 @@ def test_no_command_opens_the_current_or_given_folder_without_ai(tmp_path, monke
 
 
 def test_english_screen_follows_the_language_flag_env_and_saved_project_language(tmp_path, monkeypatch, capsys):
-    from projectflow import i18n
+    from contexttrail import i18n
     monkeypatch.setenv(i18n.ENV, "en")
     i18n.set_language("en")
     directory = tmp_path / 'demo'

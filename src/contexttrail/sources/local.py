@@ -277,7 +277,7 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
     deferred: dict[str, int] = {}
     if not metadata.get("id"):
         warnings.append(f"Codex native session ID missing; identified by file name: {path.name}")
-    if metadata.get("source") == "projectflow" or (cwd and Path(cwd).name.startswith("projectflow-run-")):
+    if metadata.get("source") in ("contexttrail", "projectflow") or (cwd and Path(cwd).name.startswith(("contexttrail-run-", "projectflow-run-"))):
         decisions["self_generated"] = 1
         return finish([], [])
     result, call_cwd, unknown, relevant = [], {}, set(), scope.includes(cwd)

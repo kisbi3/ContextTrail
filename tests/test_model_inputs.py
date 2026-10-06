@@ -2,11 +2,11 @@ import json
 
 import pytest
 
-from projectflow.analysis import IdAliases, classify_steps, command_kind, model_context, tool_steps
-from projectflow.demo import CASES, FixtureRunner
-from projectflow.model import SourceRecord
-from projectflow.schema import EvidenceValidator
-from projectflow.util import FlowError, ident
+from contexttrail.analysis import IdAliases, classify_steps, command_kind, model_context, tool_steps
+from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.model import SourceRecord
+from contexttrail.schema import EvidenceValidator
+from contexttrail.util import FlowError, ident
 
 
 def whole_strings(value):
@@ -238,6 +238,6 @@ def test_one_repair_round_hears_about_a_bad_quote_and_a_bad_relation_together():
 
 
 def test_an_output_whose_end_cannot_be_shown_is_sent_whole():
-    from projectflow.analysis import _view
+    from contexttrail.analysis import _view
     one_line_json = "Chunk ID: 1\nWall time: 2s\nExit code: 0\nOutput:\n" + '{"output":"' + "x" * 5_400 + '"}'
     assert _view(SourceRecord("r", "codex", "s", "tool_result", one_line_json, {})) is None

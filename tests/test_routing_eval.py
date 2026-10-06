@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from projectflow.analysis import AnalysisConfig
-from projectflow.cli import main
-from projectflow.demo import CASES, FixtureRunner
-from projectflow.evaluation import call_timeline, demo_fixture, run_eval, summarize_calls, fixture_records
-from projectflow.util import Cancelled, FlowError
+from contexttrail.analysis import AnalysisConfig
+from contexttrail.cli import main
+from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.evaluation import call_timeline, demo_fixture, run_eval, summarize_calls, fixture_records
+from contexttrail.util import Cancelled, FlowError
 
 
 def test_stage_models_are_distinct_and_integration_uses_quotes(laboratory):
@@ -229,14 +229,14 @@ def test_ops_reports_unknown_usage_and_no_fabricated_cost(laboratory):
 
 
 def test_output_quote_chars_counts_sizes_per_section():
-    from projectflow.analysis import output_quote_chars
+    from contexttrail.analysis import output_quote_chars
     output = {'events_to_add': [{'evidence': [{'quote': 'abcd'}, {'quote': 'ef'}]}],
               'change_attributions': [{'evidence': [{'quote': 'xyz'}]}], 'limitations': ['not a quote']}
     assert output_quote_chars(output) == {'events_to_add': 6, 'change_attributions': 3}
 
 
 def test_review_summary_counts_statuses_without_issue_text():
-    from projectflow.evaluation import review_summary
+    from contexttrail.evaluation import review_summary
     graph = {'semantic_review_history': [
         {'status': 'not_needed', 'issues': [], 'resolutions': []},
         {'status': 'reviewed', 'issues': [{'signal': 'unlinked_revision', 'question': 'secret'}],
@@ -395,7 +395,7 @@ def test_invalid_routing_configuration(kwargs):
 
 
 def test_cached_extra_evidence_is_visible_on_resume(laboratory):
-    from projectflow.schema import EvidenceValidator
+    from contexttrail.schema import EvidenceValidator
     _, store, engine, records, make = laboratory
     records.append(make('old context', key='old'))
     engine.analyze(FixtureRunner)
@@ -428,7 +428,7 @@ def _fixture_record(source_id, role, content, call_id=None):
 
 
 def test_fixture_integrity_flags_dropped_result_and_unopened_session():
-    from projectflow.evaluation import fixture_integrity
+    from contexttrail.evaluation import fixture_integrity
     cut = fixture_records({'records': [
         _fixture_record('call-a', 'tool_call', 'Tool: exec\nexec_command({cmd:"pytest -q"})', 'a'),
         _fixture_record('call-b', 'tool_call', 'Tool: exec\ntools.write_stdin({session_id:65470,chars:""})', 'b'),
@@ -447,14 +447,14 @@ def test_fixture_integrity_flags_dropped_result_and_unopened_session():
 
 
 def test_source_anchored_expectation_needs_no_title(monkeypatch, tmp_path):
-    from projectflow.evaluation import validate_expectations
+    from contexttrail.evaluation import validate_expectations
     with pytest.raises(FlowError, match='title_contains 또는 source_ids'):
         validate_expectations({'events': [{'label': 'bare'}]}, set())
     data = demo_fixture()
     first = data['expectations']['events'][0]
     data['expectations'] = {'events': [{'label': 'first', 'source_ids': first['source_ids'],
                                         'status': first['status']}]}
-    monkeypatch.setattr('projectflow.evaluation.load_fixture', lambda _: data)
+    monkeypatch.setattr('contexttrail.evaluation.load_fixture', lambda _: data)
     report = run_eval('demo', tmp_path / 'eval', 'mock', AnalysisConfig())
     assert report['expectations']['passed'] == 1 and report['expectations']['failed'] == 0
     # The synthetic demo has tool results without calls; the report says so instead of hiding it.
@@ -463,7 +463,7 @@ def test_source_anchored_expectation_needs_no_title(monkeypatch, tmp_path):
 
 
 def test_forbidden_relation_flags_an_overclaimed_check(monkeypatch, tmp_path):
-    from projectflow.evaluation import validate_expectations
+    from contexttrail.evaluation import validate_expectations
     with pytest.raises(FlowError, match='forbidden_relations'):
         validate_expectations({'events': [{'label': 'a', 'source_ids': ['s']}],
                                'forbidden_relations': [{'from': 'a', 'relation': 'causes'}]}, {'s'})
@@ -476,7 +476,7 @@ def test_forbidden_relation_flags_an_overclaimed_check(monkeypatch, tmp_path):
         'forbidden_relations': [{'from': 'event5', 'relation': 'verifies'},
                                 {'from': 'event2', 'to': 'event3', 'relation': 'verifies'},
                                 {'from': 'ghost', 'relation': 'verifies'}]}
-    monkeypatch.setattr('projectflow.evaluation.load_fixture', lambda _: data)
+    monkeypatch.setattr('contexttrail.evaluation.load_fixture', lambda _: data)
     report = run_eval('demo', tmp_path / 'eval', 'mock', AnalysisConfig())
     checks = [c for c in report['expectations']['checks'] if c['type'] in ('relation', 'forbidden_relation')]
     assert [c['passed'] for c in checks] == [True, True, True, False, False]
@@ -484,7 +484,7 @@ def test_forbidden_relation_flags_an_overclaimed_check(monkeypatch, tmp_path):
 
 
 def test_event_expectation_can_accept_any_of_several_sources(monkeypatch, tmp_path):
-    from projectflow.evaluation import validate_expectations
+    from contexttrail.evaluation import validate_expectations
     with pytest.raises(FlowError, match='source_ids_any'):
         validate_expectations({'events': [{'label': 'a', 'source_ids_any': ['missing']}]}, {'s'})
     with pytest.raises(FlowError, match='source_ids'):
@@ -493,13 +493,13 @@ def test_event_expectation_can_accept_any_of_several_sources(monkeypatch, tmp_pa
     data['expectations'] = {'events': [
         {'label': 'either', 'source_ids_any': ['eval-s0', 'eval-s1'], 'status': 'adopted'},
         {'label': 'neither', 'source_ids_any': ['eval-s5', 'eval-s6'], 'status': 'adopted'}]}
-    monkeypatch.setattr('projectflow.evaluation.load_fixture', lambda _: data)
+    monkeypatch.setattr('contexttrail.evaluation.load_fixture', lambda _: data)
     report = run_eval('demo', tmp_path / 'eval', 'mock', AnalysisConfig())
     assert [c['passed'] for c in report['expectations']['checks']] == [True, False]
 
 
 def test_validation_error_kinds_keep_only_the_code_written_prefix():
-    from projectflow.evaluation import error_kinds
+    from contexttrail.evaluation import error_kinds
     message = ("quote not found uniquely in the cited lines: src_1:2-2 (0 matches); "
                "JSON schema error: events_to_add/0/title: '모델이 쓴 제목' is too long; "
                "no candidate evidence to fill an item left without evidence: edges_to_add tmp:e1")
@@ -521,7 +521,7 @@ def test_validation_error_kinds_keep_only_the_code_written_prefix():
 
 
 def test_expectation_breakdown_separates_unmatched_endpoints_from_wrong_relations():
-    from projectflow.evaluation import check_expectations
+    from contexttrail.evaluation import check_expectations
     def event(eid, source):
         return {"id": eid, "title": eid, "kind": "action", "status": "applied", "actor": "assistant",
                 "evidence_ids": [f"x_{eid}"], "_source": source}

@@ -4,10 +4,10 @@ import sys
 import threading
 import time
 import pytest
-from projectflow.runners.cli_runner import (CLIRunner, claude_reported_model, execute, parse_codex_output,
+from contexttrail.runners.cli_runner import (CLIRunner, claude_reported_model, execute, parse_codex_output,
                                             parse_claude_output)
-from projectflow.schema import EXTRACT_SCHEMA, DELTA_SCHEMA
-from projectflow.util import FlowError, Cancelled
+from contexttrail.schema import EXTRACT_SCHEMA, DELTA_SCHEMA
+from contexttrail.util import FlowError, Cancelled
 
 
 def test_codex_structured_wrapper():
@@ -93,23 +93,23 @@ def test_claude_reports_the_model_that_answered():
 
 
 def test_missing_sandbox_cannot_fall_back(monkeypatch,tmp_path):
-    monkeypatch.setattr('projectflow.runners.cli_runner.sys.platform','linux')
-    monkeypatch.setattr('projectflow.runners.cli_runner.shutil.which',lambda name: None)
+    monkeypatch.setattr('contexttrail.runners.cli_runner.sys.platform','linux')
+    monkeypatch.setattr('contexttrail.runners.cli_runner.shutil.which',lambda name: None)
     runner=CLIRunner('codex');runner.executable='/usr/bin/codex'
     with pytest.raises(FlowError,match='bubblewrap'):
         runner.sandbox_command(tmp_path,tmp_path,['codex'])
 
 
 def test_missing_macos_sandbox_cannot_fall_back(monkeypatch,tmp_path):
-    monkeypatch.setattr('projectflow.runners.cli_runner.sys.platform','darwin')
-    monkeypatch.setattr('projectflow.runners.cli_runner.shutil.which',lambda name: None)
+    monkeypatch.setattr('contexttrail.runners.cli_runner.sys.platform','darwin')
+    monkeypatch.setattr('contexttrail.runners.cli_runner.shutil.which',lambda name: None)
     runner=CLIRunner('codex');runner.executable='/usr/bin/codex'
     with pytest.raises(FlowError,match='sandbox-exec'):
         runner.sandbox_command(tmp_path,tmp_path,['codex'])
 
 
 def test_macos_profile_excludes_other_home_files(tmp_path, monkeypatch):
-    monkeypatch.setattr('projectflow.runners.cli_runner.sys.platform','darwin')
+    monkeypatch.setattr('contexttrail.runners.cli_runner.sys.platform','darwin')
     credential=tmp_path/'private-auth.json';credential.write_text('synthetic')
     monkeypatch.setenv('CODEX_HOME',str(tmp_path))
     work=tmp_path/'work';output=tmp_path/'out'
@@ -125,8 +125,8 @@ def test_macos_profile_excludes_other_home_files(tmp_path, monkeypatch):
 
 
 def test_macos_codex_runtime_reads_only_matching_native_package(tmp_path, monkeypatch):
-    monkeypatch.setattr('projectflow.runners.cli_runner.platform.machine', lambda: 'x86_64')
-    monkeypatch.setattr('projectflow.runners.cli_runner.shutil.which', lambda name: None)
+    monkeypatch.setattr('contexttrail.runners.cli_runner.platform.machine', lambda: 'x86_64')
+    monkeypatch.setattr('contexttrail.runners.cli_runner.shutil.which', lambda name: None)
     vendor = tmp_path / 'node_modules' / '@openai'
     cli = vendor / 'codex'
     binary = cli / 'bin' / 'codex.js'
@@ -197,7 +197,7 @@ def test_execute_cancellation():
 
 
 def test_macos_codex_profile_allows_only_global_preference_reads(tmp_path, monkeypatch):
-    monkeypatch.setattr('projectflow.runners.cli_runner.sys.platform','darwin')
+    monkeypatch.setattr('contexttrail.runners.cli_runner.sys.platform','darwin')
     (tmp_path/'auth.json').write_text('synthetic')
     monkeypatch.setenv('CODEX_HOME',str(tmp_path))
     work=tmp_path/'work';output=tmp_path/'out'
@@ -211,7 +211,7 @@ def test_macos_codex_profile_allows_only_global_preference_reads(tmp_path, monke
 
 
 def test_failed_call_reports_the_providers_reason():
-    from projectflow.runners.cli_runner import cli_error
+    from contexttrail.runners.cli_runner import cli_error
     codex = ('{"type":"thread.started"}\n'
              '{"type":"error","message":"Your workspace is out of credits. Add credits to continue."}\n'
              '{"type":"turn.failed","error":{"message":"Your workspace is out of credits. Add credits to continue."}}')

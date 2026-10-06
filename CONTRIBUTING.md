@@ -21,9 +21,9 @@ PYTHON=.venv/bin/python scripts/test.sh -q
 Useful commands that make zero model calls:
 
 ```bash
-scripts/project demo --path /tmp/projectflow-demo --no-tui    # synthetic data + Mock Runner
-scripts/project scan /path/to/project                          # input selection diagnostics
-scripts/project eval --fixture demo --runner mock --output /tmp/pf-eval
+scripts/contexttrail demo --path /tmp/contexttrail-demo --no-tui    # synthetic data + Mock Runner
+scripts/contexttrail scan /path/to/project                          # input selection diagnostics
+scripts/contexttrail eval --fixture demo --runner mock --output /tmp/pf-eval
 ```
 
 Write demo, eval and walkthrough output outside the repository.
@@ -55,7 +55,7 @@ Anything that changes what the model sees needs an evaluation on a fixture befor
 
 ## Prompts and language
 
-Prompts in `src/projectflow/prompts/` are written in English. Validation messages returned to the model are Korean, and the repair step matches them by pattern, so change both the message and the matcher together. Titles and summaries are written in the project's detected `output_language`; quotes and identifiers stay as written.
+Prompts in `src/contexttrail/prompts/` are written in English. Validation messages returned to the model are Korean, and the repair step matches them by pattern, so change both the message and the matcher together. Titles and summaries are written in the project's detected `output_language`; quotes and identifiers stay as written.
 
 ## Reporting security issues
 

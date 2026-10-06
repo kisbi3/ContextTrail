@@ -484,11 +484,11 @@ def export_text(graph: dict, evidence: dict[str, dict], fmt: str) -> str:
     if fmt == "mmd":
         return mermaid(graph)
     if fmt == "json":
-        return dumps({"format": "projectflow.export.v1", "sensitive": True, "graph": graph, "evidence": evidence}, pretty=True) + "\n"
+        return dumps({"format": "contexttrail.export.v1", "sensitive": True, "graph": graph, "evidence": evidence}, pretty=True) + "\n"
     if fmt != "md":
         raise FlowError(tr("내보내기 형식은 md, mmd, json입니다.", "Export formats are md, mmd and json."))
     analyzed = _md(graph.get("analyzed_at") or tr("없음", "none"))
-    lines = ["# Project Flow", "",
+    lines = ["# ContextTrail", "",
              tr("> 민감한 대화·코드가 포함될 수 있습니다. 공유 전에 확인하세요.",
                 "> May contain sensitive conversation and code. Review before sharing."), "",
              tr(f"그래프 버전: {graph['version']} · 분석 기준: {analyzed}",

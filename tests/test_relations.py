@@ -1,8 +1,8 @@
 import pytest
 
-from projectflow.render import mermaid, status_labels
-from projectflow.schema import EVENT_FIELDS, EvidenceValidator
-from projectflow.util import FlowError
+from contexttrail.render import mermaid, status_labels
+from contexttrail.schema import EVENT_FIELDS, EvidenceValidator
+from contexttrail.util import FlowError
 
 
 def records(make):
@@ -169,7 +169,7 @@ def test_every_claim_error_is_reported_in_one_round(laboratory):
 
 
 def test_new_observed_result_without_a_relation_is_signalled_for_review():
-    from projectflow.analysis import unlinked_observed_outcomes
+    from contexttrail.analysis import unlinked_observed_outcomes
     def item(key, kind, status):
         return {"id": key, "kind": kind, "status": status}
     delta = {"events_to_add": [item("tmp:change", "action", "applied"),
@@ -182,7 +182,7 @@ def test_new_observed_result_without_a_relation_is_signalled_for_review():
 
 
 def test_revision_without_revises_is_the_review_signal_not_every_observed_result():
-    from projectflow.analysis import review_signal_items, unlinked_revisions
+    from contexttrail.analysis import review_signal_items, unlinked_revisions
     def item(key, kind, status):
         return {"id": key, "kind": kind, "status": status}
     delta = {"events_to_add": [item("tmp:fix", "revision", "applied"),
@@ -198,7 +198,7 @@ def test_revision_without_revises_is_the_review_signal_not_every_observed_result
 
 
 def test_graph_summary_counts_revisions_without_a_revised_event():
-    from projectflow.render import graph_summary
+    from contexttrail.render import graph_summary
     graph = {"events": [{"id": "a", "kind": "action", "status": "applied"},
                         {"id": "b", "kind": "revision", "status": "applied"},
                         {"id": "c", "kind": "revision", "status": "applied"}],
@@ -208,7 +208,7 @@ def test_graph_summary_counts_revisions_without_a_revised_event():
 
 
 def test_terminal_marks_and_detail_read_without_a_browser():
-    from projectflow.render import event_detail, readable_quote, status_tones, terminal_graph
+    from contexttrail.render import event_detail, readable_quote, status_tones, terminal_graph
     evidence = {"evi_patch": {"source_id": "s1", "start_line": 2, "end_line": 2,
                               "quote": '{"cmd": "apply", "patch": "@@\\n-old\\n+new\\n"}',
                               "source": {"role": "tool_call", "provider": "codex", "recorded_at": "2026-09-25T06:00:00Z"}}}

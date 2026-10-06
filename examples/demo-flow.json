@@ -193,7 +193,7 @@
       "start_line": 1
     }
   },
-  "format": "projectflow.export.v1",
+  "format": "contexttrail.export.v1",
   "graph": {
     "analysis_mode": "synthetic_mock",
     "analysis_status": "complete",

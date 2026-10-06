@@ -55,13 +55,20 @@ if [ ! -e "$install_bin/contexttrail" ] && [ ! -L "$install_bin/contexttrail" ];
   ln -s "$install_venv/bin/contexttrail" "$install_bin/contexttrail"
 fi
 
-if [ -e "$install_bin/project" ] || [ -L "$install_bin/project" ]; then
-  if [ ! -L "$install_bin/project" ] || [ "$(readlink "$install_bin/project")" != "$install_venv/bin/project" ]; then
-    printf 'Another program owns %s; use contexttrail instead.\n' "$install_bin/project" >&2
+if [ -e "$install_bin/ct" ] || [ -L "$install_bin/ct" ]; then
+  if [ ! -L "$install_bin/ct" ] || [ "$(readlink "$install_bin/ct")" != "$install_venv/bin/ct" ]; then
+    printf 'Another program owns %s; use contexttrail instead.\n' "$install_bin/ct" >&2
   fi
 else
-  ln -s "$install_venv/bin/project" "$install_bin/project"
+  ln -s "$install_venv/bin/ct" "$install_bin/ct"
 fi
+
+# Links from the earlier working name are removed only when they point at this install.
+for earlier in project projectflow; do
+  if [ -L "$install_bin/$earlier" ] && [ "$(readlink "$install_bin/$earlier")" = "$install_venv/bin/$earlier" ]; then
+    rm -f "$install_bin/$earlier"
+  fi
+done
 
 "$install_venv/bin/contexttrail" install-commands
 printf '\nInstalled ContextTrail at %s\n' "$install_venv"

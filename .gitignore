@@ -8,6 +8,7 @@ build/
 dist/
 
 # ContextTrail runtime state
+.contexttrail/
 .projectflow/
 .langgraph_api/
 *.sqlite

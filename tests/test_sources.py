@@ -2,9 +2,9 @@ import json
 import os
 from pathlib import Path
 
-from projectflow.git_context import Scope
-from projectflow.sources.local import collect_logs, parse_claude, parse_codex
-from projectflow.util import dumps
+from contexttrail.git_context import Scope
+from contexttrail.sources.local import collect_logs, parse_claude, parse_codex
+from contexttrail.util import dumps
 
 
 def write(path, rows, tail=""):

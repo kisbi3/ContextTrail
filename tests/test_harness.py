@@ -1,12 +1,12 @@
 import threading
 from dataclasses import replace
 import pytest
-from projectflow.analysis import Harness, AnalysisConfig, _rehydrate
-from projectflow.demo import CASES, FixtureRunner
-from projectflow.model import SourceRecord
-from projectflow.schema import EvidenceValidator
-from projectflow.util import FlowError
-from projectflow.util import ident
+from contexttrail.analysis import Harness, AnalysisConfig, _rehydrate
+from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.model import SourceRecord
+from contexttrail.schema import EvidenceValidator
+from contexttrail.util import FlowError
+from contexttrail.util import ident
 
 
 def harness(laboratory):
@@ -100,7 +100,7 @@ def test_canonicalized_extraction_survives_candidate_validation_and_integration_
     assert citation["quote"] == "prefix: unique decision phrase here; trailing context"
     extracted = {"output": output, "evidence": initial.evidence, "dependencies": {}}
     unit = {"id": unit_id, "sources": [record.source_id]}
-    from projectflow.routing import RunnerPool
+    from contexttrail.routing import RunnerPool
     runners = RunnerPool(FixtureRunner, engine.config)
     prepared = engine._prepare_integration(unit, extracted, {record.source_id: record},
         store.graph(), snapshot_id, "run-substring", runners, threading.Event())
@@ -663,7 +663,7 @@ def test_cited_focus_survives_canonicalization_and_publish(laboratory):
     [(evidence_id, item)] = initial.evidence.items()
     assert item["focus"] == [[8, 35]]
     extracted = {"output": output, "evidence": initial.evidence, "dependencies": {}}
-    from projectflow.routing import RunnerPool
+    from contexttrail.routing import RunnerPool
     prepared = engine._prepare_integration({"id": unit_id, "sources": [record.source_id]}, extracted,
         {record.source_id: record}, store.graph(), snapshot_id, "run-focus",
         RunnerPool(FixtureRunner, engine.config), threading.Event())
@@ -857,7 +857,7 @@ def test_a_run_that_reads_the_document_or_a_code_change_keeps_its_verifies(labor
 
 def test_documentation_only_edits_are_flagged_in_tool_steps(laboratory):
     from dataclasses import replace
-    from projectflow.analysis import tool_steps
+    from contexttrail.analysis import tool_steps
     _, _, _, _, make = laboratory
     doc = replace(make("Tool: apply_patch\n*** Begin Patch\n*** Update File: README.md\n@@\n-a\n+b\n*** End Patch",
                        key="doc", role="tool_call"), tool_call_id="d")

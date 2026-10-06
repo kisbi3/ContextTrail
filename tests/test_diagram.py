@@ -1,4 +1,4 @@
-from projectflow.diagram import flow_diagram, request_turns
+from contexttrail.diagram import flow_diagram, request_turns
 
 
 def node(key, kind, status, title=None, session="s1"):
@@ -96,7 +96,7 @@ def test_rails_sharing_a_box_use_separate_rows():
 
 
 def test_selected_box_is_drawn_with_heavy_lines():
-    from projectflow.ui import FlowPanels
+    from contexttrail.ui import FlowPanels
     panels = FlowPanels(story(), lambda _: None)
     panels.current = "script"
     diagram = panels.diagram(110)
@@ -170,7 +170,7 @@ def test_one_turn_is_drawn_with_its_links_outside_written_inside():
 
 def test_panels_move_by_request_and_follow_links_back():
     import curses
-    from projectflow.ui import FlowPanels
+    from contexttrail.ui import FlowPanels
     panels = FlowPanels(conversation(), lambda _: None)
     assert panels.current == "m1" and panels.turn() == 0
     panels.handle("]")
@@ -192,7 +192,7 @@ def test_panels_move_by_request_and_follow_links_back():
 
 def test_selected_box_lights_its_links_and_dims_unrelated_boxes():
     import curses
-    from projectflow.ui import FlowPanels
+    from contexttrail.ui import FlowPanels
     panels = FlowPanels(story(), lambda _: None)
     diagram = panels.diagram(110)
     panels.current = "fix"

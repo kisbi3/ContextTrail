@@ -1,7 +1,7 @@
 "use strict";
 const params = new URLSearchParams(location.hash.slice(1));
-const token = params.get("token") || sessionStorage.getItem("projectflow.token") || "";
-if (token) sessionStorage.setItem("projectflow.token", token);
+const token = params.get("token") || sessionStorage.getItem("contexttrail.token") || "";
+if (token) sessionStorage.setItem("contexttrail.token", token);
 let version = params.get("v"), selected = params.get("event"), generation = 0;
 const $ = (id) => document.getElementById(id);
 // Screen texts follow the page language the server chose (the html lang attribute).

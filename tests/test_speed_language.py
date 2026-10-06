@@ -5,17 +5,17 @@ from dataclasses import replace
 
 import pytest
 
-from projectflow.analysis import (Harness, READ_HEAD_CHARS, detect_language, extract_request_data)
-from projectflow.cli import _options
-from projectflow.demo import CASES, FixtureRunner
-from projectflow.util import FlowError
+from contexttrail.analysis import (Harness, READ_HEAD_CHARS, detect_language, extract_request_data)
+from contexttrail.cli import _options
+from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.util import FlowError
 
 ROLE = {"user": "user", "assistant": "assistant", "tool": "tool_result"}
 
 
 def test_the_language_is_what_most_of_the_persons_messages_are_in(laboratory):
     _, _, _, _, make = laboratory
-    korean = [make("src/projectflow/cli.py 의 --units 고쳐줘", key=f"k{n}") for n in range(2)]
+    korean = [make("src/contexttrail/cli.py 의 --units 고쳐줘", key=f"k{n}") for n in range(2)]
     english = make("/init create AGENTS.md", key="e1")
     assert detect_language(korean + [english]) == "Korean"  # a few Hangul among code and paths count
     assert detect_language([make("テストを実行して", key="j")]) == "Japanese"
@@ -103,7 +103,7 @@ def test_a_failed_run_leaves_no_extraction_running(laboratory):
 
 
 def test_an_eval_counts_long_titles_and_events_that_rest_only_on_reads(laboratory):
-    from projectflow.evaluation import TITLE_CHARS, style_checks
+    from contexttrail.evaluation import TITLE_CHARS, style_checks
     _, _, _, _, make = laboratory
     call = replace(make('Tool: Read\n{"file_path": "/p/a.py"}', key="c1", role="tool_call"), tool_call_id="t1")
     result = replace(make("print(1)", key="r1", role="tool_result"), tool_call_id="t1")
@@ -114,8 +114,8 @@ def test_an_eval_counts_long_titles_and_events_that_rest_only_on_reads(laborator
 
 
 def test_the_plan_and_run_errors_read_in_english_when_the_screen_language_is_english():
-    from projectflow import i18n
-    from projectflow.analysis import AnalysisConfig, plan_choices_text, plan_text
+    from contexttrail import i18n
+    from contexttrail.analysis import AnalysisConfig, plan_choices_text, plan_text
     plan = {"units": 12, "units_this_run": 5, "max_calls": 30, "input_tokens_this_run": 120_000,
             "minutes_this_run": 4, "basis": "past_runs", "past_units": 3, "output_language": "Korean",
             "choices": [{"units": 5, "input_tokens": 120_000, "minutes": 4},

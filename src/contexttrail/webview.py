@@ -18,7 +18,7 @@ from .util import FlowError, dumps
 # The page ships in Korean; the English screen gets the same markup with these texts swapped.
 # Keys are the exact Korean texts in `assets/index.html`, so a stale entry fails `page_html`.
 PAGE_TEXT_EN = {
-    "Project Flow · 근거 보기": "Project Flow · evidence view",
+    "ContextTrail · 근거 보기": "ContextTrail · evidence view",
     "프로젝트의 흐름과 근거": "The project's flow and evidence",
     "변경분 분석": "Analyze changes",
     "터미널에서 안내한 접근 주소로 열어 주세요.": "Open this page with the access link shown in the terminal.",
@@ -112,7 +112,7 @@ class LocalViewer:
                           "/style.css": ("style.css", "text/css; charset=utf-8")}
                 if path in assets:
                     name, content_type = assets[path]
-                    text = files("projectflow").joinpath("assets", name).read_text(encoding="utf-8")
+                    text = files("contexttrail").joinpath("assets", name).read_text(encoding="utf-8")
                     return self.send_data(200, page_html(text) if name == "index.html" else text, content_type)
                 if not self.authorized():
                     return self.send_data(401, {"error": "access token required"})
@@ -186,7 +186,7 @@ class LocalViewer:
                             viewer.refresh_result = {"status": "failed", "error": tr("갱신 실패; 터미널에서 상태를 확인하세요.",
                                                                                   "Update failed; check the terminal for its state.")}
                     viewer.refresh_result = None
-                    viewer.refresh_thread = threading.Thread(target=run, name="projectflow-refresh", daemon=True)
+                    viewer.refresh_thread = threading.Thread(target=run, name="contexttrail-refresh", daemon=True)
                     viewer.refresh_thread.start()
                 return self.send_data(202, {"status": "started"})
         try:
@@ -194,7 +194,7 @@ class LocalViewer:
         except OSError:
             self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
-        self.thread = threading.Thread(target=self.server.serve_forever, name="projectflow-viewer", daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, name="contexttrail-viewer", daemon=True)
         self.thread.start()
         return self
 

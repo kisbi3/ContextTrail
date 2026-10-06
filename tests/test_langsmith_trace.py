@@ -3,10 +3,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from projectflow.analysis import AnalysisConfig, Engine
-from projectflow.demo import FixtureRunner
-from projectflow.langsmith_trace import LangSmithTracer
-from projectflow.util import FlowError
+from contexttrail.analysis import AnalysisConfig, Engine
+from contexttrail.demo import FixtureRunner
+from contexttrail.langsmith_trace import LangSmithTracer
+from contexttrail.util import FlowError
 
 
 def test_langsmith_requires_key_before_model_call(monkeypatch):
@@ -58,7 +58,7 @@ def test_analysis_records_extract_and_integrate_in_langsmith(laboratory, monkeyp
             captured.append((kwargs['stage'], kwargs['status']))
             if trace_fails:
                 raise RuntimeError('synthetic transport failure')
-    monkeypatch.setattr('projectflow.analysis.LangSmithTracer', FakeTracer)
+    monkeypatch.setattr('contexttrail.analysis.LangSmithTracer', FakeTracer)
     engine = Engine(scope, store, AnalysisConfig(langsmith_enabled=True))
     engine.scan = lab_engine.scan
     result = engine.analyze(FixtureRunner)
@@ -73,7 +73,7 @@ def test_analysis_records_extract_and_integrate_in_langsmith(laboratory, monkeyp
 def test_run_trace_follows_the_real_nodes_and_hides_text_unless_asked(laboratory, monkeypatch, include_content):
     import langsmith
     from langchain_core.tracers.langchain import wait_for_all_tracers
-    from projectflow.demo import CASES
+    from contexttrail.demo import CASES
     scope, store, lab_engine, records, make = laboratory
     records.append(make(CASES[0][0]))
     monkeypatch.setenv('LANGSMITH_API_KEY', 'synthetic-key')
@@ -92,9 +92,9 @@ def test_run_trace_follows_the_real_nodes_and_hides_text_unless_asked(laboratory
     wait_for_all_tracers()
     names = {run['name'] for run in sent.values()}
     assert {'ContextTrail analysis', 'scan_sources', 'extract_model_and_validate', 'build_extract_request',
-            'validate_extract_claims', 'publish_result', 'Project Flow extract'} <= names
+            'validate_extract_claims', 'publish_result', 'ContextTrail extract'} <= names
     # Each model call sits under the node that made it, in the same trace and project.
-    call = next(run for run in sent.values() if run['name'] == 'Project Flow extract')
+    call = next(run for run in sent.values() if run['name'] == 'ContextTrail extract')
     parent = sent[str(call['parent_run_id'])]
     assert parent['name'] == 'extract_model_and_validate' and call['trace_id'] == parent['trace_id']
     assert call['project_name'] == 'synthetic-project'
@@ -107,7 +107,7 @@ def test_run_trace_follows_the_real_nodes_and_hides_text_unless_asked(laboratory
 
 
 def test_metadata_only_keeps_counts_and_codes_but_drops_text():
-    from projectflow.langsmith_trace import metadata_only, scrub_error
+    from contexttrail.langsmith_trace import metadata_only, scrub_error
     state = {'mode': 'cli', 'unit_id': 'unit_' + 'a' * 16, 'title': 'secret title', 'actor': 'jaesung',
              'events': [{'actor': 'user'}, {'actor': 'secretname'}],
              'event_candidates': [{'id': 'tmp:secret_plan', 'kind': 'action', 'status': 'applied',

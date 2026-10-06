@@ -3,9 +3,9 @@ from dataclasses import replace
 
 import pytest
 
-from projectflow.demo import CASES, FixtureRunner
-from projectflow.schema import SHORT_QUOTE_CHARS
-from projectflow.util import FlowError
+from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.schema import SHORT_QUOTE_CHARS
+from contexttrail.util import FlowError
 from test_relations import cite, edge, event, extraction, records, validator
 
 

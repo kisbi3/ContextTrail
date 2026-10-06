@@ -146,7 +146,7 @@ def detect_language(records: list[SourceRecord], locale: str | None = None) -> s
 
 
 def prompt(name: str) -> str:
-    return files("projectflow").joinpath("prompts", name + ".md").read_text(encoding="utf-8")
+    return files("contexttrail").joinpath("prompts", name + ".md").read_text(encoding="utf-8")
 
 
 # Sent only in reuse mode, so the default integration request is the same bytes as before.

@@ -1,8 +1,8 @@
 from dataclasses import replace
 
-from projectflow.analysis import add_user_requests, link_request_turns
-from projectflow.model import SourceRecord, is_user_prompt
-from projectflow.schema import EvidenceValidator, record_evidence
+from contexttrail.analysis import add_user_requests, link_request_turns
+from contexttrail.model import SourceRecord, is_user_prompt
+from contexttrail.schema import EvidenceValidator, record_evidence
 
 
 def record(key, role, text, session="s", at="2026-09-26T10:00:00Z"):

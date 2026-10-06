@@ -3,8 +3,8 @@ import curses
 import pytest
 from wcwidth import wcwidth
 
-from projectflow import ui
-from projectflow.ui import FlowPanels
+from contexttrail import ui
+from contexttrail.ui import FlowPanels
 
 from test_diagram import conversation, story
 
@@ -132,9 +132,9 @@ def test_zoom_help_and_escape():
 
 
 def test_english_screen_language_renders_help_titles_and_footer():
-    from projectflow import i18n
+    from contexttrail import i18n
     i18n.set_language("en")
-    from projectflow.diagram import flow_diagram
+    from contexttrail.diagram import flow_diagram
     panels = FlowPanels(story(), lambda _: None, app_keys=(("Q", "quit"),))
     text = drawn(panels).text()
     assert "Event flow" in text and "Selected event" in text

@@ -346,8 +346,8 @@ class CLIRunner:
 
     def _temporary(self):
         if sys.platform == "darwin":
-            return tempfile.TemporaryDirectory(prefix="projectflow-run-", dir="/private/tmp")
-        return tempfile.TemporaryDirectory(prefix="projectflow-run-")
+            return tempfile.TemporaryDirectory(prefix="contexttrail-run-", dir="/private/tmp")
+        return tempfile.TemporaryDirectory(prefix="contexttrail-run-")
 
     def preflight(self) -> dict:
         executable = shutil.which(self.name)

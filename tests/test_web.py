@@ -3,8 +3,8 @@ import json
 import re
 import threading
 import pytest
-from projectflow.demo import CASES, FixtureRunner
-from projectflow.webview import LocalViewer
+from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.webview import LocalViewer
 
 
 @pytest.fixture
@@ -83,8 +83,8 @@ def test_refresh_requires_all_guards_and_is_deduplicated(viewer):
 
 
 def test_english_screen_serves_english_page_and_labels(viewer):
-    from projectflow import i18n
-    from projectflow.render import event_detail
+    from contexttrail import i18n
+    from contexttrail.render import event_detail
     i18n.set_language("en")
     obj,calls,_=viewer
     status,data,_=request(obj,'GET','/',auth=False)

@@ -280,3 +280,9 @@
 - installer 차이는 추출 결과가 실행마다 달라서 생겼다. 추출은 두 번 모두 medium이었다. 그래서 추론 수준 기본값은 medium을 유지한다.
 - repairfix는 두 번 모두 통합이 관측 결과 후보를 `excluded`로 뺐다. 원인은 09-27에 `integrate.md` 8번에 넣은 "둘러보기만 한 후보는 제외하고 도운 사건에 합친다" 문장이다. 사건 선별은 추출이 맡으므로 통합에서는 빼고, "사소하다는 이유로 후보를 제외하지 않는다, 실행 결과는 각자 사건으로 둔다"로 바꿨다. 효과는 다음 실제 평가로 확인한다.
 
+## 2026-10-06: 이름 통일 — ContextTrail
+
+- 패키지·import·명령을 모두 `contexttrail`로 통일하고 짧은 별칭 `ct`를 둔다(소유자 결정). `project`, `projectflow` 명령과 "Project Flow" 표기는 없앤다. 버전은 `0.1.0a5`.
+- 이유: GitHub 저장소, 에이전트 스킬(`contexttrail-update`/`-context`), 참조 형식(`contexttrail:ev_…`)이 이미 이 이름이고, PyPI에서 `contexttrail`이 비어 있다. 배포 뒤에 바꾸면 설치와 import가 모두 깨진다.
+- 호환으로 남긴 것: 기존 `.git/projectflow/`·`.projectflow/` 상태 폴더는 새 폴더가 없을 때 그대로 쓴다(`git_context._state_dir`), `projectflow-eval-v1` fixture와 `projectflow-eval-report-v1` 보고서는 계속 읽는다, 도구 자신의 `projectflow-run-` 실행 세션은 계속 분석에서 뺀다. 이전 보고서·계획 문서의 옛 이름은 기록이므로 그대로 둔다.
+

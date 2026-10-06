@@ -47,12 +47,12 @@ def _page(units: list[dict], schema: dict, fixture: str, excluded: int) -> str:
         related = data["context_only"]
         sections = [
             _panel(tr("① 공통 system 지시문", "① Shared system instructions"),
-                   tr("src/projectflow/prompts/common.md에서 읽습니다. Codex CLI에는 별도의 읽기 전용 system 파일로 전달합니다.",
-                      "Read from src/projectflow/prompts/common.md. The Codex CLI receives it as a separate read-only system file."),
+                   tr("src/contexttrail/prompts/common.md에서 읽습니다. Codex CLI에는 별도의 읽기 전용 system 파일로 전달합니다.",
+                      "Read from src/contexttrail/prompts/common.md. The Codex CLI receives it as a separate read-only system file."),
                    task["system"]),
             _panel(tr("② extract 단계 지시문", "② Extract stage instructions"),
-                   tr("src/projectflow/prompts/extract.md에서 읽습니다. WorkUnit별 사건 후보와 근거 인용 규칙입니다.",
-                      "Read from src/projectflow/prompts/extract.md: the rules for event candidates and evidence quotes per WorkUnit."),
+                   tr("src/contexttrail/prompts/extract.md에서 읽습니다. WorkUnit별 사건 후보와 근거 인용 규칙입니다.",
+                      "Read from src/contexttrail/prompts/extract.md: the rules for event candidates and evidence quotes per WorkUnit."),
                    task["instructions"]),
             _panel(tr("③ 새 기록 new_records", "③ New records new_records"),
                    tr("호스트가 이 WorkUnit에 배정한 원문입니다. Harness.provide가 출처 metadata와 줄 번호가 붙은 전체 내용을 만듭니다.",
@@ -137,8 +137,8 @@ def _page(units: list[dict], schema: dict, fixture: str, excluded: int) -> str:
             + "".join(f"<li>{html.escape(step)}</li>" for step in steps) +
             "</ol></section>" + "".join(cards) +
             "<section><h2>" + html.escape(tr("출력 JSON Schema", "Output JSON Schema")) + "</h2><p>"
-            + html.escape(tr("src/projectflow/schema.py의 EXTRACT_SCHEMA입니다. CLI에 schema 파일로 전달되며 응답을 검증합니다.",
-                             "EXTRACT_SCHEMA from src/projectflow/schema.py. It is passed to the CLI as the schema file and validates the response.")) + "</p>"
+            + html.escape(tr("src/contexttrail/schema.py의 EXTRACT_SCHEMA입니다. CLI에 schema 파일로 전달되며 응답을 검증합니다.",
+                             "EXTRACT_SCHEMA from src/contexttrail/schema.py. It is passed to the CLI as the schema file and validates the response.")) + "</p>"
             "<pre>" + html.escape(dumps(schema, pretty=True)) + "</pre></section></html>")
 
 

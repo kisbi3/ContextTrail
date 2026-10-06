@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from projectflow.store import _SQL_VARIABLES, Store
+from contexttrail.store import _SQL_VARIABLES, Store
 
 
 @pytest.fixture

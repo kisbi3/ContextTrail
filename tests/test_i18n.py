@@ -1,5 +1,5 @@
-from projectflow import i18n
-from projectflow.i18n import Labels, tr
+from contexttrail import i18n
+from contexttrail.i18n import Labels, tr
 
 
 def test_resolve_prefers_the_flag_then_the_environment_then_the_saved_language_then_the_locale():
