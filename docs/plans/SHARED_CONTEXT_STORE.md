@@ -156,8 +156,8 @@ B2를 마지막에 둔 이유: 돈이 드는 분석을 사람이 모르게 띄�
   - Claude Code: 대화형 세션에서 `Stop` 훅이 돌아 `hook: cooldown`을 남겼다. `claude -p`에서는 디버그 로그에 "Registering async hook … (Stop)" 뒤 "Hook Stop cancelled"가 찍힌다(비대화형 종료 시 비동기 훅 취소, 문서와 일치).
   - opencode 플러그인: `opencode run` 한 번에 `session.idle`로 `auto-update`가 불려 1단위 분석을 띄웠고(3 호출, 그래프 v8) 끝까지 돌았다.
   - 이 저장소에 자동 갱신을 켜 두었다(runner claude, 1단위, cooldown 15분, 하루 8회). 끄려면 `contexttrail auto-update --disable`.
-  - 실제 평가(`eval --fixture demo`): Claude Runner 7호출·3단위·사건 7개, Codex Runner 7호출·3단위·사건 7개, 둘 다 `complete`, noop 확인 통과. 기대 검사는 Claude 1/8, Codex 0/8 — 기대가 Mock용 제목 문자열(`title_contains`)이라 실제 모델의 제목과 맞지 않는 것이지 파이프라인 실패가 아니다(상태·근거 검사는 통과). 세 도구 혼합 fixture의 실제 평가 기준은 제목 문자열이 아닌 다른 기대(`source_ids`·상태)로 다시 써야 한다 — 남은 일.
-- **남은 일:** 혼합 fixture의 기대를 `source_ids`·`status` 기준으로 고쳐 실제 평가 점수를 의미 있게 만들기, 영어권 노출(Show HN).
+  - 실제 평가(`eval --fixture demo`): Claude Runner 7호출·3단위·사건 7개, Codex Runner 7호출·3단위·사건 7개, 둘 다 `complete`, noop 확인 통과. 기대 검사는 Claude 1/8, Codex 0/8 — 기대가 Mock용 제목 문자열(`title_contains`)이라 실제 모델의 제목과 맞지 않는 것이지 파이프라인 실패가 아니다(상태·근거 검사는 통과). 이 fixture의 역할은 Mock으로 도는 CI 검사라 기대를 다시 쓰지 않기로 했다(소유자, 2026-10-06). 실제 정확도는 실제 로그 fixture(repairfix·installer)로 잰다.
+- **남은 일:** 영어권 노출(Show HN). 도구 간 관계의 실제 정확도가 궁금해지면 이 저장소의 섞인 세션(opencode·Claude Code·Codex)으로 실제 로그 fixture를 하나 만들 수 있다.
 - 2026-10-06 C·D·E 완료: opencode 명령 파일 둘, `OPENCODE_PERMISSION_HINT`, `scan --json`의 `runner`, 스킬 본문의 runner 선택 단계와 도구 간 문구, README·DECISIONS·PRD·CLAUDE.md.
 - 2026-10-06 B1 완료: `freshness.py`(`build_index`·`check`·`summary`·`status_lines`), `contexttrail status [--json]`, `find` 첫 줄과 `--json`의 `freshness`, TUI 1행과 브라우저 상태줄(그래프 버전당 한 번 계산), context 스킬의 규칙 한 줄. 테스트 465개.
 - 2026-10-06 A 완료: `sources/opencode.py`, `collect_logs(opencode_home=)`, `AnalysisConfig.opencode_home`, `--opencode-home`, `scan`의 소스별 개수, 도구 이름 표(`edit`/`write`/`read`/`bash`/`task`), `render.PROVIDER`, 평가 fixture의 provider 허용. 테스트 459개 통과. 9절 1·6·7 확인.
