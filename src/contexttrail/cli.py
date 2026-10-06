@@ -411,9 +411,11 @@ def _auto_update(args) -> int:
         for line in auto_update.describe(store, scope.state_dir / auto_update.LOG_NAME):
             print(line)
         return 0
-    # The hook entry point: quiet, quick, and never a non-zero exit.
-    stdin_text = None if sys.stdin.isatty() else sys.stdin.read(65_536)
-    folder = auto_update.hook_folder(args.folder, stdin_text)
+    # The hook entry point: quiet, quick, and never a non-zero exit. stdin is read only when no folder was
+    # given: a caller that holds its stdin open would otherwise keep the hook waiting.
+    folder_argument = str(Path(args.folder).resolve()) if args.folder else None
+    stdin_text = None if folder_argument or sys.stdin.isatty() else sys.stdin.read(65_536)
+    folder = auto_update.hook_folder(folder_argument, stdin_text)
     reason, pid = auto_update.run_hook(folder)
     if reason == "run":
         print(f"contexttrail auto-update: started analysis (pid {pid})", file=sys.stderr)

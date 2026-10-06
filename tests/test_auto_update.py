@@ -164,8 +164,21 @@ def test_the_hook_command_exits_zero_and_prints_nothing_to_stdout(tmp_path, caps
     assert calls and calls[0][0][-3:] == ["--run", "--folder", str(folder)]
     assert main(["auto-update", "--status", "--folder", str(folder)]) == 0
     assert "지난 24시간 1회" in capsys.readouterr().out
+    # with --folder, stdin is not touched (a caller holding it open must not stall the hook), and a relative folder works
+    monkeypatch.setattr("sys.stdin", _NeverRead())
+    monkeypatch.chdir(folder.parent)
+    assert main(["auto-update", "--folder", folder.name]) == 0
+    assert "hook: cooldown" in (scope.state_dir / "auto-update.log").read_text()
     assert main(["auto-update", "--disable", "--folder", str(folder)]) == 0
     assert "꺼짐" in capsys.readouterr().out
+
+
+class _NeverRead:
+    def isatty(self):
+        return False
+
+    def read(self, n=-1):
+        raise AssertionError("stdin was read although --folder was given")
 
 
 class _Stdin:
