@@ -281,6 +281,7 @@ def scan_sources(state: StudioState) -> StudioState:
         session.snapshot = snapshot
         session.engine.store.ingest(snapshot.records)
         session.engine.store.acknowledge_environment_context(snapshot.records)
+        session.engine.store.acknowledge_journaled(snapshot.records)
         return {"snapshot_id": snapshot.id, "selected_records": len(snapshot.records),
                 "limitations": snapshot.limitations}
     if state.get("mode") in {"live", "eval"}:
@@ -318,6 +319,7 @@ def scan_sources(state: StudioState) -> StudioState:
             snapshot = engine.scan()
             store.ingest(snapshot.records)
             store.acknowledge_environment_context(snapshot.records)
+            store.acknowledge_journaled(snapshot.records)
             run_id = "run_" + uuid.uuid4().hex
             store.start_run(run_id, {"scope_id": scope.id, "mode": "studio_" + state["mode"] + "_codex"})
             with _live_sessions_lock:

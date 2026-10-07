@@ -128,17 +128,23 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
     # one the store does not hold with that hash, so the cache is keyed on both); a file is re-read only when it
     # changed again.
     basis = {"scanned_at": index.get("scanned_at"),
-             "sources": digest(sorted((key, row["content_hash"]) for key, row in sources.items()))}
+             "sources": digest(sorted((key, row["content_hash"]) for key, row in sources.items())),
+             "journaled": sorted(store.journaled_sessions())}
     cache = store.get_meta(CACHE_KEY) or {}
     cached = cache.get("files", {}) if cache.get("basis") == basis else {}
     kept: dict[str, dict[str, Any]] = {}
     parsed_now = False
+
+    journaled = store.journaled_sessions()
 
     def tally(records) -> dict[str, Any]:
         count, newest, by_source, sessions = 0, None, {}, set()
         for record in records:
             row = sources.get(record.source_id)
             if row and row["content_hash"] == record.content_hash:
+                continue
+            # The agent writes these sessions itself (`contexttrail note`); analysis will not read them.
+            if record.session_id in journaled or (record.lineage or {}).get("parent_session_id") in journaled:
                 continue
             count += 1
             sessions.add((record.provider, record.session_id))

@@ -219,8 +219,11 @@ def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str,
                                                     store.evidence_many, run_id)
             if new.get("analysis_status") in (None, "no_data"):
                 new["analysis_status"] = "partial"
-            published = store.publish(new, [], {}, {**validator.evidence, **turn_evidence},
-                                       expected_version=graph["version"])
+            # The session is the agent's to write from now on: its records count as processed, here and at
+            # every later scan (`Store.acknowledge_journaled`), so analysis does not write the same work again.
+            published = store.publish(new, [], {record.source_id: record.content_hash for record in records},
+                                      {**validator.evidence, **turn_evidence}, expected_version=graph["version"])
+            store.note_session(session_id)
     except FlowError as exc:
         if "already running" in str(exc) or "이미 분석이 진행 중" in str(exc):
             raise FlowError("an analysis is running in this project; nothing was stored. Run the same note again "

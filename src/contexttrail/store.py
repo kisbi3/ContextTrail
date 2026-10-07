@@ -17,6 +17,9 @@ from .util import FlowError, dumps, merge_focus, now, private_dir
 _SQL_VARIABLES = 900
 
 
+JOURNAL_KEY = "journal_sessions"
+
+
 class Store:
     """Short transactions only. No DB write transaction is held across an AI call."""
 
@@ -179,6 +182,26 @@ class Store:
                 db.execute("""UPDATE source_records SET processed_hash=?
                     WHERE id=? AND content_hash=? AND available=1""",
                     (record.content_hash, record.source_id, record.content_hash))
+        return len(selected)
+
+    def journaled_sessions(self) -> dict[str, str]:
+        """Sessions an agent wrote notes in (`contexttrail note`), with the time of the first note."""
+        return self.get_meta(JOURNAL_KEY, {}) or {}
+
+    def note_session(self, session_id: str) -> None:
+        sessions = self.journaled_sessions()
+        if session_id not in sessions:
+            self.set_meta(JOURNAL_KEY, {**sessions, session_id: now()})
+
+    def acknowledge_journaled(self, records: list[SourceRecord]) -> int:
+        """Mark the records of sessions an agent wrote notes in as processed, so analysis does not write the
+        same work a second time; a sub-agent session counts with its parent. Returns how many were marked."""
+        sessions = self.journaled_sessions()
+        if not sessions:
+            return 0
+        selected = [r for r in records if r.session_id in sessions
+                    or (r.lineage or {}).get("parent_session_id") in sessions]
+        self.mark_processed({r.source_id: r.content_hash for r in selected})
         return len(selected)
 
     def mark_processed(self, processed: dict[str, str]) -> None:

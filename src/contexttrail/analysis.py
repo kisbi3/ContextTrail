@@ -1911,6 +1911,7 @@ class Engine:
         with self.store.analyze_lock():
             self.store.ingest(snapshot.records)
             self.store.acknowledge_environment_context(snapshot.records)
+            self.store.acknowledge_journaled(snapshot.records)
             units, _, _ = self._plan_units(snapshot, [])
         pool = {r.source_id: r for r in snapshot.records}
         limit = self.config.max_units
@@ -2254,6 +2255,12 @@ class Engine:
                     issues.append("retry of a pending work unit held back because some of its sources are missing.")
                 continue
             if scheduled.intersection(ids):
+                continue
+            if unit["status"] == "parsed" and unit["result"] is None and not deps_changed and not pending.intersection(ids):
+                # Nothing paid for and nothing left to do: its records were settled without a model
+                # (an agent's notes cover its session, `Store.acknowledge_journaled`).
+                if repair:
+                    self.store.save_unit(unit["id"], unit["sources"], unit["dependencies"], "superseded")
                 continue
             if (unit["status"] == "parsed" and unit["result"] is None and not deps_changed
                     and all(i in pending for i in ids)):

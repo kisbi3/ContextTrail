@@ -151,3 +151,52 @@ def test_the_cli_writes_and_lists_notes_of_the_current_session(project, monkeypa
     listed = capsys.readouterr().out.splitlines()
     assert len(listed) == 2 and "action/applied" in listed[0] and "outcome/observed_failure" in listed[1]
     assert main(["note", str(folder), "--kind", "decision", "--title", "x", "--quote", "not anywhere at all"]) == 1
+
+
+def test_analysis_leaves_a_noted_session_to_the_agent(project, tmp_path):
+    from contexttrail.analysis import AnalysisConfig, Engine
+    from contexttrail.demo import FixtureRunner
+    from contexttrail.freshness import check
+    folder, scope, store = project
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    other = homes["claude_home"] / "projects" / "app" / "other-session.jsonl"
+    other.write_text(dumps({"type": "user", "uuid": "o1", "sessionId": "other-session", "cwd": str(folder),
+                            "timestamp": "2026-10-07T09:00:00Z",
+                            "message": {"content": [{"type": "text", "text": "Use SQLite for the store."}]}}) + "\n")
+    engine = Engine(scope, store, AnalysisConfig(**homes))
+    before = engine.preview_plan(engine.scan())
+    assert before["units"] == 2  # both sessions wait
+    note(scope, store, kind="action", title="Lock the store", quotes=["write_atomically(path)"])
+    assert SESSION in store.journaled_sessions()
+    # The session goes on after the note; what it writes is the agent's too.
+    path = homes["claude_home"] / "projects" / "app" / f"{SESSION}.jsonl"
+    with path.open("a") as handle:
+        handle.write(dumps(row(folder, 7, "user", [{"type": "text", "text": "Now add a retry."}])) + "\n")
+    # Not counted as waiting for analysis either.
+    assert check(scope, store, **homes)["since_scan"]["records"] == 0
+    plan = engine.preview_plan(engine.scan())
+    assert plan["units"] == 1
+    result = engine.analyze(FixtureRunner)
+    assert result["status"] in {"complete", "noop"}
+    sources = store.sources()
+    assert all(row["processed_hash"] == row["content_hash"] for row in sources.values())
+    notes = journal.noted(store.graph(), SESSION)
+    assert len(notes) == 1 and len([e for e in store.graph()["events"] if e["actor"] == "user"]) >= 2
+    fresh = check(scope, store, **homes)
+    assert fresh["pending"]["records"] == 0
+
+
+def test_a_planned_unit_of_a_noted_session_is_superseded_not_sent(project, tmp_path):
+    from contexttrail.analysis import AnalysisConfig, Engine
+    _, scope, store = project
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    engine = Engine(scope, store, AnalysisConfig(**homes))
+    snapshot = engine.scan()
+    store.ingest(snapshot.records)
+    ids = [r.source_id for r in snapshot.records]
+    store.save_unit("unit_planned", ids, {}, "parsed")
+    note(scope, store, kind="action", title="Lock the store", quotes=["write_atomically(path)"])
+    store.acknowledge_journaled(snapshot.records)
+    units, _, _ = engine._plan_units(snapshot, [], repair=True)
+    assert units == []
+    assert {u["id"]: u["status"] for u in store.units()}["unit_planned"] == "superseded"
