@@ -125,6 +125,9 @@ def test_current_session_comes_from_the_agent_running_the_command(monkeypatch):
     # Claude Code started from a Codex shell inherits CODEX_THREAD_ID; its own marker decides.
     monkeypatch.setenv("CLAUDECODE", "1")
     assert _session("current") == "claude-1"
+    # An opencode server started from Claude Code inherits its variables; the plugin's per-call one wins.
+    monkeypatch.setenv("OPENCODE_SESSION_ID", "ses_1")
+    assert _session("current") == "ses_1"
     assert _session("abc") == "abc" and _session(None) is None
 
 

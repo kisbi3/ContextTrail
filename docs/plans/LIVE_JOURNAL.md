@@ -1,6 +1,6 @@
 # 에이전트가 직접 적는 그래프 (live journal)
 
-상태: A~E 구현 (2026-10-07). 남은 것: Codex·opencode 실제 확인, F(평가), `--audit`. 진행 기록은 §10. 소유자 제안: "별도로 분석을 돌리지 말고, 작업한 AI가 ContextTrail을 써서 그래프를 만들게 하자."
+상태: A~E 구현, 세 도구 모두 실제 확인 (2026-10-07). 남은 것: F(평가), `--audit`, Codex 재확인(크레딧 소진으로 마지막 수정 뒤 미확인). 진행 기록은 §10. 소유자 제안: "별도로 분석을 돌리지 말고, 작업한 AI가 ContextTrail을 써서 그래프를 만들게 하자."
 
 ## 1. 왜
 
@@ -134,3 +134,22 @@ note 하나: 출력 200~400토큰, 스킬 본문이 문맥에 1~2k토큰. 세션
 **처음 실제 사용에서 찾은 버그.** note 호출을 인용 출처에서 빼는 판별이 "명령에 `contexttrail note`라는 글자가 있는 호출"이어서, note 기능 코드를 파일에 쓴 도구 호출까지 빠져 그 코드 줄을 인용할 수 없었다. 셸 명령을 조각으로 나눠 실제로 `note`를 **실행하는** 조각이 있을 때만 빼도록 고쳤다(`runs_note`; `$(…)`, 변수에 담은 프로그램, `python -m` 포함, heredoc 본문 제외).
 
 남은 것: Codex와 opencode에서 실제 확인(Codex는 새 훅을 TUI에서 신뢰해야 돈다), F 평가(같은 세션을 분석기로 돌린 결과와 비교), `--audit`.
+
+### 2026-10-07 — opencode·Codex 실제 확인과 그때 찾은 것
+
+임시 git 프로젝트(스크래치패드)에서 note를 켜고, 각 도구에 note 이야기를 하지 않은 채 작은 작업(함수 추가 + 실행 확인)을 시켰다.
+
+**opencode (1.18.33, 무료 모델).**
+- `shell.env`로 넣은 `OPENCODE_SESSION_ID`가 도구 셸에 보였다.
+- `opencode run`은 세션이 idle이 되자마자 인스턴스를 닫아 플러그인의 알림이 나가지 못한다. TUI처럼 계속 떠 있는 `opencode serve`에서는 됐다: idle → `note --hook`이 `block` → `client.session.prompt`로 알림 → 에이전트가 `contexttrail-note` 스킬을 불러 note 두 개를 적었고, 그 다음 idle에는 다시 알리지 않았다.
+- 찾은 것 1: 그 서버를 Claude Code 셸에서 띄워 `CLAUDECODE`·`CLAUDE_CODE_SESSION_ID`를 물려받았고, `--session current`가 Claude 세션을 골랐다. 고침: 플러그인이 호출마다 넣는 `OPENCODE_SESSION_ID`가 가장 구체적이므로 먼저, 그리고 보이는 세션 중 **이 프로젝트에 기록이 있는 첫 세션**을 쓴다(`current_in_project`).
+- 찾은 것 2: 실행 결과가 `2` 한 글자라 8자 하한에 걸려 `observed_*`로 적지 못하고 `reported_complete`로 내려갔다. 고침: 도구 출력의 **한 줄 전체**와 같으면 짧아도 받는다(가장 최근 것).
+- 찾은 것 3: 명령을 인용하고 `observed_success`를 주자 "observed status needs original tool_result evidence"만 나왔다. 고침: 어디서 찾았는지와 무엇을 인용해야 하는지 말한다.
+- opencode는 `~/.claude/skills`와 `~/.agents/skills`를 모두 읽어 같은 이름의 스킬에 경고를 낸다(전부터 update·context도 그랬다). 동작에는 영향 없다.
+
+**Codex (`codex exec --dangerously-bypass-hook-trust`, workspace-write).** 이 플래그는 훅 신뢰를 이 실행에만 건너뛴다. `hooks.json`에는 ContextTrail 훅 둘뿐인 것을 확인하고 썼다.
+- `Stop` 훅의 `block`으로 Codex가 이어서 스킬을 읽고 `note`를 불렀다.
+- 찾은 것 4: Codex 기본 샌드박스는 `.git`을 읽기 전용으로 두는데 상태가 `.git/contexttrail`에 있어 note가 `Operation not permitted`로 실패했다. 고침: **대기열.** 상태를 쓸 수 없으면 `note`는 인용까지 확인한 뒤 사용자 임시 디렉터리(`$TMPDIR/contexttrail-notes/<scope>/`, 0700/0600)에 넣고 `q_…` ID를 준다. 샌드박스 밖에서 도는 턴 끝 훅이 대기열을 오래된 순으로 모든 검사와 함께 저장하고, 실패한 것이 있으면 그 이유로 한 번 되돌린다. 뒤 note는 `--verifies q_…`로 앞의 대기 note에 연결할 수 있다(저장 때 실제 ID로 바뀐다). 분석이 잠금을 잡고 있으면 다음 훅까지 남겨 둔다. 다시 실행해 보니 변경 note가 대기열을 거쳐 저장됐다(v3).
+- 찾은 것 5: 에이전트가 결과 줄(`div ok 2.0`)을 인용했는데, 같은 줄을 되풀이한 자기 메시지가 더 최근이라 그쪽이 잡혀 `observed_success`가 거부됐다. 고침: `observed_*`면 도구 출력부터 찾는다. 같은 Codex 세션 기록에 다시 적어 보니 도구 결과를 인용해 `verifies`까지 저장됐다(v4).
+- 찾은 것 6: 에이전트가 `reported_complete`에 `--verifies`를 붙였고, 대기열 저장 때 거부됐는데 Codex는 같은 턴에 두 번째 되돌림을 하지 않아 이유가 전달되지 않았다. 고침: 그 조합은 note를 적을 때 바로 거부하고, 대기열 거부 이유는 `note --list`에도 보인다.
+- 마지막 수정 뒤의 Codex 재실행은 "workspace is out of credits"로 하지 못했다. 고친 동작은 단위 테스트와 위 기록 재생으로만 확인했다.

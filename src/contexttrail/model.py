@@ -67,7 +67,8 @@ HARNESS_TEXT = ("<task-notification>", "<command-name>", "<command-message>", "<
                 "<user_instructions>", "<environment_context>", "<bash-input>", "<bash-stdout>", "<bash-stderr>",
                 "<user-prompt-submit-hook>", "# AGENTS.md instructions",
                 # The note reminder a hook sends back (opencode posts it as a user message) and Claude Code's wrapper.
-                "ContextTrail notes are on for this project", "Stop hook feedback")
+                "ContextTrail notes are on for this project", "ContextTrail stored the notes queued",
+                "Stop hook feedback")
 
 
 def is_user_prompt(record: SourceRecord) -> bool:

@@ -89,7 +89,7 @@ def test_an_observed_failure_verifies_the_change_it_ran(project):
 
 def test_a_claimed_success_without_a_tool_result_is_refused_and_nothing_is_stored(project):
     _, scope, store = project
-    with pytest.raises(FlowError, match="observed status needs original tool_result evidence"):
+    with pytest.raises(FlowError, match="needs a quote of a tool's output.*found in: assistant"):
         note(scope, store, kind="outcome", status="observed_success", title="Concurrency fixed",
              quotes=["All concurrency tests pass now"])
     assert store.graph()["version"] == 0
@@ -116,7 +116,7 @@ def test_an_unknown_target_or_a_wrong_relation_is_refused(project):
     with pytest.raises(FlowError, match="no single event"):
         note(scope, store, kind="revision", title="x", quotes=["write_atomically(path)"], relations={"revises": ["ev_missing"]})
     change = note(scope, store, kind="action", title="Lock the store", quotes=["write_atomically(path)"])
-    with pytest.raises(FlowError, match="verifies must link a change"):
+    with pytest.raises(FlowError, match="--verifies links a change to the observed result"):
         note(scope, store, kind="decision", title="x", quotes=["Make the store safe under two concurrent writers."],
              relations={"verifies": [change["event"]["id"]]})
     assert store.graph()["version"] == 1
@@ -274,3 +274,99 @@ def test_only_a_call_that_runs_note_is_kept_out_of_the_quotes():
     # Writing code or docs that mention the command is ordinary work, and quotable.
     assert not journal.runs_note(call("python3 - <<'EOF'\ntext = 'run contexttrail note --kind action'\nEOF"))
     assert not journal.runs_note(call("grep -n 'contexttrail note' README.md"))
+
+
+def test_a_short_output_is_quotable_as_its_whole_line():
+    from contexttrail.model import SourceRecord
+    def record(key, role, content):
+        return SourceRecord(key, "opencode", SESSION, role, content, {})
+    records = [record("old", "tool_result", "5"), record("say", "assistant", "5"),
+               record("new", "tool_result", "checking\n 5 \ndone")]
+    assert journal.locate(records, "5") == {"source_id": "new", "start_line": 2, "end_line": 2, "quote": " 5 "}
+    # Only a whole line of a tool's output: a short fragment, or a line someone said, is not enough.
+    with pytest.raises(FlowError, match="too short"):
+        journal.locate(records, "chec")
+    with pytest.raises(FlowError, match="too short"):
+        journal.locate(records[1:2], "5")
+
+
+def test_an_inherited_session_variable_from_another_tool_is_passed_over(project):
+    _, scope, store = project
+    # Codex started from a Claude Code shell: both variables and Claude's marker are visible.
+    environ = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "claude-elsewhere", "CODEX_THREAD_ID": SESSION}
+    assert journal.current_session(environ) == "claude-elsewhere"
+    assert journal.current_in_project(scope, store, environ) == SESSION
+    assert journal.current_in_project(scope, store, {"CODEX_THREAD_ID": "nowhere"}) == "nowhere"
+
+
+@pytest.fixture
+def private_tmp(tmp_path, monkeypatch):
+    import tempfile
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
+    (tmp_path / "tmp").mkdir()
+
+
+def test_a_sandboxed_note_is_queued_and_the_hook_stores_it_with_its_link(project, tmp_path, private_tmp):
+    folder, scope, store = project
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    store.set_meta(journal.SETTINGS_KEY, {"enabled_at": "2026-10-07T09:00:00+00:00"})
+    change = journal.queue(scope, SESSION, kind="action", title="Lock the store", summary="", quotes=["write_atomically(path)"],
+                           status=None, actor="assistant", relations={}, **homes)
+    journal.queue(scope, SESSION, kind="outcome", title="Failed", summary="", quotes=["1 failed, 12 passed"],
+                  status="observed_failure", actor="assistant", relations={"verifies": [change["queued"]]}, **homes)
+    # Quotes are checked when queued.
+    with pytest.raises(FlowError, match="quote not found"):
+        journal.queue(scope, SESSION, kind="decision", title="x", summary="", quotes=["nowhere in the session"],
+                      status=None, actor="assistant", relations={}, **homes)
+    assert store.graph()["version"] == 0 and len(journal.queued(scope, SESSION)) == 2
+    assert journal.hook(hook_input(folder), **homes) is None  # stored, and the turn's work is now noted
+    graph = store.graph()
+    action, outcome = journal.noted(graph, SESSION)
+    assert any(e["from_event_id"] == action["id"] and e["to_event_id"] == outcome["id"] and e["relation"] == "verifies"
+               for e in graph["edges"])
+    assert journal.queued(scope) == []
+
+
+def test_a_queued_note_that_fails_its_checks_is_reported_back_once(project, tmp_path, private_tmp):
+    folder, scope, store = project
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    item = journal.queue(scope, SESSION, kind="revision", title="Fix", summary="", quotes=["write_atomically(path)"],
+                         status=None, actor="assistant", relations={"revises": ["ev_missing"]}, **homes)
+    decision = journal.hook(hook_input(folder), **homes)
+    assert decision["decision"] == "block" and item["queued"] in decision["reason"] and "no single event" in decision["reason"]
+    assert journal.queued(scope) == []
+    # While an analysis holds the lock the queue waits for the next hook.
+    journal.queue(scope, SESSION, kind="action", title="Lock", summary="", quotes=["write_atomically(path)"],
+                  status=None, actor="assistant", relations={}, **homes)
+    with store.analyze_lock():
+        journal.hook(hook_input(folder, stop_hook_active=True), **homes)
+    assert len(journal.queued(scope)) == 1
+
+
+def test_the_cli_queues_when_the_state_cannot_be_written(project, monkeypatch, capsys, private_tmp):
+    folder, _, store = project
+    import contexttrail.cli as cli
+    for name in ("CODEX_THREAD_ID", "OPENCODE_SESSION_ID", "CLAUDECODE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
+    def read_only(*args, **kwargs):
+        raise PermissionError(1, "Operation not permitted")
+    monkeypatch.setattr(cli, "Store", read_only)
+    assert main(["note", str(folder), "--kind", "action", "--title", "Lock", "--quote", "write_atomically(path)"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("q_") and "queued" in out
+    assert main(["note", str(folder), "--list"]) == 0
+    assert "(queued, stored when the turn ends)" in capsys.readouterr().out
+
+
+def test_an_observed_result_is_found_in_the_tools_output_before_a_message_repeating_it(project, tmp_path):
+    folder, scope, store = project
+    path = tmp_path / "claude" / "projects" / "app" / f"{SESSION}.jsonl"
+    with path.open("a") as handle:
+        handle.write(dumps(row(folder, 8, "assistant", [{"type": "text", "text": "Result: 1 failed, 12 passed"}])) + "\n")
+    result = note(scope, store, kind="outcome", status="observed_failure", title="Failed", quotes=["1 failed, 12 passed"])
+    assert store.evidence(result["event"]["evidence_ids"][0])["source"]["role"] == "tool_result"
+    # A reported result cannot verify a change: refused before anything is checked against the graph.
+    with pytest.raises(FlowError, match="--verifies links a change to the observed result"):
+        note(scope, store, kind="outcome", status="reported_complete", title="x", quotes=["1 failed, 12 passed"],
+             relations={"verifies": ["ev_whatever"]})

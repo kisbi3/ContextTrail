@@ -18,7 +18,8 @@ The person's requests are recorded by code from the transcript; do not note them
 
 Command (run in the project directory):
 `contexttrail note --kind <kind> [--status <status>] --title "<short title>" --summary "<one or two sentences: what and why>" --quote "<text copied exactly>" [--quote ...] [--verifies|--revises|--answers|--motivates <event>]`
-- Copy each quote exactly as it appears in a tool result, a tool call you made, or a message of this session: at least 8 characters, preferably one distinctive line. Never write line numbers.
+- Copy each quote exactly as it appears in a tool result, a tool call you made, or a message of this session: at least 8 characters, preferably one distinctive line; a short output such as `5` or `ok` can be quoted as its whole line. For an observed result, quote what the command printed, not the command. Never write line numbers.
 - Write the title and summary in the language the person uses with you.
 - The output is a reference like `contexttrail:ev_6226b954@v12`. Use it in `--verifies`/`--revises` of a later note to link them (an id prefix works too). `contexttrail note --list` shows this session's notes.
+- Inside a sandbox that cannot write the project's state (Codex), the note is checked for its quotes and then queued: the output starts with an id like `q_3f2a…`. It is stored with every check when the turn ends, and you can link later notes to it by that id. If a queued note fails its checks you will be told why at the end of the turn.
 - If a note is refused, read the reason: fix the quote (the message lists the closest lines) or the status and retry once. If it is refused again, move on. "an analysis is running" means try the same note again a minute later.

@@ -19,6 +19,11 @@ import difflib
 import json
 import os
 import re
+import sqlite3
+import tempfile
+import time
+import uuid
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,7 +36,7 @@ from .schema import SHORT_QUOTE_CHARS, STATUSES, EvidenceValidator, draft_delta,
 from .sources.local import jsonl_files, parse_claude, parse_codex, source_homes
 from .sources.opencode import opencode_databases, parse_opencode
 from .store import Store
-from .util import FlowError, ident, now
+from .util import FlowError, ident, now, private_dir
 
 # A person's request is made into an event by code from the transcript (`link_request_turns`), so the
 # agent notes what it decided, proposed, changed and observed.
@@ -41,16 +46,23 @@ DEFAULT_STATUS = {"decision": "adopted", "proposal": "proposed", "goal": "adopte
 # Each relation runs from the named, earlier event to the note (relations go from earlier to later):
 # the note verifies that change, revises that event, answers that question, or was motivated by it.
 RELATION_OPTIONS = ("verifies", "revises", "answers", "motivates")
-# Which variable names the session running this command. Inside Claude Code the Codex variable can be
-# inherited from the shell that started it (and the reverse is far less common), so Claude Code wins
-# when its own marker is set.
-SESSION_VARIABLES = (("CLAUDE_CODE_SESSION_ID", "CLAUDECODE"), ("CODEX_THREAD_ID", None), ("OPENCODE_SESSION_ID", None))
+# Which variable names the session running this command. A host's variable can be inherited by a tool
+# started from it (Claude Code started from a Codex shell sees CODEX_THREAD_ID; an opencode server started
+# from Claude Code sees CLAUDE_CODE_SESSION_ID), so the most specific one wins: OPENCODE_SESSION_ID is put
+# into each tool call's shell by ContextTrail's own opencode plugin, then Claude Code's when its marker
+# CLAUDECODE is set, else whichever single one is present.
+SESSION_VARIABLES = (("OPENCODE_SESSION_ID", None), ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE"), ("CODEX_THREAD_ID", None))
 # A shell command that runs `note`, directly, through `$(…)`, an interpreter or a variable holding the program.
 # A call that only mentions it (a file it writes, a grep) stays quotable.
 NOTE_COMMAND = re.compile(r"^(?:\S*/)?(?:contexttrail|ct|project|\$\{?\w+\}?)\s+note\b")
 _PIECES = re.compile(r"&&|\|\||[;|\n]|\$\(|`")
 _PREFIXES = re.compile(r"^(?:\(\s*|[A-Za-z_]\w*=\S*\s+|(?:\S*/)?python3?\s+-m\s+)+")
 ORIGIN = "note"
+# A sandbox that cannot write the project's state (Codex's workspace-write keeps `.git` read-only, and the state
+# lives in `.git/contexttrail`) gets its notes queued in the per-user temp directory, which it may write; the
+# end-of-turn hook, which runs outside the sandbox, stores them with every check.
+QUEUED_PREFIX = "q_"
+QUEUE_DIR = "contexttrail-notes"
 NEAREST = 3
 NEAREST_CHARS = 200
 NEAREST_RECORDS = 400
@@ -58,6 +70,8 @@ SETTINGS_KEY = "journal"            # {"enabled_at": …} when the person turned
 ACTIVITY_KEY = "journal_activity"   # per session: when it last noted and when the hook last reminded it
 # Work that is worth a note when a turn ends without one: a file edit, a commit, a test, a change to Git.
 WORK_HINTS = {"edit", "commit", "test", "vcs"}
+REFUSED_REASON = ("ContextTrail stored the notes queued in this turn except these, which failed its checks; write them "
+                  "again with `contexttrail note`, fixed as the reason says, or leave them out:")
 REMINDER = ("ContextTrail notes are on for this project, and this turn changed files or ran checks without a note. "
             "Before finishing, use the contexttrail-note skill: record the decisions, changes and observed results of "
             "this turn with `contexttrail note` (one call per event, quoting the tool output or message exactly). "
@@ -68,6 +82,8 @@ def current_session(environ: dict[str, str] | None = None) -> str:
     """The session running this command, from the host tool's environment."""
     environ = os.environ if environ is None else environ
     found = {name: environ[name] for name, _ in SESSION_VARIABLES if environ.get(name)}
+    if "OPENCODE_SESSION_ID" in found:
+        return found["OPENCODE_SESSION_ID"]
     for name, marker in SESSION_VARIABLES:
         if marker and environ.get(marker) and name in found:
             return found[name]
@@ -79,23 +95,64 @@ def current_session(environ: dict[str, str] | None = None) -> str:
                     + tr(". --session에 세션 ID를 지정하세요.", ". Give --session a session ID."))
 
 
-def _homes(store: Store) -> dict[str, Path]:
+def session_candidates(environ: dict[str, str] | None = None) -> list[str]:
+    """Every session the environment names, the most specific first (see SESSION_VARIABLES)."""
+    environ = os.environ if environ is None else environ
+    try:
+        first = [current_session(environ)]
+    except FlowError:
+        first = []
+    return list(dict.fromkeys(first + [environ[name] for name, _ in SESSION_VARIABLES if environ.get(name)]))
+
+
+def current_in_project(scope: Scope, store: Store | None, environ: dict[str, str] | None = None) -> str:
+    """The session running this command, among those the environment names: the first with records in this
+    project. An inherited variable (an opencode or Codex started from a Claude Code shell) names a session
+    elsewhere, so it is passed over; with none in the project, the most specific one is returned."""
+    candidates = session_candidates(environ)
+    if not candidates:
+        return current_session(environ)  # raises the usual message
+    for candidate in candidates:
+        if session_records(scope, store, candidate):
+            return candidate
+    return candidates[0]
+
+
+class ReadOnlyMeta:
+    """The project's saved settings read without writing anything (inside a sandbox); empty when unreadable."""
+
+    def __init__(self, scope: Scope):
+        self.path = scope.state_dir / "state.sqlite"
+
+    def get_meta(self, key: str, default: Any = None) -> Any:
+        if not self.path.is_file():
+            return default
+        try:
+            with closing(sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)) as db:
+                row = db.execute("SELECT value FROM project_meta WHERE key=?", (key,)).fetchone()
+        except sqlite3.Error:
+            return default
+        return json.loads(row[0]) if row else default
+
+
+def _homes(store: Store | ReadOnlyMeta) -> dict[str, Path]:
     options = store.get_meta("options", {}) or {}
     return {key: Path(options[key]) for key in ("codex_home", "claude_home", "opencode_home") if options.get(key)}
 
 
-def session_records(scope: Scope, store: Store, session_id: str, *, codex_home: Path | None = None,
+def session_records(scope: Scope, store: Store | None, session_id: str, *, codex_home: Path | None = None,
                     claude_home: Path | None = None, opencode_home: Path | None = None) -> list[SourceRecord]:
     """The records of one session that belong to this project, in recorded order.
 
     Only transcript files whose name carries the session ID are parsed (a Claude Code transcript is
     `<id>.jsonl`, a Codex rollout ends with the ID), and only that session of an opencode database.
     """
-    saved = _homes(store)
+    meta = store if store is not None else ReadOnlyMeta(scope)
+    saved = _homes(meta)
     codex_home, claude_home, opencode_home = source_homes(codex_home or saved.get("codex_home"),
                                                           claude_home or saved.get("claude_home"),
                                                           opencode_home or saved.get("opencode_home"))
-    proven = [Path(p) for p in store.get_meta("known_worktree_roots", []) or []]
+    proven = [Path(p) for p in meta.get_meta("known_worktree_roots", []) or []]
     scope = dataclasses.replace(scope, roots=list(dict.fromkeys(scope.roots + proven)))
     found: dict[str, SourceRecord] = {}
     for path, provider in jsonl_files(codex_home, claude_home):
@@ -128,8 +185,14 @@ def quotable(records: list[SourceRecord]) -> list[SourceRecord]:
 def locate(records: list[SourceRecord], quote: str) -> dict[str, Any]:
     """The citation of a quote: the most recent record holding it, at the lines that hold it."""
     if len(quote.strip()) < SHORT_QUOTE_CHARS:
-        raise FlowError(f"quote too short to find: {quote!r} (quote at least {SHORT_QUOTE_CHARS} characters, "
-                        "exactly as shown in this session)")
+        # A short output (`5`, `ok`) is quotable as a whole line: the most recent tool result that has it.
+        for record in reversed(records):
+            lines = record.content.splitlines()
+            if record.role == "tool_result" and quote.strip() and quote.strip() in (line.strip() for line in lines):
+                number = max(n for n, line in enumerate(lines, 1) if line.strip() == quote.strip())
+                return {"source_id": record.source_id, "start_line": number, "end_line": number, "quote": lines[number - 1]}
+        raise FlowError(f"quote too short to find: {quote!r} (quote at least {SHORT_QUOTE_CHARS} characters, or a whole "
+                        "line of a tool's output, exactly as shown in this session)")
     for record in reversed(records):
         text = record.content
         found = occurrences(text, quote)
@@ -164,9 +227,14 @@ def nearest(records: list[SourceRecord], quote: str, limit: int = NEAREST) -> li
     return result
 
 
-def event_id_of(value: str, graph: dict) -> str:
-    """An event named by its ID, an ID prefix, or a copied reference (`contexttrail:ev_…@v12`)."""
+def event_id_of(value: str, graph: dict, aliases: dict[str, str] | None = None) -> str:
+    """An event named by its ID, an ID prefix, a copied reference (`contexttrail:ev_…@v12`), or the `q_…` ID of
+    a queued note already stored (`aliases`)."""
     text = value.strip()
+    if aliases and text in aliases:
+        return aliases[text]
+    if text.startswith(QUEUED_PREFIX):
+        raise FlowError(f"queued note {text} was not stored (see the reason given for it), so nothing can link to it")
     if text.startswith("contexttrail:"):
         text = text[len("contexttrail:"):]
     text = text.split("@", 1)[0]
@@ -178,10 +246,10 @@ def event_id_of(value: str, graph: dict) -> str:
     return matches[0]
 
 
-def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str, summary: str = "",
-          quotes: list[str], status: str | None = None, actor: str = "assistant",
-          relations: dict[str, list[str]] | None = None, **homes: Path | None) -> dict[str, Any]:
-    """Check one note against the session's records and publish it; nothing is stored when a check fails."""
+def prepare(scope: Scope, store: Store | None, session_id: str, *, kind: str, quotes: list[str],
+            status: str | None, relations: dict[str, list[str]] | None = None,
+            **homes: Path | None) -> tuple[list[SourceRecord], list[dict], str]:
+    """The checks that need only the transcript: kind, status, and each quote found in the session."""
     if kind not in NOTE_KINDS:
         raise FlowError(f"note kind must be one of {', '.join(NOTE_KINDS)} (a person's request is added by code)")
     status = status or DEFAULT_STATUS.get(kind)
@@ -192,15 +260,48 @@ def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str,
         raise FlowError(f"unknown status {status!r}; one of {', '.join(STATUSES)}")
     if not quotes:
         raise FlowError("a note needs at least one --quote from this session's records")
-    if not enabled(store):
-        raise FlowError("notes are off for this project; the person turns them on with `contexttrail note --enable` "
-                        "in the project folder. Nothing was stored.")
+    observed = status in ("observed_success", "observed_failure")
+    linked = {name for name, values in (relations or {}).items() if values}
+    if "verifies" in linked and not (kind == "outcome" and observed):
+        raise FlowError("--verifies links a change to the observed result of a run that checked it: the note must be "
+                        "--kind outcome with observed_success/observed_failure, quoting the tool's output. A reported "
+                        "result stays unlinked; drop --verifies. Nothing was stored.")
+    if "answers" in linked and kind == "goal":
+        raise FlowError("--answers needs a note that answers the question (a decision, change or result). Nothing was stored.")
     records = session_records(scope, store, session_id, **homes)
     if not records:
         raise FlowError(f"no records of session {session_id} in this project yet "
-                        "(the session must run in this folder and have written its transcript)")
-    candidates = quotable(records)
-    citations = [locate(candidates, quote) for quote in quotes]
+                        "(the session must run in this folder and have written its transcript). If that is not "
+                        "your session, give your own session ID with --session")
+    sources = quotable(records)
+    # An observed result rests on what the tool printed; the agent often repeats that line in its own message
+    # afterwards, so a tool's output is searched first.
+    outputs = [record for record in sources if record.role == "tool_result"] if observed else []
+    citations = []
+    for quote in quotes:
+        try:
+            citations.append(locate(outputs, quote) if outputs else locate(sources, quote))
+        except FlowError:
+            citations.append(locate(sources, quote))
+    pool = {record.source_id: record for record in records}
+    cited = [pool[c["source_id"]] for c in citations]
+    if status in ("observed_success", "observed_failure") and not any(r.role == "tool_result" for r in cited):
+        found = ", ".join(sorted({r.role.replace("_", " ") for r in cited}))
+        raise FlowError(f"{status} needs a quote of a tool's output (its result), but the quotes were found in: {found}. "
+                        "Quote a line the command printed, or use reported_complete/reported_failure. Nothing was stored.")
+    return records, citations, status
+
+
+def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str, summary: str = "",
+          quotes: list[str], status: str | None = None, actor: str = "assistant",
+          relations: dict[str, list[str]] | None = None, aliases: dict[str, str] | None = None,
+          **homes: Path | None) -> dict[str, Any]:
+    """Check one note against the session's records and publish it; nothing is stored when a check fails."""
+    if not enabled(store):
+        raise FlowError("notes are off for this project; the person turns them on with `contexttrail note --enable` "
+                        "in the project folder. Nothing was stored.")
+    records, citations, status = prepare(scope, store, session_id, kind=kind, quotes=quotes, status=status,
+                                         relations=relations, **homes)
     pool = {record.source_id: record for record in records}
     cited = [pool[c["source_id"]] for c in citations]
     tool = any(record.role in {"tool_call", "tool_result"} for record in cited)
@@ -209,7 +310,7 @@ def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str,
         with store.analyze_lock():
             store.ingest(records, partial=True)
             graph = store.graph()
-            relations = {name: [event_id_of(value, graph) for value in values]
+            relations = {name: [event_id_of(value, graph, aliases) for value in values]
                          for name, values in (relations or {}).items() if values}
             snapshot_id = Snapshot(records).id
             run_id = ident("note_", session_id, now(), quotes)
@@ -261,6 +362,77 @@ def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str,
             "edges": [edge for edge in published["edges"] if edge.get("origin") == ORIGIN and edge["to_event_id"] == note_id],
             "requests_added": published.get("request_turn_audit", {}).get("requests_added", 0),
             "normalizations": validator.normalizations}
+
+
+def queue_dir(scope: Scope) -> Path:
+    return Path(tempfile.gettempdir()) / QUEUE_DIR / scope.id
+
+
+def enabled_readonly(scope: Scope) -> bool | None:
+    """Whether notes are on, read without writing anything (inside a sandbox); None when it cannot be read."""
+    meta = ReadOnlyMeta(scope)
+    if not meta.path.is_file():
+        return False
+    value = meta.get_meta(SETTINGS_KEY, None)
+    return None if value is None else bool(value.get("enabled_at"))
+
+
+def queue(scope: Scope, session_id: str, *, kind: str, title: str, summary: str, quotes: list[str],
+          status: str | None, actor: str, relations: dict[str, list[str]], **homes: Path | None) -> dict[str, Any]:
+    """Check what the transcript alone can check, then queue the note for the end-of-turn hook to store."""
+    if enabled_readonly(scope) is False:
+        raise FlowError("notes are off for this project; the person turns them on with `contexttrail note --enable` "
+                        "in the project folder. Nothing was stored.")
+    _, _, status = prepare(scope, None, session_id, kind=kind, quotes=quotes, status=status, relations=relations, **homes)
+    folder = queue_dir(scope)
+    private_dir(folder)
+    queued_id = QUEUED_PREFIX + uuid.uuid4().hex[:10]
+    item = {"id": queued_id, "session": session_id, "folder": str(scope.folder), "kind": kind, "title": title,
+            "summary": summary, "quotes": quotes, "status": status, "actor": actor,
+            "relations": {k: v for k, v in relations.items() if v}, "queued_at": now()}
+    path = folder / f"{time.time_ns()}-{queued_id}.json"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(item, stream, ensure_ascii=False)
+    return {"queued": queued_id, "path": str(path)}
+
+
+def queued(scope: Scope, session_id: str | None = None) -> list[dict[str, Any]]:
+    folder = queue_dir(scope)
+    items = []
+    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if session_id is None or item.get("session") == session_id:
+            items.append({**item, "_path": str(path)})
+    return items
+
+
+def flush(scope: Scope, store: Store, **homes: Path | None) -> tuple[list[dict], list[str]]:
+    """Store the queued notes of this project, oldest first, with every check; returns (stored, refusals).
+
+    A note that fails is dropped with its reason (the agent is told at the end of the turn); a note
+    blocked by a running analysis stays queued for the next hook.
+    """
+    stored, refused, aliases = [], [], {}
+    for item in queued(scope):
+        path = Path(item["_path"])
+        try:
+            result = write(scope, store, item["session"], kind=item["kind"], title=item["title"],
+                           summary=item.get("summary", ""), quotes=item["quotes"], status=item.get("status"),
+                           actor=item.get("actor", "assistant"), relations=item.get("relations") or {},
+                           aliases=aliases, **homes)
+        except FlowError as exc:
+            if "an analysis is running" in str(exc):
+                break
+            refused.append(f"{item['id']} ({item['title']}): {exc}")
+        else:
+            aliases[item["id"]] = result["event"]["id"]
+            stored.append({"queued": item["id"], "ref": result["ref"]})
+        path.unlink(missing_ok=True)
+    return stored, refused
 
 
 def noted(graph: dict, session_id: str) -> list[dict]:
@@ -315,7 +487,7 @@ def hook(stdin_text: str | None, **homes: Path | None) -> dict[str, Any] | None:
         payload = json.loads(stdin_text or "")
     except ValueError:
         return None
-    if not isinstance(payload, dict) or payload.get("stop_hook_active"):
+    if not isinstance(payload, dict):
         return None
     cwd, session_id = payload.get("cwd"), payload.get("session_id")
     if not (isinstance(cwd, str) and Path(cwd).is_absolute() and Path(cwd).is_dir() and isinstance(session_id, str) and session_id):
@@ -327,6 +499,17 @@ def hook(stdin_text: str | None, **homes: Path | None) -> dict[str, Any] | None:
         store = Store(scope.state_dir, scope.id)
         if not enabled(store):
             return None
+        _, refused = flush(scope, store, **homes)
+        if refused:
+            # A host may not send the agent back twice in a turn; `note --list` shows these too.
+            activity = store.get_meta(ACTIVITY_KEY, {}) or {}
+            entry = activity.setdefault(session_id, {})
+            entry["refused"] = (entry.get("refused", []) + refused)[-10:]
+            store.set_meta(ACTIVITY_KEY, activity)
+        if refused and not payload.get("stop_hook_active"):
+            return {"decision": "block", "reason": REFUSED_REASON + " " + " | ".join(refused)[:3000]}
+        if payload.get("stop_hook_active"):
+            return None  # this turn was already sent back once
         activity = (store.get_meta(ACTIVITY_KEY, {}) or {}).get(session_id, {})
         since = max(_seconds(activity.get("noted_at")), _seconds(activity.get("reminded_at")),
                     _seconds((store.get_meta(SETTINGS_KEY) or {}).get("enabled_at")))
@@ -337,3 +520,8 @@ def hook(stdin_text: str | None, **homes: Path | None) -> dict[str, Any] | None:
     except Exception:  # a hook never fails the host's turn
         return None
     return {"decision": "block", "reason": REMINDER}
+
+
+def refused(store: Store, session_id: str) -> list[str]:
+    """Queued notes of this session the hook could not store, with why (the last ten)."""
+    return ((store.get_meta(ACTIVITY_KEY, {}) or {}).get(session_id) or {}).get("refused", [])

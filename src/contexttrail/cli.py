@@ -5,6 +5,7 @@ import dataclasses
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import threading
 import time
@@ -448,40 +449,61 @@ def _note(args) -> int:
             print(dumps(decision))
         return 0
     scope = Scope.resolve(args.folder)
-    store = Store(scope.state_dir, scope.id)
+    try:
+        store = Store(scope.state_dir, scope.id)
+    except (OSError, sqlite3.Error):
+        # A sandbox that keeps the project's state read-only (Codex: .git): notes are queued for the hook.
+        if args.enable or args.disable:
+            raise
+        store = None
     if args.enable or args.disable:
         (journal.enable if args.enable else journal.disable)(store)
         print(tr(f"note를 {'켰' if args.enable else '껐'}습니다: {safe_text(scope.folder)}",
                  f"Notes {'on' if args.enable else 'off'} for {safe_text(scope.folder)}"))
         if args.enable:
             print(tr("에이전트가 contexttrail-note 스킬로 결정·변경·결과를 적고, note를 쓴 세션은 분석(analyze·자동 갱신)에서 빠집니다. "
-                     "턴 끝 알림 훅: contexttrail install-hooks --claude|--codex",
+                     "턴 끝 알림 훅: contexttrail install-hooks --claude|--codex|--opencode",
                      "Agents write decisions, changes and results with the contexttrail-note skill, and a session with notes "
-                     "leaves analysis (analyze and automatic analysis). End-of-turn reminder hook: contexttrail install-hooks --claude|--codex"))
+                     "leaves analysis (analyze and automatic analysis). End-of-turn reminder hook: contexttrail install-hooks --claude|--codex|--opencode"))
         return 0
-    session = journal.current_session() if args.session == "current" else args.session
+    session = journal.current_in_project(scope, store) if args.session == "current" else args.session
     if args.list:
-        events = journal.noted(store.graph(), session)
-        version = store.graph()["version"]
+        events = journal.noted(store.graph(), session) if store else []
+        version = store.graph()["version"] if store else None
+        waiting = journal.queued(scope, session)
         if args.json:
-            print(dumps({"session": session, "version": version, "enabled": journal.enabled(store), "events": events}, pretty=True))
+            print(dumps({"session": session, "version": version, "enabled": journal.enabled(store) if store else journal.enabled_readonly(scope),
+                         "events": events, "queued": [{k: v for k, v in item.items() if not k.startswith("_")} for item in waiting]}, pretty=True))
         else:
             for event in events:
                 print(f"contexttrail:{event['id']}@v{version}  {event['kind']}/{event['status']}  {safe_text(event['title'])}")
-            if not events:
+            for item in waiting:
+                print(f"{item['id']} (queued, stored when the turn ends)  {item['kind']}/{item.get('status')}  {safe_text(item['title'])}")
+            for reason in (journal.refused(store, session) if store else []):
+                print(f"refused when stored from the queue: {safe_text(reason)}")
+            if not events and not waiting:
                 print(f"no notes in session {session}")
-            if not journal.enabled(store):
+            if store and not journal.enabled(store):
                 print("notes are off for this project (contexttrail note --enable turns them on)")
         return 0
     if not args.kind or not args.title:
         raise FlowError("note needs --kind and --title (and at least one --quote)")
-    result = journal.write(scope, store, session, kind=args.kind, title=args.title, summary=args.summary,
-                           quotes=args.quote, status=args.status, actor=args.actor,
-                           relations={name: getattr(args, name) for name in journal.RELATION_OPTIONS})
-    if args.json:
-        print(dumps(result, pretty=True))
+    options = dict(kind=args.kind, title=args.title, summary=args.summary, quotes=args.quote, status=args.status,
+                   actor=args.actor, relations={name: getattr(args, name) for name in journal.RELATION_OPTIONS})
+    queued = None
+    if store is None:
+        queued = journal.queue(scope, session, **options)
     else:
-        print(result["ref"])
+        try:
+            result = journal.write(scope, store, session, **options)
+        except (OSError, sqlite3.Error):
+            queued = journal.queue(scope, session, **options)
+    if queued:
+        message = (f"{queued['queued']} queued: this environment cannot write the project's state, so the note is stored, "
+                   f"with every check, when the turn ends. Its quotes were found. Link to it as {queued['queued']}.")
+        print(dumps({"queued": queued["queued"]}, pretty=True) if args.json else message)
+        return 0
+    print(dumps(result, pretty=True) if args.json else result["ref"])
     return 0
 
 
@@ -666,9 +688,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise FlowError(tr("--claude, --codex, --opencode 중 하나 이상을 지정하세요.", "Give at least one of --claude, --codex, --opencode."))
             for path in install_hooks(Path.home(), claude=args.claude, codex=args.codex, opencode=args.opencode, force=args.force):
                 print(" ", safe_text(path))
-            print(tr("훅은 자동 갱신을 켠 프로젝트에서만 동작합니다: 프로젝트 폴더에서 contexttrail auto-update --enable --runner codex|claude --units N",
-                     "The hooks act only in projects where automatic analysis is enabled: in the project folder run "
+            print(tr("자동 갱신 훅은 자동 갱신을 켠 프로젝트에서만 동작합니다: 프로젝트 폴더에서 contexttrail auto-update --enable --runner codex|claude --units N",
+                     "The auto-update hook acts only in projects where automatic analysis is enabled: in the project folder run "
                      "contexttrail auto-update --enable --runner codex|claude --units N"))
+            print(tr("note 알림 훅(Claude Code·Codex·opencode)은 note를 켠 프로젝트에서만 동작합니다: contexttrail note --enable",
+                     "The note reminder hook (Claude Code, Codex, opencode) acts only in projects with notes on: contexttrail note --enable"))
             return 0
         if args.command == "show":
             return _show(args)
