@@ -212,6 +212,10 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--actor", default="assistant")
     sub.add_argument("--session", default="current", help=tr("세션 ID; 기본은 이 명령을 부른 세션", "Session ID; default: the session running this command"))
     sub.add_argument("--list", action="store_true", help=tr("이 세션에 적힌 note 목록", "The notes written in this session"))
+    sub.add_argument("--enable", action="store_true", help=tr("이 프로젝트에서 note를 켬: 에이전트가 적고, 그 세션은 분석에서 빠짐",
+                                                             "Turn notes on for this project: agents write them, and their sessions leave analysis"))
+    sub.add_argument("--disable", action="store_true")
+    sub.add_argument("--hook", action="store_true", help=argparse.SUPPRESS)  # the end-of-turn hook: stdin JSON, never fails
     sub.add_argument("--json", action="store_true")
     sub = commands.add_parser("install-commands", help=tr("Codex·Claude Code에 ContextTrail 명령 설치",
                                                           "Install the ContextTrail commands into Codex and Claude Code"))
@@ -434,19 +438,40 @@ def _auto_update(args) -> int:
 
 
 def _note(args) -> int:
+    if args.hook:
+        # The end-of-turn hook: quiet and exit 0 whatever happens; a block decision is the only output.
+        try:
+            decision = journal.hook(None if sys.stdin.isatty() else sys.stdin.read(65_536))
+        except Exception:
+            decision = None
+        if decision:
+            print(dumps(decision))
+        return 0
     scope = Scope.resolve(args.folder)
     store = Store(scope.state_dir, scope.id)
+    if args.enable or args.disable:
+        (journal.enable if args.enable else journal.disable)(store)
+        print(tr(f"note를 {'켰' if args.enable else '껐'}습니다: {safe_text(scope.folder)}",
+                 f"Notes {'on' if args.enable else 'off'} for {safe_text(scope.folder)}"))
+        if args.enable:
+            print(tr("에이전트가 contexttrail-note 스킬로 결정·변경·결과를 적고, note를 쓴 세션은 분석(analyze·자동 갱신)에서 빠집니다. "
+                     "턴 끝 알림 훅: contexttrail install-hooks --claude|--codex",
+                     "Agents write decisions, changes and results with the contexttrail-note skill, and a session with notes "
+                     "leaves analysis (analyze and automatic analysis). End-of-turn reminder hook: contexttrail install-hooks --claude|--codex"))
+        return 0
     session = journal.current_session() if args.session == "current" else args.session
     if args.list:
         events = journal.noted(store.graph(), session)
         version = store.graph()["version"]
         if args.json:
-            print(dumps({"session": session, "version": version, "events": events}, pretty=True))
+            print(dumps({"session": session, "version": version, "enabled": journal.enabled(store), "events": events}, pretty=True))
         else:
             for event in events:
                 print(f"contexttrail:{event['id']}@v{version}  {event['kind']}/{event['status']}  {safe_text(event['title'])}")
             if not events:
                 print(f"no notes in session {session}")
+            if not journal.enabled(store):
+                print("notes are off for this project (contexttrail note --enable turns them on)")
         return 0
     if not args.kind or not args.title:
         raise FlowError("note needs --kind and --title (and at least one --quote)")

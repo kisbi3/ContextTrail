@@ -228,6 +228,10 @@ def test_hooks_are_merged_into_the_hosts_files_and_user_entries_survive(tmp_path
     codex = json.loads((home / ".codex" / "hooks.json").read_text())
     assert codex["hooks"]["Stop"][0]["hooks"][0]["command"] == "/venv/bin/python -m contexttrail auto-update"
     assert "async" not in codex["hooks"]["Stop"][0]["hooks"][0]
+    # The note reminder answers before the turn ends, so it is a separate, synchronous hook.
+    note = settings["hooks"]["Stop"][2]["hooks"][0]
+    assert note == {"type": "command", "command": "/venv/bin/python -m contexttrail note --hook", "timeout": 30}
+    assert codex["hooks"]["Stop"][1]["hooks"][0]["command"] == "/venv/bin/python -m contexttrail note --hook"
     plugin = (home / ".config" / "opencode" / "plugins" / "contexttrail.ts").read_text()
     assert 'event.type !== "session.idle"' in plugin and "auto-update --folder ${directory}" in plugin
     # files ContextTrail creates are private; the user's existing settings.json keeps its own mode
@@ -239,8 +243,8 @@ def test_hooks_are_merged_into_the_hosts_files_and_user_entries_survive(tmp_path
         install_hooks(home, Path("/other/python"), claude=True, codex=False, opencode=False)
     install_hooks(home, Path("/other/python"), claude=True, codex=True, opencode=True, force=True)
     settings = json.loads((home / ".claude" / "settings.json").read_text())
-    assert len(settings["hooks"]["Stop"]) == 2 and settings["hooks"]["Stop"][0]["hooks"][0]["command"] == "say done"
-    assert "/other/python" in settings["hooks"]["Stop"][1]["hooks"][0]["command"]
+    assert len(settings["hooks"]["Stop"]) == 3 and settings["hooks"]["Stop"][0]["hooks"][0]["command"] == "say done"
+    assert all("/other/python" in group["hooks"][0]["command"] for group in settings["hooks"]["Stop"][1:])
     # a user-authored plugin is never replaced without --force; an unreadable settings file is left alone
     (home / ".config" / "opencode" / "plugins" / "contexttrail.ts").write_text("my plugin", encoding="utf-8")
     with pytest.raises(FlowError, match="--force"):

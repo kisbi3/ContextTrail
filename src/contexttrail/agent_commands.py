@@ -25,12 +25,15 @@ def _update_name(host: str) -> str:
         return "`$contexttrail-update`"
     if host == "opencode":
         return "`/contexttrail-update`"
+    if host == "plugin":
+        return "`/contexttrail:update`"
     # ~/.claude/skills and ~/.agents/skills are read by Claude Code, Codex and opencode alike.
     return "`/contexttrail-update` (Claude Code, opencode) or `$contexttrail-update` (Codex)"
 
 
-def _body(role: str, python: Path, host: str) -> str:
-    command = f"{shlex.quote(str(python))} -m contexttrail"
+def _body(role: str, python: Path | None, host: str) -> str:
+    # The plugin bundle cannot know the interpreter; it uses the `contexttrail` command on PATH (pipx).
+    command = "contexttrail" if python is None else f"{shlex.quote(str(python))} -m contexttrail"
     if role == "update":
         return f"""The user explicitly invoked this command to add to the current project's saved ContextTrail graph. Run it only because they invoked it by name; never start an analysis on your own. {_arguments(host)}
 
@@ -46,6 +49,25 @@ Analysis sends the selected transcript records and Git evidence of this project 
 5. When it ends, run `{command} find .` and report: the run status (complete, or partial with units still waiting, which is expected when N is less than the pending count), what was added, and any error. Do not claim a change succeeded unless its status says it was verified.
 
 If the analysis fails because of a sandbox or network restriction of your own environment (for example inside the Codex sandbox), say so and give the user the exact command to run in their own terminal. Never pick a runner the user did not choose or save. Do not edit project files as part of this command.
+"""
+    if role == "note":
+        return f"""Use this while you work in a project where ContextTrail notes are on, to write what happened into the project's shared graph yourself: the decisions made, the files changed, and the results of tests, builds and commits. Codex, Claude Code and opencode sessions all read the same graph, so the next session (in any of these tools) starts from what you wrote. No AI call is made; each note is checked against this session's own transcript and stored only if every quote is found there.
+
+Notes are on for a project when an end-of-turn hook asks you to record this turn, or when `{command} note --list` does not say they are off. If a note fails with "notes are off", stop using this skill in that project and do not mention it again.
+
+When to write a note (one `note` call per event; several per turn is fine):
+- a decision or proposal was made (`--kind decision` or `--kind proposal`), quoting the message that made it;
+- you edited files (`--kind action`, or `--kind revision` when it fixes or replaces an earlier change; add `--revises <event>`), quoting a distinctive line of the edit you made;
+- you ran a test, build or command and saw its result (`--kind outcome`), quoting the result line. `--status observed_success` or `observed_failure` only when you quote the tool's own output; a claim made only in conversation is `reported_complete` or `reported_failure`. Add `--verifies <event>` naming the change that run checked;
+- you committed (`--kind outcome --status observed_success`), quoting the commit output.
+The person's requests are recorded by code from the transcript; do not note them. Do not note reading files or searching. Do not note what you are unsure of.
+
+Command (run in the project directory):
+`{command} note --kind <kind> [--status <status>] --title "<short title>" --summary "<one or two sentences: what and why>" --quote "<text copied exactly>" [--quote ...] [--verifies|--revises|--answers|--motivates <event>]`
+- Copy each quote exactly as it appears in a tool result, a tool call you made, or a message of this session: at least 8 characters, preferably one distinctive line. Never write line numbers.
+- Write the title and summary in the language the person uses with you.
+- The output is a reference like `contexttrail:ev_6226b954@v12`. Use it in `--verifies`/`--revises` of a later note to link them (an id prefix works too). `{command} note --list` shows this session's notes.
+- If a note is refused, read the reason: fix the quote (the message lists the closest lines) or the status and retry once. If it is refused again, move on. "an analysis is running" means try the same note again a minute later.
 """
     update = _update_name(host)
     return f"""Use this for questions about the current project's history — what was decided, tried, changed, verified or left open, and why — and whenever the user pastes a ContextTrail reference such as `contexttrail:ev_6226b954@v12`. The graph holds the work done in every tool that was used on this project (Codex, Claude Code, opencode), so it also answers for sessions that happened in another tool. It reads saved results only: no AI calls, no analysis. {_arguments(host)}
@@ -68,17 +90,20 @@ Rules:
 
 _DESCRIPTIONS = {
     "update": "Add to this project's saved ContextTrail graph with a Codex or Claude analysis, a chosen number of work units at a time. Only when the user invokes it by name.",
+    "note": "Record this session's decisions, file changes and test/build/commit results into the project's shared ContextTrail graph with `contexttrail note`, quoting the transcript, in projects where ContextTrail notes are on (an end-of-turn hook asks for it).",
     "context": "Answer questions about this project's past decisions, attempts, changes, checks and open work from the saved ContextTrail graph, with quoted evidence, including work done in the other coding tools (Codex, Claude Code, opencode); also reads a pasted ContextTrail reference (contexttrail:ev_…).",
 }
 
 
-def _skill(role: str, python: Path, host: str) -> str:
-    header = [f"name: contexttrail-{role}", f'description: "{_DESCRIPTIONS[role]}"']
+def _skill(role: str, python: Path | None, host: str) -> str:
+    # A plugin's skills are namespaced by the plugin (`/contexttrail:note`), so their own names are short.
+    name = role if host == "plugin" else f"contexttrail-{role}"
+    header = [f"name: {name}", f'description: "{_DESCRIPTIONS[role]}"']
     if role == "update":
         header.append('argument-hint: "[work units | this session]"')
-        if host == "claude":
+        if host in ("claude", "plugin"):
             header.append("disable-model-invocation: true")  # Codex uses agents/openai.yaml instead
-    else:
+    elif role == "context":
         header.append('argument-hint: "[event reference | search words]"')
     return "---\n" + "\n".join(header) + f"\n---\n\n{_MANAGED_MARKER}\n\n{_body(role, python, host)}"
 
@@ -116,6 +141,9 @@ def install_agent_commands(home: Path, python: Path | None = None, *, force: boo
         targets[home / ".codex" / "prompts" / f"{name}.md"] = _codex_prompt(role, python)
         targets[home / ".config" / "opencode" / "commands" / f"{name}.md"] = _opencode_command(role, python)
     targets[home / ".agents" / "skills" / "contexttrail-update" / "agents" / "openai.yaml"] = _CODEX_EXPLICIT_ONLY
+    # The note skill is picked by the agent itself while it works, in Codex and Claude Code alike.
+    targets[home / ".agents" / "skills" / "contexttrail-note" / "SKILL.md"] = _skill("note", python, "codex-skill")
+    targets[home / ".claude" / "skills" / "contexttrail-note" / "SKILL.md"] = _skill("note", python, "claude")
     for path, content in targets.items():
         if any(parent.is_symlink() for parent in path.parents if parent != home and home in parent.parents):
             raise FlowError(tr(f"에이전트 명령 경로에 symlink가 있습니다: {path}",
@@ -135,3 +163,40 @@ def install_agent_commands(home: Path, python: Path | None = None, *, force: boo
                 stream.write(content)
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     return list(targets)
+
+
+# ---- the Claude Code plugin bundle (`/plugin marketplace add`) -------------------------------------
+
+PLUGIN_DIR = Path("plugins") / "contexttrail"
+PLUGIN_NOTE = ("The CLI is a separate install: `pipx install contexttrail` (each hook does nothing while the "
+               "`contexttrail` command is missing).")
+
+
+def _guarded(arguments: str) -> str:
+    return f"command -v contexttrail >/dev/null 2>&1 && contexttrail {arguments} || true"
+
+
+def plugin_files(version: str) -> dict[Path, str]:
+    """The files of the repository's Claude Code plugin and marketplace, relative to the repository root.
+
+    Generated from the same text as the installed skills, so they cannot drift (a test compares them
+    with the files in the repository; `scripts/build_plugin.py` rewrites them).
+    """
+    import json
+    files: dict[Path, str] = {}
+    marketplace = {"name": "contexttrail", "owner": {"name": "Jaesung Kim"},
+                   "description": "ContextTrail: one project memory for Claude Code, Codex and opencode.",
+                   "plugins": [{"name": "contexttrail", "source": "./" + PLUGIN_DIR.as_posix(),
+                                "description": "Skills to read and write the project's ContextTrail graph, and its hooks. " + PLUGIN_NOTE}]}
+    files[Path(".claude-plugin") / "marketplace.json"] = json.dumps(marketplace, indent=2) + "\n"
+    manifest = {"name": "contexttrail", "displayName": "ContextTrail", "version": version,
+                "description": "Read and write this project's ContextTrail graph from Claude Code. " + PLUGIN_NOTE,
+                "author": {"name": "Jaesung Kim"}, "license": "MIT"}
+    files[PLUGIN_DIR / ".claude-plugin" / "plugin.json"] = json.dumps(manifest, indent=2) + "\n"
+    for role in ("note", "context", "update"):
+        files[PLUGIN_DIR / "skills" / role / "SKILL.md"] = _skill(role, None, "plugin")
+    hooks = {"hooks": {"Stop": [
+        {"matcher": "", "hooks": [{"type": "command", "command": _guarded("auto-update"), "async": True, "timeout": 30}]},
+        {"matcher": "", "hooks": [{"type": "command", "command": _guarded("note --hook"), "timeout": 30}]}]}}
+    files[PLUGIN_DIR / "hooks" / "hooks.json"] = json.dumps(hooks, indent=2) + "\n"
+    return files

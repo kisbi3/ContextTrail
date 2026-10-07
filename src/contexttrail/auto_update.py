@@ -306,7 +306,16 @@ def hook_command(python: Path | None = None) -> str:
     return f"{shlex.quote(str(python or sys.executable))} -m contexttrail auto-update"
 
 
-def _merge_hooks(document: dict[str, Any], event: str, entry: dict[str, Any], *, force: bool, where: str) -> bool:
+NOTE_MARKER = "contexttrail note --hook"
+
+
+def note_hook_command(python: Path | None = None) -> str:
+    import shlex
+    return f"{shlex.quote(str(python or sys.executable))} -m contexttrail note --hook"
+
+
+def _merge_hooks(document: dict[str, Any], event: str, entry: dict[str, Any], *, force: bool, where: str,
+                 marker: str = _MARKER) -> bool:
     """Put one managed command hook under `document[event]`, replacing an older managed one only with --force."""
     groups = document.setdefault(event, [])
     if not isinstance(groups, list):
@@ -316,7 +325,7 @@ def _merge_hooks(document: dict[str, Any], event: str, entry: dict[str, Any], *,
         if not isinstance(hooks, list):
             continue
         for index, hook in enumerate(hooks):
-            if isinstance(hook, dict) and _MARKER in str(hook.get("command", "")):
+            if isinstance(hook, dict) and marker in str(hook.get("command", "")):
                 if hook == entry["hooks"][0]:
                     return False
                 if not force:
@@ -358,7 +367,11 @@ def install_claude_hook(home: Path, python: Path | None = None, *, force: bool =
     if not isinstance(hooks, dict):
         raise FlowError(tr(f"{path}의 hooks가 객체가 아닙니다.", f"hooks in {path} is not an object."))
     entry = {"matcher": "", "hooks": [{"type": "command", "command": hook_command(python), "async": True, "timeout": 30}]}
-    if _merge_hooks(hooks, "Stop", entry, force=force, where=str(path)):
+    changed = _merge_hooks(hooks, "Stop", entry, force=force, where=str(path))
+    # The note reminder must answer before the turn ends (its `block` sends the agent back), so it is not async.
+    note = {"matcher": "", "hooks": [{"type": "command", "command": note_hook_command(python), "timeout": 30}]}
+    changed = _merge_hooks(hooks, "Stop", note, force=force, where=str(path), marker=NOTE_MARKER) or changed
+    if changed:
         _write_json(path, document)
     return path
 
@@ -375,7 +388,10 @@ def install_codex_hook(home: Path, python: Path | None = None, *, force: bool = 
     if not isinstance(hooks, dict):
         raise FlowError(tr(f"{path}의 hooks가 객체가 아닙니다.", f"hooks in {path} is not an object."))
     entry = {"hooks": [{"type": "command", "command": hook_command(python), "timeout": 30}]}
-    if _merge_hooks(hooks, "Stop", entry, force=force, where=str(path)):
+    changed = _merge_hooks(hooks, "Stop", entry, force=force, where=str(path))
+    note = {"hooks": [{"type": "command", "command": note_hook_command(python), "timeout": 30}]}
+    changed = _merge_hooks(hooks, "Stop", note, force=force, where=str(path), marker=NOTE_MARKER) or changed
+    if changed:
         _write_json(path, document)
     return path
 
@@ -385,13 +401,30 @@ def opencode_plugin(python: Path | None = None) -> str:
     return f'''{_MANAGED_COMMENT}
 // Runs `contexttrail auto-update` for this directory when a session goes idle. The command returns
 // at once and starts an analysis only in projects where automatic analysis was enabled.
-export const ContextTrailAutoUpdate = async ({{ directory, $ }}) => {{
+// Notes (`contexttrail note`): the session's ID is put into the tool shell so `--session current`
+// finds it, and when a session goes idle with edits or checks it did not note, in a project where
+// notes are on, the reminder `contexttrail note --hook` answers with is sent to it once.
+export const ContextTrailAutoUpdate = async ({{ client, directory, $ }}) => {{
   const python = {json.dumps(interpreter)}
   return {{
+    "shell.env": async (input, output) => {{
+      if (input && input.sessionID) output.env.OPENCODE_SESSION_ID = input.sessionID
+    }},
     event: async ({{ event }}) => {{
       if (event.type !== "session.idle") return
       try {{
         await $`${{python}} -m contexttrail auto-update --folder ${{directory}}`.quiet().nothrow()
+      }} catch {{}}
+      const sessionID = event.properties && event.properties.sessionID
+      if (!sessionID) return
+      try {{
+        const request = JSON.stringify({{ session_id: sessionID, cwd: directory }})
+        const result = await $`${{python}} -m contexttrail note --hook < ${{new Response(request)}}`.quiet().nothrow()
+        const text = result.stdout.toString().trim()
+        if (!text) return
+        const decision = JSON.parse(text)
+        if (decision.decision !== "block" || !decision.reason) return
+        await client.session.prompt({{ path: {{ id: sessionID }}, body: {{ parts: [{{ type: "text", text: decision.reason }}] }} }})
       }} catch {{}}
     }},
   }}

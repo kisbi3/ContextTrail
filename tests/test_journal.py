@@ -48,6 +48,7 @@ def project(tmp_path):
     store = Store(scope.state_dir, scope.id)
     store.set_meta("options", {"codex_home": str(tmp_path / "codex"), "claude_home": str(claude),
                                "opencode_home": str(tmp_path / "opencode")})
+    journal.enable(store)
     return folder, scope, store
 
 
@@ -200,3 +201,63 @@ def test_a_planned_unit_of_a_noted_session_is_superseded_not_sent(project, tmp_p
     units, _, _ = engine._plan_units(snapshot, [], repair=True)
     assert units == []
     assert {u["id"]: u["status"] for u in store.units()}["unit_planned"] == "superseded"
+
+
+def hook_input(folder, **extra):
+    return json.dumps({"session_id": SESSION, "cwd": str(folder), "hook_event_name": "Stop", **extra})
+
+
+def test_the_end_of_turn_hook_sends_the_agent_back_once_for_unnoted_work(project, tmp_path):
+    folder, scope, store = project
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    store.set_meta(journal.SETTINGS_KEY, {"enabled_at": "2026-10-07T09:00:00+00:00"})
+    decision = journal.hook(hook_input(folder), **homes)
+    assert decision["decision"] == "block" and "contexttrail note" in decision["reason"]
+    # Claude Code says the turn was already sent back; Codex does not, and the reminder time answers.
+    assert journal.hook(hook_input(folder, stop_hook_active=True), **homes) is None
+    assert journal.hook(hook_input(folder), **homes) is None
+    # Off for the project, or never opened with ContextTrail: silent, and no state is made.
+    journal.disable(store)
+    store.set_meta(journal.ACTIVITY_KEY, {})
+    assert journal.hook(hook_input(folder), **homes) is None
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert journal.hook(hook_input(bare), **homes) is None
+    assert not (Scope.resolve(bare).state_dir / "state.sqlite").exists()
+    assert journal.hook("not json", **homes) is None
+
+
+def test_work_noted_before_the_turn_ends_needs_no_reminder(project, tmp_path):
+    folder, scope, store = project
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    store.set_meta(journal.SETTINGS_KEY, {"enabled_at": "2026-10-07T09:00:00+00:00"})
+    note(scope, store, kind="action", title="Lock the store", quotes=["write_atomically(path)"])
+    assert journal.hook(hook_input(folder), **homes) is None
+    # Work before notes were turned on is not asked about either.
+    store.set_meta(journal.ACTIVITY_KEY, {})
+    store.set_meta(journal.SETTINGS_KEY, {"enabled_at": "2026-10-07T11:00:00+00:00"})
+    assert journal.hook(hook_input(folder), **homes) is None
+
+
+def test_notes_are_refused_while_off_and_the_cli_switches_them(project, capsys):
+    folder, scope, store = project
+    assert main(["note", str(folder), "--disable"]) == 0
+    with pytest.raises(FlowError, match="notes are off"):
+        note(scope, store, kind="action", title="x", quotes=["write_atomically(path)"])
+    assert main(["note", str(folder), "--enable"]) == 0
+    assert journal.enabled(store)
+
+
+def test_the_reminder_is_never_taken_for_a_persons_request(project):
+    from dataclasses import replace
+    from contexttrail.model import SourceRecord, is_user_prompt
+    record = SourceRecord("r", "opencode", SESSION, "user", journal.REMINDER, {})
+    assert not is_user_prompt(record)
+    assert not is_user_prompt(replace(record, content="Stop hook feedback:\n" + journal.REMINDER))
+
+
+def test_the_opencode_plugin_passes_the_session_and_sends_the_reminder():
+    from contexttrail.auto_update import opencode_plugin
+    plugin = opencode_plugin(Path("/venv/bin/python"))
+    assert '"shell.env"' in plugin and "OPENCODE_SESSION_ID = input.sessionID" in plugin
+    assert "note --hook < ${new Response(request)}" in plugin and "client.session.prompt" in plugin

@@ -1,0 +1,14 @@
+{
+  "name": "contexttrail",
+  "owner": {
+    "name": "Jaesung Kim"
+  },
+  "description": "ContextTrail: one project memory for Claude Code, Codex and opencode.",
+  "plugins": [
+    {
+      "name": "contexttrail",
+      "source": "./plugins/contexttrail",
+      "description": "Skills to read and write the project's ContextTrail graph, and its hooks. The CLI is a separate install: `pipx install contexttrail` (each hook does nothing while the `contexttrail` command is missing)."
+    }
+  ]
+}

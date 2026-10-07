@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
+import json
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .analysis import link_request_turns
+from .analysis import link_request_turns, step_hint
 from .git_context import Scope
 from .i18n import tr
 from .model import SourceRecord, Snapshot
@@ -48,6 +50,14 @@ ORIGIN = "note"
 NEAREST = 3
 NEAREST_CHARS = 200
 NEAREST_RECORDS = 400
+SETTINGS_KEY = "journal"            # {"enabled_at": …} when the person turned notes on for this project
+ACTIVITY_KEY = "journal_activity"   # per session: when it last noted and when the hook last reminded it
+# Work that is worth a note when a turn ends without one: a file edit, a commit, a test, a change to Git.
+WORK_HINTS = {"edit", "commit", "test", "vcs"}
+REMINDER = ("ContextTrail notes are on for this project, and this turn changed files or ran checks without a note. "
+            "Before finishing, use the contexttrail-note skill: record the decisions, changes and observed results of "
+            "this turn with `contexttrail note` (one call per event, quoting the tool output or message exactly). "
+            "If nothing in this turn is worth recording, just finish.")
 
 
 def current_session(environ: dict[str, str] | None = None) -> str:
@@ -171,6 +181,9 @@ def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str,
         raise FlowError(f"unknown status {status!r}; one of {', '.join(STATUSES)}")
     if not quotes:
         raise FlowError("a note needs at least one --quote from this session's records")
+    if not enabled(store):
+        raise FlowError("notes are off for this project; the person turns them on with `contexttrail note --enable` "
+                        "in the project folder. Nothing was stored.")
     records = session_records(scope, store, session_id, **homes)
     if not records:
         raise FlowError(f"no records of session {session_id} in this project yet "
@@ -224,6 +237,8 @@ def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str,
             published = store.publish(new, [], {record.source_id: record.content_hash for record in records},
                                       {**validator.evidence, **turn_evidence}, expected_version=graph["version"])
             store.note_session(session_id)
+            # Transcript time, not the clock: the hook compares it with the records' own times.
+            _mark(store, session_id, "noted_at", max((r.recorded_at for r in records if r.recorded_at), default=now()))
     except FlowError as exc:
         if "already running" in str(exc) or "이미 분석이 진행 중" in str(exc):
             raise FlowError("an analysis is running in this project; nothing was stored. Run the same note again "
@@ -240,3 +255,74 @@ def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str,
 def noted(graph: dict, session_id: str) -> list[dict]:
     """The events notes wrote in one session, oldest first."""
     return [event for event in graph["events"] if event.get("origin") == ORIGIN and session_id in event.get("session_ids", [])]
+
+
+# ---- per project switch, and the end-of-turn reminder ------------------------------------------
+
+def enabled(store: Store) -> bool:
+    return bool((store.get_meta(SETTINGS_KEY) or {}).get("enabled_at"))
+
+
+def enable(store: Store) -> None:
+    store.set_meta(SETTINGS_KEY, {"enabled_at": now()})
+
+
+def disable(store: Store) -> None:
+    store.set_meta(SETTINGS_KEY, {})
+
+
+def _mark(store: Store, session_id: str, key: str, moment: str | None = None) -> None:
+    activity = store.get_meta(ACTIVITY_KEY, {}) or {}
+    activity[session_id] = {**activity.get(session_id, {}), key: moment or now()}
+    store.set_meta(ACTIVITY_KEY, activity)
+
+
+def _seconds(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def unnoted_work(records: list[SourceRecord], since: float) -> list[SourceRecord]:
+    """Edits, commits, tests and Git changes recorded after `since` (the note calls themselves aside)."""
+    return [record for record in quotable(records) if record.role == "tool_call"
+            and _seconds(record.recorded_at) > since and step_hint(record)[2] in WORK_HINTS]
+
+
+def hook(stdin_text: str | None, **homes: Path | None) -> dict[str, Any] | None:
+    """What the end-of-turn hook answers: a `block` with the reminder, or None to let the turn end.
+
+    Quiet unless the person turned notes on for the project. Reminds at most once per stretch of
+    work: a turn the hook already sent back (`stop_hook_active`, or work no newer than the last
+    reminder) ends. Never raises; a hook must not stop the host.
+    """
+    try:
+        payload = json.loads(stdin_text or "")
+    except ValueError:
+        return None
+    if not isinstance(payload, dict) or payload.get("stop_hook_active"):
+        return None
+    cwd, session_id = payload.get("cwd"), payload.get("session_id")
+    if not (isinstance(cwd, str) and Path(cwd).is_absolute() and Path(cwd).is_dir() and isinstance(session_id, str) and session_id):
+        return None
+    try:
+        scope = Scope.resolve(Path(cwd))
+        if not (scope.state_dir / "state.sqlite").is_file():
+            return None  # never create state for a project the person did not open with ContextTrail
+        store = Store(scope.state_dir, scope.id)
+        if not enabled(store):
+            return None
+        activity = (store.get_meta(ACTIVITY_KEY, {}) or {}).get(session_id, {})
+        since = max(_seconds(activity.get("noted_at")), _seconds(activity.get("reminded_at")),
+                    _seconds((store.get_meta(SETTINGS_KEY) or {}).get("enabled_at")))
+        work = unnoted_work(session_records(scope, store, session_id, **homes), since)
+        if not work:
+            return None
+        _mark(store, session_id, "reminded_at", max(record.recorded_at for record in work))
+    except Exception:  # a hook never fails the host's turn
+        return None
+    return {"decision": "block", "reason": REMINDER}

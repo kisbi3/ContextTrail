@@ -9,7 +9,13 @@ from contexttrail.util import FlowError
 def test_install_agent_commands_preserves_existing_user_commands(tmp_path):
     python = Path('/test environment/bin/python')
     paths = install_agent_commands(tmp_path, python)
-    assert len(paths) == 9
+    assert len(paths) == 11
+    note = tmp_path / '.claude/skills/contexttrail-note/SKILL.md'
+    # The agent picks the note skill itself while it works; it never runs an analysis.
+    assert 'disable-model-invocation' not in note.read_text() and 'note --kind <kind>' in note.read_text()
+    assert 'analyze' not in note.read_text().split('---', 2)[2]
+    assert (tmp_path / '.agents/skills/contexttrail-note/SKILL.md').is_file()
+    assert not (tmp_path / '.agents/skills/contexttrail-note/agents/openai.yaml').exists()
     update = tmp_path / '.agents/skills/contexttrail-update/SKILL.md'
     claude = tmp_path / '.claude/skills/contexttrail-context/SKILL.md'
     prompt = tmp_path / '.codex/prompts/contexttrail-update.md'
@@ -54,3 +60,14 @@ def test_install_agent_commands_keeps_virtualenv_interpreter_path(tmp_path):
     skill = (tmp_path / 'home/.agents/skills/contexttrail-context/SKILL.md').read_text()
     assert str(virtual) in skill
     assert str(base) not in skill
+
+
+def test_the_plugin_bundle_in_the_repository_matches_the_generated_skills():
+    from contexttrail import __version__
+    from contexttrail.agent_commands import plugin_files
+    root = Path(__file__).resolve().parent.parent
+    for relative, content in plugin_files(__version__).items():
+        assert (root / relative).read_text(encoding="utf-8") == content, f"{relative}: run scripts/build_plugin.py"
+    note = (root / "plugins/contexttrail/skills/note/SKILL.md").read_text()
+    assert note.startswith("---\nname: note\n") and "`contexttrail note --kind <kind>" in note
+    assert "disable-model-invocation" in (root / "plugins/contexttrail/skills/update/SKILL.md").read_text()
