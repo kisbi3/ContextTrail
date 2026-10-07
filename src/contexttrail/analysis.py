@@ -227,7 +227,9 @@ def _incomplete_input(issues: list[str]) -> bool:
 CONTEXT_POLICY_VERSION = "relevance_v2"
 # `lean`: earlier work reaches the model as graph (events, edges, quotes) and a few records, not as
 # whole records. Cut finely, a piece's neighbours are already in the graph.
-LEAN_CITED_LINES, LEAN_PREVIOUS_RECORDS, LEAN_CONTEXT_EVENTS = 5, 2, 12
+LEAN_CITED_LINES, LEAN_PREVIOUS_RECORDS, LEAN_CONTEXT_EVENTS = 3, 2, 12
+# Lean mode's budget for context-only text and its cap on nearby records of the other source type.
+LEAN_CONTEXT_CHARS, LEAN_CROSS_RECORDS = 24_000, 3
 LEAN_INDEX_RECORDS, LEAN_INDEX_EVENTS, LEAN_INDEX_FILES = 100, 60, 50  # the event index is by relevance; it must not grow with the graph
 # Repair hints: a few provided lines per failed quote, ranked by how close they are to it.
 NEAREST_LINES, NEAREST_POOL, NEAREST_LINE_CHARS = 3, 12, 400
@@ -480,6 +482,11 @@ VIEW_HEAD_CHARS, VIEW_TAIL_CHARS = 2_000, 1_000
 # slips past the head/tail view whole); what is cut is readable by line range, and a quote from the
 # shown part is still an exact substring of the line.
 LINE_CHARS = 1_500
+# A record that is only context (the turn before, a commit near in time) is shown head and tail, whatever
+# its role: one 39,000-character commit record was going into four units whole as "nearby" context.
+CONTEXT_HEAD_CHARS, CONTEXT_TAIL_CHARS = 1_500, 500
+# The lines around a cited quote are shown up to this many characters; past it only the cited lines go.
+CITED_BLOCK_CHARS = 2_000
 # A saved quote is the whole cited lines (`EvidenceValidator` canonicalizes partial quotes, keeping the
 # cited part as `focus`); the model is shown the cited part, or the head of the lines, within this.
 SHOWN_QUOTE_CHARS = 300
@@ -489,10 +496,13 @@ READ_HEAD_CHARS, READ_TAIL_CHARS = 400, 200
 
 
 def _view(record: SourceRecord, head_chars: int = VIEW_HEAD_CHARS,
-          tail_chars: int = VIEW_TAIL_CHARS) -> tuple[int, int] | None:
-    """The last head line and first tail line to show, or None to show the record whole."""
-    if len(record.content) <= head_chars + tail_chars or record.role in {"assistant", "tool_call"} or (
-            record.role == "user" and is_user_prompt(record)):
+          tail_chars: int = VIEW_TAIL_CHARS, *, force: bool = False) -> tuple[int, int] | None:
+    """The last head line and first tail line to show, or None to show the record whole.
+
+    Assistant text, tool calls and the person's messages go whole unless `force`, which the
+    context-only view uses: a record that is not the unit's own is background, head and tail."""
+    if len(record.content) <= head_chars + tail_chars or (not force and (
+            record.role in {"assistant", "tool_call"} or (record.role == "user" and is_user_prompt(record)))):
         return None
     lines = record.content.splitlines()
     head, used = 0, 0
@@ -523,6 +533,42 @@ def shown_quote(quote: str, focus: list[list[int]] | None) -> str:
     return piece[:SHOWN_QUOTE_CHARS]
 
 
+# What a request over the budget loses, in order; each name is one `trim_step`.
+TRIM_STEPS = ("context_background", "existing_evidence_quotes", "context_cited_lines", "manifest_index")
+
+
+def trim_step(data: dict, done: list[str]) -> str | None:
+    """Apply the next trim to a request's data in place; None when nothing is left to cut."""
+    for step in TRIM_STEPS:
+        if step in done:
+            continue
+        if step == "context_background":
+            before = data.get("context_only") or []
+            kept = [item for item in before if item.get("context_reason") == "cited_lines" or "context_reason" not in item]
+            if len(kept) < len(before):
+                data["context_only"] = kept
+                return step
+        elif step == "existing_evidence_quotes":
+            entries = data.get("existing_evidence") or {}
+            quoted = [item for item in entries.values() if "quote" in item]
+            if quoted:
+                for item in quoted:
+                    item.pop("quote", None)
+                    item["quote_omitted_for_budget"] = True
+                return step
+        elif step == "context_cited_lines":
+            if data.get("context_only"):
+                data["context_only"] = []
+                return step
+        elif step == "manifest_index":
+            manifest = data.get("manifest") or {}
+            if manifest.get("records") or manifest.get("events"):
+                manifest["records"], manifest["events"] = manifest.get("records", [])[:20], manifest.get("events", [])[:20]
+                manifest["index_cut_for_budget"] = True
+                return step
+    return None
+
+
 def unit_cost(record: SourceRecord) -> int:
     """Characters this record puts into a unit's input."""
     view = _view(record)
@@ -532,8 +578,9 @@ def unit_cost(record: SourceRecord) -> int:
     return sum(min(len(line), LINE_CHARS + 90) + 1 for line in lines[:view[0]] + lines[view[1] - 1:]) + 120
 
 
-def _shown(record: SourceRecord, harness: "Harness", *, read: bool = False) -> dict:
-    view = _view(record, READ_HEAD_CHARS, READ_TAIL_CHARS) if read else _view(record)
+def _shown(record: SourceRecord, harness: "Harness", *, read: bool = False, context: bool = False) -> dict:
+    view = (_view(record, READ_HEAD_CHARS, READ_TAIL_CHARS) if read else
+            _view(record, CONTEXT_HEAD_CHARS, CONTEXT_TAIL_CHARS, force=True) if context else _view(record))
     if view is None:
         return harness.provide(record.source_id)
     head, tail = view
@@ -1233,7 +1280,7 @@ class Harness:
                 gap = min(abs(stamp - t) for t in assigned_times)
                 if gap <= 15 * 60:
                     candidates.append((gap, positions[record.source_id], record))
-            cross = [record for _, _, record in sorted(candidates)[:4]]
+            cross = [record for _, _, record in sorted(candidates)[:LEAN_CROSS_RECORDS if lean else 4]]
         cross_ids = {r.source_id for r in cross}
         # Only four preceding records go directly into context; the rest are discoverable.
         previous_turn_ids = set([r.source_id for r in nearby if positions[r.source_id] < anchor][
@@ -1243,6 +1290,7 @@ class Harness:
         _rehydrate(self.pool, self.provided, related_evidence)
         previous = []
         context_budget = 0
+        context_limit = LEAN_CONTEXT_CHARS if lean else self.config.read_chars
         context_order = cross + nearby + [r for r in visible_records
                                            if r.source_id not in nearby_ids | cross_ids]
         for record in context_order:
@@ -1256,9 +1304,12 @@ class Harness:
             if (lean and is_cited and not same_call and not record.locator.get("preserved_only")
                     and record.source_id not in previous_turn_ids | cross_ids):
                 # Only the cited lines and a few around them; the rest is readable on request.
-                for lo, hi in self._cited_ranges(record, related_evidence):
+                for lo, hi, core_lo, core_hi in self._cited_ranges(record, related_evidence):
                     size = sum(len(line) + 1 for line in record.content.splitlines()[lo - 1:hi])
-                    if context_budget + size > self.config.read_chars:
+                    if size > CITED_BLOCK_CHARS:
+                        lo, hi = core_lo, core_hi  # the cited lines themselves, without their surroundings
+                        size = sum(len(line) + 1 for line in record.content.splitlines()[lo - 1:hi])
+                    if context_budget + size > context_limit:
                         break
                     try:
                         previous.append({**self.provide(record.source_id, lo, hi), "context_only": True,
@@ -1267,17 +1318,18 @@ class Harness:
                     except FlowError:
                         pass
                 continue
-            if context_budget + len(record.content) > self.config.read_chars or len(record.content) > self.config.record_chars:
+            cost = min(len(record.content), CONTEXT_HEAD_CHARS + CONTEXT_TAIL_CHARS + 200) if lean else len(record.content)
+            if context_budget + cost > context_limit or len(record.content) > self.config.record_chars:
                 continue
             try:
                 if record.locator.get("preserved_only"):
                     for lo, hi in list(self.provided[record.source_id]):
                         previous.append({**self.provide(record.source_id, lo, hi), "context_only": True})
                 else:
-                    previous.append({**self.provide(record.source_id), "context_only": True,
+                    previous.append({**_shown(record, self, context=lean), "context_only": True,
                                      "context_reason": ("same_worktree_nearby_time" if record.source_id in cross_ids
                                                         else "related_context")})
-                context_budget += len(record.content)
+                context_budget += cost
             except FlowError:
                 pass
         # A bounded discovery index, not all account/project text. Event reads add exact evidence.
@@ -1362,18 +1414,20 @@ class Harness:
                 "manifest": manifest}
 
     @staticmethod
-    def _cited_ranges(record: SourceRecord, evidence: dict[str, dict]) -> list[tuple[int, int]]:
+    def _cited_ranges(record: SourceRecord, evidence: dict[str, dict]) -> list[tuple[int, int, int, int]]:
+        """(first, last, cited_first, cited_last) line ranges: the cited lines with their surroundings, merged."""
         total = len(record.content.splitlines())
-        spans = sorted((max(1, e["start_line"] - LEAN_CITED_LINES), min(total, e["end_line"] + LEAN_CITED_LINES))
+        spans = sorted((max(1, e["start_line"] - LEAN_CITED_LINES), min(total, e["end_line"] + LEAN_CITED_LINES),
+                        e["start_line"], e["end_line"])
                        for e in evidence.values()
                        if e["source_id"] == record.source_id and e["content_hash"] == record.content_hash)
         merged: list[list[int]] = []
-        for lo, hi in spans:
+        for lo, hi, core_lo, core_hi in spans:
             if merged and lo <= merged[-1][1] + 1:
-                merged[-1][1] = max(merged[-1][1], hi)
+                merged[-1][1], merged[-1][3] = max(merged[-1][1], hi), max(merged[-1][3], core_hi)
             else:
-                merged.append([lo, hi])
-        return [(lo, hi) for lo, hi in merged]
+                merged.append([lo, hi, core_lo, core_hi])
+        return [(lo, hi, core_lo, core_hi) for lo, hi, core_lo, core_hi in merged]
 
     def read(self, request: dict) -> list[dict]:
         required = {"kind", "ids", "start_line", "end_line", "query", "unit_id"}
@@ -1486,9 +1540,18 @@ class Harness:
                 raise Cancelled(tr("분석 중단", "Analysis stopped"))
             # The Runner sees short IDs; everything the host checks or stores uses the full ones.
             sent = aliases.wire(task)
-            if len(dumps(sent)) > self.config.task_chars:
-                raise FlowError(tr("분석 입력 예산을 초과했습니다. 이 단위는 처리 완료로 저장하지 않습니다.",
-                                   "The analysis input budget was exceeded; this unit is not saved as completed."))
+            trimmed: list[str] = []
+            while len(dumps(sent)) > self.config.task_chars:
+                # Over the budget, the request loses its least necessary parts one step at a time; what was
+                # cut is recorded with the call. Only then does the unit fail.
+                if not trimmed:
+                    task = {**task, "data": copy.deepcopy(task["data"])}
+                step = trim_step(task["data"], trimmed)
+                if step is None:
+                    raise FlowError(tr("분석 입력 예산을 초과했습니다. 이 단위는 처리 완료로 저장하지 않습니다.",
+                                       "The analysis input budget was exceeded; this unit is not saved as completed."))
+                trimmed.append(step)
+                sent = aliases.wire(task)
             attempt += 1
             call_id = "llm_" + uuid.uuid4().hex
             metadata = {
@@ -1506,6 +1569,7 @@ class Harness:
                 "schema_hash": schema_hash,
                 "input_digest": digest(sent),
                 "input_chars": len(dumps(sent)),
+                "input_trimmed": trimmed,
                 "read_round": read_count,
                 "repair_round": repair_count,
             }

@@ -1,6 +1,7 @@
 import threading
 from dataclasses import replace
 import pytest
+from contexttrail.analysis import LEAN_CITED_LINES
 from contexttrail.analysis import Harness, AnalysisConfig, _rehydrate
 from contexttrail.demo import CASES, FixtureRunner
 from contexttrail.model import SourceRecord
@@ -701,7 +702,7 @@ def test_lean_context_sends_cited_lines_not_whole_records(laboratory):
     lean_h, lean = build("lean")
     assert lean_h.selection_audit["delivered_chars"]["total"] < full_h.selection_audit["delivered_chars"]["total"] * 0.6
     cited = [item for item in lean["context_only"] if item.get("context_reason") == "cited_lines"]
-    assert cited and all(item["lines"][0]["line"] == 15 and item["lines"][-1]["line"] == 25 for item in cited)
+    assert cited and all(item["lines"][0]["line"] == 20 - LEAN_CITED_LINES and item["lines"][-1]["line"] == 20 + LEAN_CITED_LINES for item in cited)
     assert not any(len(item["lines"]) == 40 for item in lean["context_only"]
                    if item["source_id"] not in {"old10", "old11"})  # the two preceding records stay whole
     assert all(item.get("quote_in_context_only") or "quote" in item for item in lean["existing_evidence"].values())

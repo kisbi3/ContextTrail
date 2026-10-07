@@ -46,3 +46,33 @@ def test_a_quote_is_shown_as_its_cited_part_or_its_head():
     view = candidates_for_model(candidates, evidence)
     assert view["event_candidates"][0]["evidence"][0]["quote"] == "DECISIVE PART"
     assert candidates["event_candidates"][0]["evidence"][0]["quote"] == lines  # the code keeps the canonical quote
+
+
+def test_context_records_are_shown_head_and_tail_whatever_their_role():
+    from contexttrail.analysis import CONTEXT_HEAD_CHARS, CONTEXT_TAIL_CHARS, _view
+    long_assistant = record("\n".join(f"line {n} " + "z" * 80 for n in range(400)), role="assistant")
+    assert _view(long_assistant) is None  # the unit's own assistant text goes whole
+    head, tail = _view(long_assistant, CONTEXT_HEAD_CHARS, CONTEXT_TAIL_CHARS, force=True)
+    assert head < 25 and tail > 390  # as context it is head and tail
+
+
+def test_a_request_over_the_budget_loses_background_then_quotes_then_cited_lines_then_the_index():
+    from contexttrail.analysis import TRIM_STEPS, trim_step
+    data = {"context_only": [{"source_id": "a", "context_reason": "same_worktree_nearby_time", "lines": []},
+                             {"source_id": "b", "context_reason": "related_context", "lines": []},
+                             {"source_id": "c", "context_reason": "cited_lines", "lines": []}],
+            "existing_evidence": {"evi_1": {"id": "evi_1", "quote": "Use SQLite."}, "evi_2": {"id": "evi_2", "quote_in_context_only": True}},
+            "manifest": {"records": [{"id": f"src_{n}"} for n in range(50)], "events": [{"id": f"ev_{n}"} for n in range(50)]}}
+    done = []
+    steps = []
+    while (step := trim_step(data, done)) is not None:
+        done.append(step)
+        steps.append(step)
+        if step == "context_background":
+            assert [c["source_id"] for c in data["context_only"]] == ["c"]
+        if step == "existing_evidence_quotes":
+            assert "quote" not in data["existing_evidence"]["evi_1"] and data["existing_evidence"]["evi_1"]["quote_omitted_for_budget"]
+            assert data["existing_evidence"]["evi_2"] == {"id": "evi_2", "quote_in_context_only": True}
+    assert steps == list(TRIM_STEPS)
+    assert data["context_only"] == [] and len(data["manifest"]["records"]) == 20 and data["manifest"]["index_cut_for_budget"]
+    assert trim_step(data, done) is None  # nothing left: the unit fails
