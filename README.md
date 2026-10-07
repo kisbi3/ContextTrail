@@ -449,6 +449,26 @@ The legacy slash-style variants `/prompts:contexttrail-update` and `/prompts:con
 - **Attaching events as evidence:** Press `y` in the TUI or click "Copy agent reference" in the browser to copy a reference like `contexttrail:ev_6226b954@v12`. Paste it into a Claude Code or Codex conversation — the agent reads that event and its evidence with `show`. If the event was re-analyzed and changed or removed since the copy, `show` will say so.
 - Using context loading in Claude Code sends cited Codex/Claude/opencode records to the model in that conversation (Anthropic); in opencode, to whichever model that session uses.
 
+### Notes: the agent writes the graph as it works (opt-in, per project)
+
+Analysis has a second model read a session that the working agent already understood. With notes on, the agent that did the work writes the events itself, with no model call:
+
+```bash
+contexttrail note --enable                       # in the project folder, once
+contexttrail install-hooks --claude --codex --opencode   # the end-of-turn reminder (and auto-update)
+```
+
+The `contexttrail-note` skill (installed with the other two; Claude Code and Codex pick it themselves) tells the agent to record decisions, file changes and test, build and commit results:
+
+```bash
+contexttrail note --kind outcome --status observed_failure --title "Two-writer test failed" \
+  --quote "test_two_writers - JSONDecodeError" --verifies contexttrail:ev_6e4b75dd@v23
+```
+
+Each `--quote` is text the agent copies from its own session; ContextTrail finds it in that session's transcript (the agent never writes line numbers) and stores the event only if every quote is there and the usual rules hold: `observed_success`/`observed_failure` need a quoted tool result, `verifies` links a change to an observed result, and so on. A refused note stores nothing and says why, with the closest lines when a quote was not found. The person's own messages become request events from the transcript, as in analysis. A session with notes leaves analysis (`analyze` and automatic analysis skip its records), so nothing is written twice; past sessions are still for `analyze`. The end-of-turn hook (`contexttrail note --hook`, synchronous) sends the agent back once when a turn edited files or ran checks after its last note; in projects without notes it does nothing. In opencode the plugin also passes the session's ID to the tool shell (`OPENCODE_SESSION_ID`) and sends the same reminder when the session goes idle. `contexttrail note --list` shows the session's notes, `--disable` turns notes off. Checked on this repository on 2026-10-07: a Claude Code session wrote five notes (two changes, two test results verifying them, one decision), and the hook asked for a note after a test run and stayed quiet once it was answered.
+
+**Claude Code plugin.** The repository is also a Claude Code plugin marketplace with the three skills and both hooks: `/plugin marketplace add kisbi3/ContextTrail`, then `/plugin install contexttrail@contexttrail`. The CLI is still a separate `pipx install contexttrail`; the hooks do nothing while it is missing. Use either the plugin or `install-commands`/`install-hooks`, not both.
+
 ### Automatic analysis from the tools' hooks (opt-in, per project)
 
 Analysis still runs only on request. If you want a project's graph to follow your sessions without typing `/contexttrail-update`, enable it for that project, in your own terminal, and install the hooks once:

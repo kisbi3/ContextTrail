@@ -1,6 +1,6 @@
 # 에이전트가 직접 적는 그래프 (live journal)
 
-상태: A단계 구현 (2026-10-07), B~F 남음. 진행 기록은 §10. 소유자 제안: "별도로 분석을 돌리지 말고, 작업한 AI가 ContextTrail을 써서 그래프를 만들게 하자."
+상태: A~E 구현 (2026-10-07). 남은 것: Codex·opencode 실제 확인, F(평가), `--audit`. 진행 기록은 §10. 소유자 제안: "별도로 분석을 돌리지 말고, 작업한 AI가 ContextTrail을 써서 그래프를 만들게 하자."
 
 ## 1. 왜
 
@@ -120,3 +120,17 @@ note 하나: 출력 200~400토큰, 스킬 본문이 문맥에 1~2k토큰. 세션
 실제 확인(읽기만, 발행 없음): 이 세션의 기록 3,790개를 0.94초에 읽었고, 테스트 결과 줄을 인용하면 그 `tool_result`의 해당 줄로 찾았다.
 
 아직 하지 않은 것: 저널 세션을 분석 계획에서 빼기(E)와 처리 표시. 그 전까지는 note를 쓴 세션을 분석기가 다시 읽으면 같은 일이 두 번 적힐 수 있다. 실제 그래프에 note를 쓰는 확인은 B단계(스킬과 함께)에서 한다.
+
+### 2026-10-07 — E, B, C, D: 분석에서 빼기, 스킬, 턴 끝 알림, 플러그인
+
+- **E(분석 쪽).** note를 쓰면 그 세션의 레코드를 처리됨으로 발행하고 `journal_sessions`에 세션을 적는다. 이후 모든 scan에서 `Store.acknowledge_journaled`가 그 세션(과 하위 에이전트 세션)의 새 레코드도 처리됨으로 표시하고, 결과 없는 `parsed` 단위는 대기 레코드가 없으면 보내지 않고 `superseded`로 둔다. freshness도 세지 않는다. 문서 갱신은 아래와 함께.
+- **켜기.** 계획의 "저널 켜기"를 `contexttrail note --enable/--disable`로 했다. 꺼진 프로젝트에서는 note가 거부된다. 스킬은 모든 프로젝트에서 보이지만 꺼진 곳에서는 첫 거부 뒤 쓰지 않도록 본문에 적었다.
+- **B·C 턴 끝 알림.** `contexttrail note --hook`(동기 `Stop` 훅). 자동 갱신 훅(비동기)과 나란히 `install-hooks`가 Claude Code·Codex에 설치한다. 조건은 계획과 조금 다르다: "세션당 한 번"이 아니라 **마지막 note(또는 마지막 알림) 뒤에 편집·커밋·테스트·Git 변경 호출이 있을 때 한 번**. 세션당 한 번이면 긴 세션의 뒷부분이 적히지 않은 채 분석에서도 빠지기 때문이다. 같은 턴의 재알림은 Claude Code의 `stop_hook_active`와, Codex용으로 상태에 남기는 마지막 알림 시각이 막는다. 시각은 벽시계가 아니라 기록 시각으로 비교한다. 읽기 전용 호출과 일반 `run`은 알림 대상이 아니다.
+- **D opencode.** 플러그인이 `shell.env`로 `OPENCODE_SESSION_ID`를 도구 셸에 넣고, `session.idle`에서 `note --hook`의 답이 `block`이면 `client.session.prompt`로 알림을 보낸다. 알림 문구는 `HARNESS_TEXT`에 넣어 사람의 요청으로 잡히지 않게 했다. **실제 opencode에서는 아직 확인하지 않았다**(`shell.env` 훅 이름과 `session.prompt` 호출은 타입 정의 기준).
+- **플러그인.** 저장소 루트 `.claude-plugin/marketplace.json`과 `plugins/contexttrail/`(스킬 note·context·update, 훅 두 개). 설치된 스킬과 같은 생성기(`plugin_files`)에서 만들고 테스트가 같은지 확인한다. `claude plugin validate`가 두 manifest 모두 통과. 플러그인 훅은 `contexttrail`이 PATH에 없으면 아무것도 하지 않는다.
+
+**이 저장소에서 실제 확인(Claude Code, 이 세션).** `note --enable` 뒤 다섯 개를 적었다: 변경 둘, 그 변경을 검증한 테스트 결과 둘(`--verifies`), 결정 하나. 그래프 v22 → v27. 첫 note가 이 세션의 사용자 메시지 149개를 요청 사건으로 더했다(§8대로 코드가 만든 것). `show`에서 변경은 "검증: 전체 테스트 497개 통과"로 보인다. 훅을 손으로 불러 보니 note 뒤 작업이 없을 때는 조용했고(1.5초), 테스트를 돌린 뒤에는 `block`을 돌려줬으며, 두 번째 호출은 조용했다.
+
+**처음 실제 사용에서 찾은 버그.** note 호출을 인용 출처에서 빼는 판별이 "명령에 `contexttrail note`라는 글자가 있는 호출"이어서, note 기능 코드를 파일에 쓴 도구 호출까지 빠져 그 코드 줄을 인용할 수 없었다. 셸 명령을 조각으로 나눠 실제로 `note`를 **실행하는** 조각이 있을 때만 빼도록 고쳤다(`runs_note`; `$(…)`, 변수에 담은 프로그램, `python -m` 포함, heredoc 본문 제외).
+
+남은 것: Codex와 opencode에서 실제 확인(Codex는 새 훅을 TUI에서 신뢰해야 돈다), F 평가(같은 세션을 분석기로 돌린 결과와 비교), `--audit`.

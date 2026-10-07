@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .analysis import link_request_turns, step_hint
+from .analysis import _HEREDOC, _command_text, link_request_turns, step_hint
 from .git_context import Scope
 from .i18n import tr
 from .model import SourceRecord, Snapshot
@@ -45,7 +45,11 @@ RELATION_OPTIONS = ("verifies", "revises", "answers", "motivates")
 # inherited from the shell that started it (and the reverse is far less common), so Claude Code wins
 # when its own marker is set.
 SESSION_VARIABLES = (("CLAUDE_CODE_SESSION_ID", "CLAUDECODE"), ("CODEX_THREAD_ID", None), ("OPENCODE_SESSION_ID", None))
-NOTE_COMMAND = re.compile(r"\b(?:contexttrail|ct|project)\s+note\b")
+# A shell command that runs `note`, directly, through `$(…)`, an interpreter or a variable holding the program.
+# A call that only mentions it (a file it writes, a grep) stays quotable.
+NOTE_COMMAND = re.compile(r"^(?:\S*/)?(?:contexttrail|ct|project|\$\{?\w+\}?)\s+note\b")
+_PIECES = re.compile(r"&&|\|\||[;|\n]|\$\(|`")
+_PREFIXES = re.compile(r"^(?:\(\s*|[A-Za-z_]\w*=\S*\s+|(?:\S*/)?python3?\s+-m\s+)+")
 ORIGIN = "note"
 NEAREST = 3
 NEAREST_CHARS = 200
@@ -107,11 +111,18 @@ def session_records(scope: Scope, store: Store, session_id: str, *, codex_home: 
                                                  r.locator.get("fragment_index", 0), r.source_id))
 
 
+def runs_note(record: SourceRecord) -> bool:
+    """A tool call whose shell command runs `contexttrail note`."""
+    if record.role != "tool_call":
+        return False
+    text = _HEREDOC.split(_command_text(record.content.partition("\n")[2], "\n"))[0]
+    return any(NOTE_COMMAND.match(_PREFIXES.sub("", piece.strip())) for piece in _PIECES.split(text))
+
+
 def quotable(records: list[SourceRecord]) -> list[SourceRecord]:
     """The records a quote may come from: all but the `note` calls themselves and their output."""
-    calls = {r.tool_call_id for r in records if r.role == "tool_call" and r.tool_call_id and NOTE_COMMAND.search(r.content)}
-    return [r for r in records if not (r.role == "tool_call" and NOTE_COMMAND.search(r.content))
-            and not (r.role == "tool_result" and r.tool_call_id in calls)]
+    calls = {r.tool_call_id for r in records if r.tool_call_id and runs_note(r)}
+    return [r for r in records if not runs_note(r) and not (r.role == "tool_result" and r.tool_call_id in calls)]
 
 
 def locate(records: list[SourceRecord], quote: str) -> dict[str, Any]:

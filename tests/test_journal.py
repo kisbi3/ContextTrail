@@ -261,3 +261,16 @@ def test_the_opencode_plugin_passes_the_session_and_sends_the_reminder():
     plugin = opencode_plugin(Path("/venv/bin/python"))
     assert '"shell.env"' in plugin and "OPENCODE_SESSION_ID = input.sessionID" in plugin
     assert "note --hook < ${new Response(request)}" in plugin and "client.session.prompt" in plugin
+
+
+def test_only_a_call_that_runs_note_is_kept_out_of_the_quotes():
+    from contexttrail.model import SourceRecord
+    def call(command):
+        return SourceRecord("c", "claude", SESSION, "tool_call", "Tool: Bash\n" + json.dumps({"command": command}), {})
+    assert journal.runs_note(call("contexttrail note --kind action --quote 'x y z w v'"))
+    assert journal.runs_note(call("cd app && A=$(contexttrail note --kind action --quote 'x')"))
+    assert journal.runs_note(call('CT=~/.local/bin/contexttrail; $CT note --list'))
+    assert journal.runs_note(call("/venv/bin/python -m contexttrail note --hook"))
+    # Writing code or docs that mention the command is ordinary work, and quotable.
+    assert not journal.runs_note(call("python3 - <<'EOF'\ntext = 'run contexttrail note --kind action'\nEOF"))
+    assert not journal.runs_note(call("grep -n 'contexttrail note' README.md"))
