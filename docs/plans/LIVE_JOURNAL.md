@@ -155,3 +155,10 @@ note 하나: 출력 200~400토큰, 스킬 본문이 문맥에 1~2k토큰. 세션
 - 마지막 수정 뒤의 Codex 재실행은 "workspace is out of credits"로 하지 못했다. 고친 동작은 단위 테스트와 위 기록 재생으로만 확인했다.
 
 **Claude Code (`claude -p`, 같은 임시 프로젝트, 2026-10-07).** note 이야기 없이 함수 추가와 실행 확인을 시켰다. 턴이 끝나자 동기 `Stop` 훅의 `block`이 "Stop hook feedback"으로 들어갔고, Claude가 `contexttrail-note` 스킬을 스스로 불러 note 두 개(변경, 그 변경을 `verifies`로 검증한 관측 성공 결과)를 적었다. 적은 뒤의 훅 호출은 조용했다. 비동기 훅은 `claude -p` 종료 때 취소되지만(2026-10-06) 이 동기 훅은 `-p`에서도 돈다. 이로써 세 도구 모두에서 알림 → 스킬 → note 저장이 확인됐다.
+
+### 2026-10-07 — 플러그인 설치 실제 확인과 그때 찾은 것
+
+새 임시 git 프로젝트에서 README 그대로 GitHub 마켓플레이스를 추가하고(`claude plugin marketplace add kisbi3/ContextTrail`, 이 프로젝트에만 `--scope local`) `contexttrail@contexttrail`을 설치했다. 클론·검증·설치가 되고, `claude plugin details`에 스킬 3개(`context`·`note`·`update`)와 `Stop` 훅이 보였다(상시 비용 약 264토큰). `claude -p`의 init에도 플러그인과 `contexttrail:note` 등이 올라왔다. 사용자 설정의 훅을 빼고(`--setting-sources project,local`) 플러그인 훅만으로 돌렸다.
+- 찾은 것 7: Claude가 Edit 대신 `printf … >> calc.py`로 고쳐 그 호출이 `run`으로 분류됐고, 알림이 나가지 않았다. 고침: 셸 명령이 파일을 쓰면(따옴표 밖의 `>`·`>>`, `/dev/null`과 `2>&1`은 빼고; `sed -i`·`tee`·`mv`·`cp`·`rm`·`touch`·`mkdir`·`git apply` 등) 남길 작업으로 센다(`writes_files`). 다시 돌리니 알림 → Claude가 플러그인 스킬 `contexttrail:note`를 불러 변경과 그 변경을 `verifies`로 검증한 결과를 적었다. 알림 문구는 두 스킬 이름을 모두 말한다.
+- 찾은 것 8: `install-hooks --claude`와 플러그인을 둘 다 깔면 같은 훅이 둘 돌아 알림이 두 번 가고, 대기열을 두 번 저장할 수 있다. 고침: 훅 본문을 프로젝트별 파일 잠금(`_hook_lock`) 안에서 돌려 둘째는 기다린 뒤 이미 알린 것을 본다. 둘 다 깐 상태로 실제로 돌려 알림은 한 번이었다.
+- 찾은 것 9: heredoc으로 쓴 코드 한 줄(`def neg(a):`)을 인용한 변경 note가 "applied status is only for … citing a patch or diff"로 거부됐다. Claude가 끝 메시지에서 그 코드를 되풀이해 그쪽이 더 최근이었기 때문이다. 고침: `applied`면 도구 호출·결과부터 찾는다(찾은 것 5와 같은 방식). 그 세션 기록에 다시 적어 보니 `applied`로 저장됐다.

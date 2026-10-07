@@ -15,6 +15,7 @@ The note's own command line (and its output) is never a quote's source: it holds
 from __future__ import annotations
 
 import dataclasses
+import fcntl
 import difflib
 import json
 import os
@@ -23,10 +24,10 @@ import sqlite3
 import tempfile
 import time
 import uuid
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .analysis import _HEREDOC, _command_text, link_request_turns, step_hint
 from .git_context import Scope
@@ -73,7 +74,7 @@ WORK_HINTS = {"edit", "commit", "test", "vcs"}
 REFUSED_REASON = ("ContextTrail stored the notes queued in this turn except these, which failed its checks; write them "
                   "again with `contexttrail note`, fixed as the reason says, or leave them out:")
 REMINDER = ("ContextTrail notes are on for this project, and this turn changed files or ran checks without a note. "
-            "Before finishing, use the contexttrail-note skill: record the decisions, changes and observed results of "
+            "Before finishing, use the ContextTrail note skill (contexttrail-note, or contexttrail:note from the plugin): record the decisions, changes and observed results of "
             "this turn with `contexttrail note` (one call per event, quoting the tool output or message exactly). "
             "If nothing in this turn is worth recording, just finish.")
 
@@ -274,13 +275,14 @@ def prepare(scope: Scope, store: Store | None, session_id: str, *, kind: str, qu
                         "(the session must run in this folder and have written its transcript). If that is not "
                         "your session, give your own session ID with --session")
     sources = quotable(records)
-    # An observed result rests on what the tool printed; the agent often repeats that line in its own message
-    # afterwards, so a tool's output is searched first.
-    outputs = [record for record in sources if record.role == "tool_result"] if observed else []
+    # An observed result rests on what the tool printed and an applied change on the call that made it; the
+    # agent often repeats that output or code in its own message afterwards, so the tool's records come first.
+    roles = {"tool_result"} if observed else {"tool_call", "tool_result"} if status == "applied" else set()
+    first = [record for record in sources if record.role in roles]
     citations = []
     for quote in quotes:
         try:
-            citations.append(locate(outputs, quote) if outputs else locate(sources, quote))
+            citations.append(locate(first, quote) if first else locate(sources, quote))
         except FlowError:
             citations.append(locate(sources, quote))
     pool = {record.source_id: record for record in records}
@@ -470,10 +472,30 @@ def _seconds(value: str | None) -> float:
     return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
 
 
+# Output sent to a file (`> f`, `>> f`, `2> f`; not `2>&1` or /dev/null), or a command that edits,
+# moves or removes files. An agent that edits through the shell changes files all the same.
+_REDIRECT = re.compile(r"(?<![<>=-])>>?\s*([^\s;&|()<>]+)")
+_FILE_COMMANDS = re.compile(r"\bsed\s+-i|\btee\s|\b(?:mv|cp|rm|touch|mkdir|truncate)\s|\bgit\s+apply\b|\bpatch\s|write_text|apply_patch")
+
+
+_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\\\]|\\\\.)*\"")
+
+
+def writes_files(command: str) -> bool:
+    """True when a shell command line writes or removes a file (quoted text, like code passed to
+    `python -c`, is not read as shell)."""
+    bare = _QUOTED.sub("''", command)
+    return bool(_FILE_COMMANDS.search(bare)) or any(target != "/dev/null" for target in _REDIRECT.findall(bare))
+
+
 def unnoted_work(records: list[SourceRecord], since: float) -> list[SourceRecord]:
-    """Edits, commits, tests and Git changes recorded after `since` (the note calls themselves aside)."""
+    """Edits (also through the shell), commits, tests and Git changes recorded after `since`,
+    the note calls themselves aside."""
+    def work(record: SourceRecord) -> bool:
+        hint = step_hint(record)[2]
+        return hint in WORK_HINTS or (hint == "run" and writes_files(_command_text(record.content.partition("\n")[2])))
     return [record for record in quotable(records) if record.role == "tool_call"
-            and _seconds(record.recorded_at) > since and step_hint(record)[2] in WORK_HINTS]
+            and _seconds(record.recorded_at) > since and work(record)]
 
 
 def hook(stdin_text: str | None, **homes: Path | None) -> dict[str, Any] | None:
@@ -499,26 +521,44 @@ def hook(stdin_text: str | None, **homes: Path | None) -> dict[str, Any] | None:
         store = Store(scope.state_dir, scope.id)
         if not enabled(store):
             return None
-        _, refused = flush(scope, store, **homes)
-        if refused:
-            # A host may not send the agent back twice in a turn; `note --list` shows these too.
-            activity = store.get_meta(ACTIVITY_KEY, {}) or {}
-            entry = activity.setdefault(session_id, {})
-            entry["refused"] = (entry.get("refused", []) + refused)[-10:]
-            store.set_meta(ACTIVITY_KEY, activity)
-        if refused and not payload.get("stop_hook_active"):
-            return {"decision": "block", "reason": REFUSED_REASON + " " + " | ".join(refused)[:3000]}
-        if payload.get("stop_hook_active"):
-            return None  # this turn was already sent back once
-        activity = (store.get_meta(ACTIVITY_KEY, {}) or {}).get(session_id, {})
-        since = max(_seconds(activity.get("noted_at")), _seconds(activity.get("reminded_at")),
-                    _seconds((store.get_meta(SETTINGS_KEY) or {}).get("enabled_at")))
-        work = unnoted_work(session_records(scope, store, session_id, **homes), since)
-        if not work:
-            return None
-        _mark(store, session_id, "reminded_at", max(record.recorded_at for record in work))
+        with _hook_lock(scope):
+            return _remind(scope, store, payload, session_id, **homes)
     except Exception:  # a hook never fails the host's turn
         return None
+
+
+@contextmanager
+def _hook_lock(scope: Scope) -> Iterator[None]:
+    """One hook at a time per project. A person with both `install-hooks` and the plugin runs two at
+    a turn's end; the second waits, then finds the reminder sent and the queue already stored."""
+    fd = os.open(scope.state_dir / "note-hook.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _remind(scope: Scope, store: Store, payload: dict, session_id: str, **homes: Path | None) -> dict[str, Any] | None:
+    """The hook's answer for one turn, run under `_hook_lock`."""
+    _, refused = flush(scope, store, **homes)
+    if refused:
+        # A host may not send the agent back twice in a turn; `note --list` shows these too.
+        activity = store.get_meta(ACTIVITY_KEY, {}) or {}
+        entry = activity.setdefault(session_id, {})
+        entry["refused"] = (entry.get("refused", []) + refused)[-10:]
+        store.set_meta(ACTIVITY_KEY, activity)
+    if refused and not payload.get("stop_hook_active"):
+        return {"decision": "block", "reason": REFUSED_REASON + " " + " | ".join(refused)[:3000]}
+    if payload.get("stop_hook_active"):
+        return None  # this turn was already sent back once
+    activity = (store.get_meta(ACTIVITY_KEY, {}) or {}).get(session_id, {})
+    since = max(_seconds(activity.get("noted_at")), _seconds(activity.get("reminded_at")),
+                _seconds((store.get_meta(SETTINGS_KEY) or {}).get("enabled_at")))
+    work = unnoted_work(session_records(scope, store, session_id, **homes), since)
+    if not work:
+        return None
+    _mark(store, session_id, "reminded_at", max(record.recorded_at for record in work))
     return {"decision": "block", "reason": REMINDER}
 
 

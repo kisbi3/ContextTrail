@@ -227,6 +227,17 @@ def test_the_end_of_turn_hook_sends_the_agent_back_once_for_unnoted_work(project
     assert journal.hook("not json", **homes) is None
 
 
+def test_two_hooks_at_one_turns_end_remind_once(project, tmp_path):
+    # `install-hooks --claude` and the plugin each add the hook, and the host runs both at once.
+    from concurrent.futures import ThreadPoolExecutor
+    folder, scope, store = project
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    store.set_meta(journal.SETTINGS_KEY, {"enabled_at": "2026-10-07T09:00:00+00:00"})
+    with ThreadPoolExecutor(4) as pool:
+        answers = list(pool.map(lambda _: journal.hook(hook_input(folder), **homes), range(4)))
+    assert [answer["decision"] for answer in answers if answer] == ["block"]
+
+
 def test_work_noted_before_the_turn_ends_needs_no_reminder(project, tmp_path):
     folder, scope, store = project
     homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
@@ -246,6 +257,21 @@ def test_notes_are_refused_while_off_and_the_cli_switches_them(project, capsys):
         note(scope, store, kind="action", title="x", quotes=["write_atomically(path)"])
     assert main(["note", str(folder), "--enable"]) == 0
     assert journal.enabled(store)
+
+
+def test_a_file_changed_through_the_shell_counts_as_work_to_note():
+    from contexttrail.model import SourceRecord
+    def call(command):
+        return SourceRecord("c", "claude", SESSION, "tool_call", "Tool: Bash\n" + json.dumps({"command": command}), {},
+                            recorded_at="2026-10-07T10:00:00Z")
+    changes = ["printf 'def mul(a, b):\\n    return a * b\\n' >> calc.py && python3 -c 'print(1)'",
+               "cat > notes.txt <<'EOF'\nx\nEOF", "sed -i '' 's/a/b/' calc.py", "make 2> build.log", "rm -f old.py"]
+    for command in changes:
+        assert journal.unnoted_work([call(command)], 0.0), command
+    # Running or reading without writing a file is not, nor is output thrown away.
+    for command in ["python3 -c 'print(6 * 7)'", "cat calc.py; ls", "python3 run.py >/dev/null 2>&1",
+                    "python3 -c 'print(2 > 1)'"]:
+        assert not journal.unnoted_work([call(command)], 0.0), command
 
 
 def test_the_reminder_is_never_taken_for_a_persons_request(project):
@@ -370,3 +396,16 @@ def test_an_observed_result_is_found_in_the_tools_output_before_a_message_repeat
     with pytest.raises(FlowError, match="--verifies links a change to the observed result"):
         note(scope, store, kind="outcome", status="reported_complete", title="x", quotes=["1 failed, 12 passed"],
              relations={"verifies": ["ev_whatever"]})
+
+
+def test_a_change_made_through_the_shell_cites_the_call_before_a_message_repeating_its_code(project, tmp_path):
+    folder, scope, store = project
+    path = tmp_path / "claude" / "projects" / "app" / f"{SESSION}.jsonl"
+    with path.open("a") as handle:
+        handle.write(dumps(row(folder, 8, "assistant", [{"type": "tool_use", "id": "t9", "name": "Bash", "input": {
+            "command": "cat >> calc.py <<'EOF'\n\ndef neg(a):\n    return -a\nEOF"}}])) + "\n")
+        handle.write(dumps(row(folder, 9, "user", [{"type": "tool_result", "tool_use_id": "t9", "content": ""}])) + "\n")
+        handle.write(dumps(row(folder, 10, "assistant", [{"type": "text", "text": "Added:\n\ndef neg(a):\n    return -a"}])) + "\n")
+    result = note(scope, store, kind="action", title="Add neg", quotes=["def neg(a):"])
+    assert result["event"]["status"] == "applied"
+    assert store.evidence(result["event"]["evidence_ids"][0])["source"]["role"] == "tool_call"
