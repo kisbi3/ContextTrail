@@ -1023,3 +1023,24 @@ def test_a_new_event_may_close_an_old_open_item_it_was_not_opened_on(laboratory)
                                   assigned_source_ids={record.source_id})
     result = validator.apply_delta(delta, graph, "snap", "run", candidates)
     assert [(item["id"], item["status"]) for item in result["open_items"]] == [("open_old", "resolved")]
+
+
+def test_an_observed_result_with_no_change_to_verify_is_settled_in_code_without_a_review_call(laboratory):
+    scope, store, engine, records, make = laboratory
+    engine.config.review_output = "patch"
+    records.append(make(CASES[3][0], role="tool_result"))  # a failed test result, and nothing it could have checked
+    result, seen = _capturing_analyze(engine)
+    assert result["status"] == "complete", result
+    assert not _review_calls(store) and not [task for task, _ in seen if "review_issues" in task["data"]]
+    [(status, statuses)] = _review_statuses(store)
+    assert status == "resolved_in_code" and statuses == ["resolved"]
+    audit = store.graph()["semantic_review_audit"]
+    assert audit["triggered"] == ["unlinked_observed_outcome"] and audit["resolutions"][0]["origin"] == "code"
+    assert audit["resolutions"][0]["evidence_ids"] and "limitation" not in audit["resolutions"][0]
+    assert any(line.startswith("Observed result '") and "no change" in line for line in store.graph()["limitations"])
+    # with a change event in the same delta the question is real, and the review still runs
+    records[:] = [make(CASES[2][0], role="tool_result"), make(CASES[6][0], key="s2", role="tool_result")]
+    engine2, store2 = _rerun(scope, records, engine.config)
+    assert engine2.analyze(FixtureRunner)["status"] == "complete"
+    assert store2.graph()["semantic_review_audit"]["triggered"] == ["unlinked_observed_outcome"]
+    assert _review_statuses(store2)[-1][0] == "reviewed" and _review_calls(store2)

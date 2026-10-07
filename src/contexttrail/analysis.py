@@ -1689,6 +1689,16 @@ def output_quote_chars(output: object) -> dict[str, int]:
     return {key: n for key, value in output.items() if (n := quoted(value))}
 
 
+CHANGE_KINDS = ("action", "revision")
+NO_CHANGE_TO_VERIFY_REASON = ("The unit adds no change event, so this observed result verifies nothing in it; "
+                              "settled in code without a review call.")
+
+
+def no_change_to_verify_limitation(item: dict) -> str:
+    """The graph's note for an observed result that had no change to verify."""
+    return f"Observed result '{item.get('title', item.get('id'))}' is linked to no change: this unit added no change event it could verify."
+
+
 def unlinked_observed_outcomes(delta: dict | None) -> list[dict]:
     """New observed results that no relation in the same delta leads to.
 
@@ -1797,6 +1807,7 @@ class PreparedIntegration:
     delta: dict | None = None
     review_audit: dict = dataclasses.field(default_factory=dict)
     review_issue_inputs: list[dict] = dataclasses.field(default_factory=list)
+    code_resolutions: list[dict] = dataclasses.field(default_factory=list)  # review issues settled without a model
 
 
 class Engine:
@@ -2109,6 +2120,7 @@ class Engine:
         if executed:
             resolutions = [{**item, "evidence_ids": validator.citations(item["evidence"]), "evidence": None}
                            for item in resolutions]
+        resolutions += [{k: v for k, v in row.items() if k != "limitation"} for row in prepared.code_resolutions]
         unresolved_ids = ([item["issue_id"] for item in resolutions if item["status"] == "unresolved"]
                           if executed else [issue["id"] for issue in issues])
         prepared.review_audit = {"triggered": reasons, "executed": executed,
@@ -2119,6 +2131,7 @@ class Engine:
                    data["validated_candidates"], expected_review_issues=issues if executed else None,
                    evidence_reuse=self.config.integrate_evidence == "reuse")
                   if data else copy.deepcopy(graph))
+        result["limitations"] = list(dict.fromkeys(result["limitations"] + [row["limitation"] for row in prepared.code_resolutions]))
         result["semantic_review_audit"] = prepared.review_audit
         result["semantic_review_history"] = [*graph.get("semantic_review_history", []),
             {"unit_id": data["validated_candidates"]["unit_id"] if data else None,

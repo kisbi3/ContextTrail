@@ -23,7 +23,8 @@ from langsmith import traceable, tracing_context
 
 from contexttrail.analysis import (AnalysisConfig, Engine, IdAliases, PreparedExtraction,
                                   PreparedIntegration, _incomplete_input, _rehydrate,
-                                  build_task, integrate_request_data, review_signal_items, REVIEW_SIGNALS)
+                                  build_task, integrate_request_data, review_signal_items, no_change_to_verify_limitation,
+                                  CHANGE_KINDS, NO_CHANGE_TO_VERIFY_REASON, REVIEW_SIGNALS)
 from contexttrail.analysis import link_request_turns as analysis_link_request_turns
 from contexttrail.analysis import calibration, call_cap, plan_summary
 from contexttrail.analysis import classify_steps as classify_records
@@ -636,6 +637,10 @@ def route_semantic_review(state: StudioState) -> StudioState:
     candidates = {item["id"]: (kind, item) for kind, key in (
         ("event_candidate", "event_candidates"), ("edge_candidate", "edge_candidates"),
         ("open_item_candidate", "open_items")) for item in candidate_set.get(key, [])}
+    # An observed result can only verify a change: when the delta adds none, the review's answer is always
+    # "no change to link" (on this repository, 5 of 16 reviews), so code resolves it and no model is called.
+    change_added = any(item.get("kind") in CHANGE_KINDS for item in (delta or {}).get("events_to_add", []))
+    code_resolved: list[dict] = []
     if delta:
         for operation, signal, question in REVIEW_SIGNALS:
             for item in signals.get(signal, []):
@@ -647,22 +652,32 @@ def route_semantic_review(state: StudioState) -> StudioState:
                 if candidate_id is None:
                     continue
                 kind = candidates[candidate_id][0]
-                issues.append({"id": ident("review_", state["unit_id"], operation, signal, item["id"]),
+                issue_id = ident("review_", state["unit_id"], operation, signal, item["id"])
+                if signal == "unlinked_observed_outcome" and not change_added:
+                    code_resolved.append({"issue_id": issue_id, "status": "resolved", "origin": "code",
+                        "reason": NO_CHANGE_TO_VERIFY_REASON, "evidence": None,
+                        "evidence_ids": prepared.validator.citations(item.get("evidence", [])) if prepared else [],
+                        "limitation": no_change_to_verify_limitation(item)})
+                    continue
+                issues.append({"id": issue_id,
                     "origin": "code_signal", "stage": "integrate",
                     "target_kind": kind, "target_id": candidate_id,
                     "signal": signal, "question": question,
                     "evidence": item.get("evidence", [])})
     if prepared:
         prepared.review_issue_inputs = issues
+        prepared.code_resolutions = code_resolved
     audit_issues = [{**issue, "evidence_ids": prepared.validator.citations(issue["evidence"]),
                      "evidence": None} for issue in issues] if prepared else issues
     prepared.review_audit = {"triggered": reasons, "issues": audit_issues}
     pending = bool(issues and engine.config.semantic_review)
     if not pending:
         graph = copy.deepcopy(state["new_graph"])
+        graph["limitations"] = list(dict.fromkeys(graph["limitations"] + [row["limitation"] for row in code_resolved]))
         audit = {"triggered": reasons, "issues": audit_issues, "executed": False,
-            "status": "skipped_disabled" if issues else "not_needed",
-            "resolutions": [], "unresolved_issue_ids": [item["id"] for item in issues]}
+            "status": "skipped_disabled" if issues else "resolved_in_code" if code_resolved else "not_needed",
+            "resolutions": [{k: v for k, v in row.items() if k != "limitation"} for row in code_resolved],
+            "unresolved_issue_ids": [item["id"] for item in issues]}
         graph["semantic_review_audit"] = audit
         graph["semantic_review_history"] = [*graph.get("semantic_review_history", []),
             {"unit_id": state["unit_id"], **audit}]
