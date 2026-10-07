@@ -66,6 +66,14 @@ contexttrail note --kind outcome --status observed_failure \
 - 세션 끝: 플러그인 `session.idle`에서 이 세션에 `note`가 없으면 SDK `client.session.prompt({path: {id}, body: {parts: [{type: "text", text: …}]}})`로 "적고 끝내라"를 한 번 보낸다. 확인 필요: 플러그인 안에서 실행 중인 인스턴스에 `session.prompt`를 부를 수 있는지(문서는 메서드만 확인), idle → prompt → idle 루프를 세션당 1회로 막는 방법(상태 디렉터리에 기록).
 - 자동 분석 플러그인과 같은 파일에 넣되 설정으로 따로 켠다.
 
+### 4.5 모양: ponytail처럼, 뒤에 CLI가 있는 스킬
+
+소유자 질문(2026-10-07): [ponytail](https://github.com/dietrichgebert/ponytail)처럼 스킬로 만들자는 것인가. 그렇다. 에이전트에게 보이는 부분은 ponytail과 같은 모양이다: `SKILL.md` 하나가 언제 무엇을 할지 정하고, 슬래시 명령과 선택적 훅이 붙고, Claude Code·Codex·opencode 각각에 맞게 설치된다. 지금의 `contexttrail-update`/`contexttrail-context`가 이미 그 방식이고 `contexttrail-note`도 같은 자리에 들어간다.
+
+차이는 하나다. ponytail은 프롬프트만으로 된 도구라 스킬 본문이 전부이고 뒤에 코드나 데이터가 없다. 여기서는 스킬이 "적어라"고 시키되 적는 행위는 `contexttrail note` 호출이고, 그 뒤에서 코드가 인용을 세션 기록과 대조해 그래프에 저장한다. **스킬은 껍데기, 본체는 CLI.** 스킬만 배포하면 에이전트가 메모를 남기는 것까지는 되지만 검증도, 저장소도, 세 도구 공유도 없다.
+
+ponytail에서 가져올 것은 설치 방식이다. Claude Code의 플러그인 마켓플레이스(`/plugin marketplace add …`)로 스킬·명령·훅을 한 번에 설치한다. ContextTrail은 지금 `install.sh`와 `install-commands`/`install-hooks`로 홈에 파일을 쓰는데, Claude Code용은 플러그인 묶음(스킬 셋 + Stop 훅 정의)을 저장소에 두어 한 줄로 설치하게 하고, Codex·opencode는 지금 방식으로 둔다. CLI(파이썬 패키지)는 여전히 `pipx install contexttrail`이 필요하므로 플러그인의 스킬 본문이 그 설치를 먼저 확인하게 한다. 단계 B에 "플러그인 묶음"을 넣는다.
+
 ## 5. 분석기의 새 역할
 
 - **백필.** 에이전트가 없던 과거 기록은 분석기만 만들 수 있다. `analyze`는 그대로 둔다.
@@ -80,7 +88,7 @@ contexttrail note --kind outcome --status observed_failure \
 ## 7. 단계
 
 A. `note` 명령: 세션 찾기, 인용 → 줄, 후보 → delta → 검사 → 발행, `--list`, `--json`. 테스트.
-B. Claude Code: 스킬 본문, 동기 `Stop` 훅의 되돌리기(설정 `journal` 켜기/끄기), 이 세션으로 실제 확인.
+B. Claude Code: 스킬 본문, 동기 `Stop` 훅의 되돌리기(설정 `journal` 켜기/끄기), 저장소 안의 플러그인 묶음(스킬 셋 + 훅 정의, `/plugin marketplace add`로 설치; §4.5), 이 세션으로 실제 확인.
 C. Codex: 스킬, `Stop` 되돌리기, 한 번 확인.
 D. opencode: `shell.env`, `session.idle` 프롬프트, 확인 필요 항목 해소.
 E. 분석 계획에서 저널 세션 제외, 자동 갱신과의 분담, 문서(README·CLAUDE.md·SECURITY).
