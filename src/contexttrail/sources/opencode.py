@@ -304,8 +304,9 @@ def session_times(path: Path, scope: Scope) -> dict[str, int] | None:
     return found
 
 
-def parse_opencode(path: Path, scope: Scope) -> Snapshot:
-    """Every record of the sessions whose recorded directory lies in the scope, from one database."""
+def parse_opencode(path: Path, scope: Scope, *, session: str | None = None) -> Snapshot:
+    """Every record of the sessions whose recorded directory lies in the scope, from one database
+    (only `session` when given)."""
     warnings: list[str] = []
     decisions = {"selected": 0, "outside_scope": 0, "unattributed": 0}
     sessions_audit = {"examined": 0, "selected": 0, "outside_scope": 0, "unattributed": 0, "self_generated": 0}
@@ -337,6 +338,7 @@ def parse_opencode(path: Path, scope: Scope) -> Snapshot:
                 return finish([])
             rows = connection.execute("SELECT id, parent_id, directory, agent FROM session ORDER BY time_created, id").fetchall()
             selected: dict[str, sqlite3.Row] = {}
+            only = session
             for session in rows:
                 sessions_audit["examined"] += 1
                 directory = _absolute(session["directory"])
@@ -345,6 +347,8 @@ def parse_opencode(path: Path, scope: Scope) -> Snapshot:
                 elif Path(directory).name.startswith(SELF_RUN_PREFIXES):
                     sessions_audit["self_generated"] += 1
                 elif scope.includes(directory):
+                    if only is not None and str(session["id"]) != only:
+                        continue
                     selected[str(session["id"])] = session
                     sessions_audit["selected"] += 1
                 else:

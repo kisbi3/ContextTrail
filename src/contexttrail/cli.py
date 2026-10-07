@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import __version__
 from . import auto_update
+from . import journal
 from .agent_commands import OPENCODE_PERMISSION_HINT, install_agent_commands
 from .auto_update import install_hooks
 from .agent_view import find, find_text, show, show_text
@@ -29,6 +30,7 @@ from .i18n import tr
 from .render import event_detail, export_text, terminal_graph
 from .runners import CLIRunner
 from .runners.cli_runner import EFFORTS
+from .schema import STATUSES
 from .store import Store
 from .ui import GraphApp, TerminalApp, legend, token_usage_label
 from .util import FlowError, dumps, safe_text, within
@@ -194,6 +196,23 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("folder", nargs="?", default=".")
     sub.add_argument("--quote-lines", type=int, default=40, help=tr("근거 하나에 보일 최대 줄 수; 기본 40", "Maximum lines shown per quote; default 40"))
     sub.add_argument("--json", action="store_true")
+    sub = commands.add_parser("note", help=tr("지금 세션의 결정·변경·결과 하나를 인용과 함께 그래프에 적기(에이전트용). AI 호출 없음",
+                                              "Write one decision, change or result of the current session into the graph, with quotes (for agents); no AI calls"))
+    sub.add_argument("folder", nargs="?", default=".")
+    sub.add_argument("--kind", choices=journal.NOTE_KINDS)
+    sub.add_argument("--status", choices=STATUSES, help=tr("outcome에는 필수. 생략하면 decision=adopted, action/revision=applied 등",
+                                                           "Required for an outcome; else decision=adopted, action/revision=applied, ..."))
+    sub.add_argument("--title")
+    sub.add_argument("--summary", default="")
+    sub.add_argument("--quote", action="append", default=[], help=tr("이 세션 기록에서 그대로 복사한 글(반복 가능)",
+                                                                    "Text copied exactly from this session's records (repeatable)"))
+    for relation in journal.RELATION_OPTIONS:
+        sub.add_argument(f"--{relation}", action="append", default=[], metavar="EVENT",
+                         help=tr(f"이 사건(ev_…)에서 note로 {relation} 관계", f"A {relation} relation from this event (ev_…) to the note"))
+    sub.add_argument("--actor", default="assistant")
+    sub.add_argument("--session", default="current", help=tr("세션 ID; 기본은 이 명령을 부른 세션", "Session ID; default: the session running this command"))
+    sub.add_argument("--list", action="store_true", help=tr("이 세션에 적힌 note 목록", "The notes written in this session"))
+    sub.add_argument("--json", action="store_true")
     sub = commands.add_parser("install-commands", help=tr("Codex·Claude Code에 ContextTrail 명령 설치",
                                                           "Install the ContextTrail commands into Codex and Claude Code"))
     sub.add_argument("--force", action="store_true", help=tr("이미 설치된 ContextTrail 명령 갱신", "Refresh ContextTrail commands already installed"))
@@ -333,16 +352,8 @@ def _options(args, store: Store) -> AnalysisConfig:
 
 
 def _session(value: str | None) -> str | None:
-    """`current` is the Codex or Claude Code session running this command, from its environment."""
-    if value != "current":
-        return value
-    found = {name: os.environ[name] for name in ("CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID") if os.environ.get(name)}
-    if len(found) != 1:
-        raise FlowError(tr("지금 대화 중인 세션을 알 수 없습니다", "Cannot tell which session is running this command")
-                        + (tr(" (Codex와 Claude Code 세션이 모두 보입니다)", " (both a Codex and a Claude Code session are visible)")
-                           if found else "")
-                        + tr(". --session에 세션 ID를 지정하세요.", ". Give --session a session ID."))
-    return next(iter(found.values()))
+    """`current` is the Codex, Claude Code or opencode session running this command, from its environment."""
+    return journal.current_session() if value == "current" else value
 
 
 def _choose_units(plan: dict) -> bool | int:
@@ -419,6 +430,33 @@ def _auto_update(args) -> int:
     reason, pid = auto_update.run_hook(folder)
     if reason == "run":
         print(f"contexttrail auto-update: started analysis (pid {pid})", file=sys.stderr)
+    return 0
+
+
+def _note(args) -> int:
+    scope = Scope.resolve(args.folder)
+    store = Store(scope.state_dir, scope.id)
+    session = journal.current_session() if args.session == "current" else args.session
+    if args.list:
+        events = journal.noted(store.graph(), session)
+        version = store.graph()["version"]
+        if args.json:
+            print(dumps({"session": session, "version": version, "events": events}, pretty=True))
+        else:
+            for event in events:
+                print(f"contexttrail:{event['id']}@v{version}  {event['kind']}/{event['status']}  {safe_text(event['title'])}")
+            if not events:
+                print(f"no notes in session {session}")
+        return 0
+    if not args.kind or not args.title:
+        raise FlowError("note needs --kind and --title (and at least one --quote)")
+    result = journal.write(scope, store, session, kind=args.kind, title=args.title, summary=args.summary,
+                           quotes=args.quote, status=args.status, actor=args.actor,
+                           relations={name: getattr(args, name) for name in journal.RELATION_OPTIONS})
+    if args.json:
+        print(dumps(result, pretty=True))
+    else:
+        print(result["ref"])
     return 0
 
 
@@ -609,6 +647,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "show":
             return _show(args)
+        if args.command == "note":
+            return _note(args)
         if args.command == "demo":
             folder, codex, claude = create_demo(args.path)
             scope = Scope.resolve(folder)

@@ -2,6 +2,14 @@
 
 All notable changes to ContextTrail are listed here, newest first. Dates are the dates the change landed on `main`. Measurements behind each entry are in `docs/plans/PERFORMANCE_PLAN.md` and `docs/DECISIONS.md`.
 
+## Unreleased
+
+### Added
+- **`contexttrail note`: the agent that did the work writes an event itself.** No model is called. The agent gives the kind (`decision`, `proposal`, `goal`, `action`, `revision`, `outcome`), the status, a title, a summary and one or more `--quote`s copied from what it saw; code finds each quote in the current session's own records (one transcript file, or one opencode session; this repository's 3,790-record session parses in under a second), so the agent never names line numbers, and the note's own command line is never a source. The event then takes the analysis path unchanged: the candidate check, the code-built draft delta, `apply_delta` with every evidence, status and relation rule (an `observed_*` status still needs a quoted tool result), the dialog-turn links that also add the person's requests, and one `publish`. `--verifies`, `--revises`, `--answers` and `--motivates` name an earlier event (an ID, a prefix or a copied `contexttrail:ev_…@vN`) and add an explicit relation from it to the note. A note that fails a check stores nothing and says why, with the closest lines when a quote was not found; while an analysis holds the project's lock it is refused at once rather than waiting. `--list` shows the notes of the session, `--json` the stored event. Records are stored with a partial ingest that leaves the rest of the project's records as they were. Plan: `docs/plans/LIVE_JOURNAL.md` (stage A).
+
+### Changed
+- `--session current` reads `OPENCODE_SESSION_ID` too, and inside Claude Code (`CLAUDECODE` set) takes the Claude Code session even when a `CODEX_THREAD_ID` was inherited from the shell that started it.
+
 ## 0.1.0a6 – 2026-10-07
 
 ### Changed

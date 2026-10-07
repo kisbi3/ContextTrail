@@ -113,15 +113,18 @@ def test_a_preview_plans_without_a_model(laboratory):
 
 
 def test_current_session_comes_from_the_agent_running_the_command(monkeypatch):
-    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    for name in ("CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDECODE"):
+        monkeypatch.delenv(name, raising=False)
     with pytest.raises(FlowError, match="세션을 알 수 없습니다"):
         _session("current")
     monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
     assert _session("current") == "thread-1"
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "claude-1")
-    with pytest.raises(FlowError, match="모두 보입니다"):
+    with pytest.raises(FlowError, match="여러 도구의 세션이 보입니다"):
         _session("current")
+    # Claude Code started from a Codex shell inherits CODEX_THREAD_ID; its own marker decides.
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert _session("current") == "claude-1"
     assert _session("abc") == "abc" and _session(None) is None
 
 

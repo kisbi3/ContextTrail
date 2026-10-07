@@ -114,7 +114,9 @@ class Store:
             return {row["id"]: {**dict(row), "metadata": json.loads(row["metadata"])}
                     for row in db.execute("SELECT * FROM source_records")}
 
-    def ingest(self, records: list[SourceRecord]) -> tuple[set[str], set[str]]:
+    def ingest(self, records: list[SourceRecord], *, partial: bool = False) -> tuple[set[str], set[str]]:
+        """Store the records a scan read. A full scan marks every stored record it did not see as unavailable;
+        a `partial` one (`contexttrail note`, which reads only its own session) leaves the others alone."""
         previous = self.sources()
         identity_fields = ("provider", "session_id", "native_record_id", "parent_record_id", "recorded_at")
         hashes = {record.source_id: record.content_hash for record in records}  # a digest per call; take it once
@@ -127,7 +129,7 @@ class Store:
         changed = {r.source_id for r in records if r.source_id in previous
                    and previous[r.source_id]["content_hash"] != hashes[r.source_id] and r.source_id not in migrations}
         present = {r.source_id for r in records}
-        missing = {i for i, row in previous.items() if row["available"] and i not in present}
+        missing = set() if partial else {i for i, row in previous.items() if row["available"] and i not in present}
         # Only rows that differ are written, so a re-scan of an unchanged history is a short transaction.
         stored = {i: (row["content_hash"], row["metadata"], row["available"]) for i, row in previous.items()}
         written, sessions = [], {}

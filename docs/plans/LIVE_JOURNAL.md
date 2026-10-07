@@ -1,6 +1,6 @@
 # 에이전트가 직접 적는 그래프 (live journal)
 
-상태: 계획 (2026-10-07). 소유자 제안: "별도로 분석을 돌리지 말고, 작업한 AI가 ContextTrail을 써서 그래프를 만들게 하자."
+상태: A단계 구현 (2026-10-07), B~F 남음. 진행 기록은 §10. 소유자 제안: "별도로 분석을 돌리지 말고, 작업한 AI가 ContextTrail을 써서 그래프를 만들게 하자."
 
 ## 1. 왜
 
@@ -103,3 +103,20 @@ F. 평가(§6)와 측정. 그 뒤에 `--audit`.
 ## 9. 비용
 
 note 하나: 출력 200~400토큰, 스킬 본문이 문맥에 1~2k토큰. 세션당 note 5~15개. 분석기 단위 하나(입력 7만 토큰)와 비교하면 세션 전체를 적어도 그 1/10 아래다. 대가는 작업 세션의 문맥을 조금 쓰는 것과, 에이전트가 적는 데 드는 몇 초다.
+
+## 10. 진행 기록
+
+### 2026-10-07 — A단계: `contexttrail note`
+
+구현: `src/contexttrail/journal.py`, `cli.py`의 `note`, `Store.ingest(partial=True)`, `parse_opencode(session=…)`. 테스트 `tests/test_journal.py`(7개), 전체 489 통과.
+
+계획과 달라진 점:
+- **관계 플래그의 방향.** 관계는 앞선 사건에서 뒤 사건으로 가므로(`prompts/common.md`), `--verifies/--revises/--answers/--motivates X`는 모두 X → note다. `--motivates X`는 "X가 이 note의 동기"로 읽는다. 에이전트가 반대로 적은 `verifies`/`answers`는 기존 `orient_relation`이 바로잡는다.
+- **도구 결과 없는 `observed_*`는 낮춰 저장하지 않고 거부한다.** 조용히 `reported_*`로 바꾸면 에이전트가 모른 채 넘어간다. 오류 문구가 `reported_complete`/`reported_failure`를 알려 준다.
+- **인용 찾기.** 세션 기록 전체에서 가장 최근 레코드를 고른다. 한 레코드 안에 여러 번 나오면 마지막 것의 줄을 대고, 검사기가 그 줄 안에서 기존 규칙(정확한 부분 인용 → 줄 전체 + focus)으로 정한다. 8자 미만은 거부. note 호출 자체와 그 출력은 모든 인용을 담고 있으므로 출처에서 뺀다(`quotable`).
+- **사용자 요청은 코드가 만든다**(§8대로): 첫 note 때 `link_request_turns`가 그 세션의 사용자 메시지를 요청 사건으로 더하고, 관계가 없는 note는 그 턴에 대화 순서로 묶인다.
+- `analyze --session current`도 같은 세션 판별(`journal.current_session`)을 쓴다. Claude Code 안에서는 `CLAUDECODE`가 있으면 Claude 쪽을 고른다.
+
+실제 확인(읽기만, 발행 없음): 이 세션의 기록 3,790개를 0.94초에 읽었고, 테스트 결과 줄을 인용하면 그 `tool_result`의 해당 줄로 찾았다.
+
+아직 하지 않은 것: 저널 세션을 분석 계획에서 빼기(E)와 처리 표시. 그 전까지는 note를 쓴 세션을 분석기가 다시 읽으면 같은 일이 두 번 적힐 수 있다. 실제 그래프에 note를 쓰는 확인은 B단계(스킬과 함께)에서 한다.
