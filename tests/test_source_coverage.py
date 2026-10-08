@@ -375,3 +375,17 @@ def test_record_shapes_used_here_are_valid_json_lines(tmp_path):
     assert len(lines) == len(base_rows(folder)) + len(UNPARSED_FIXTURES)
     for line in lines:
         json.loads(line)
+
+
+def test_a_file_history_delta_is_dropped_like_a_file_history_snapshot(tmp_path):
+    """It was in the parser's skip list but in neither registry, so every scan warned 'unsupported record'."""
+    from contexttrail.sources.local import parse_claude
+    folder = tmp_path / "app"
+    folder.mkdir()
+    path = tmp_path / "session.jsonl"
+    write(path, [{"type": "user", "cwd": str(folder), "uuid": "u1",
+                  "message": {"role": "user", "content": "설치 스크립트를 고쳐줘."}},
+                 {"type": "file-history-delta", "cwd": str(folder), "uuid": "d1"}])
+    snapshot = parse_claude(path, Scope.resolve(folder))
+    assert not any("file-history-delta" in w for w in snapshot.limitations), snapshot.limitations
+    assert "file-history-delta" in IGNORED_NO_ANALYSIS_VALUE and "file-history-delta" not in KNOWN_UNPARSED

@@ -18,6 +18,9 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 ### Changed
 - `--session current` reads `OPENCODE_SESSION_ID` too, and inside Claude Code (`CLAUDECODE` set) takes the Claude Code session even when a `CODEX_THREAD_ID` was inherited from the shell that started it.
 
+### Fixed
+- **`file-history-delta` no longer warns as an unsupported Claude record type.** The parser skipped it but neither registry listed it, so every scan of a Claude log that had one reported an "unsupported record" gap. It is now in `IGNORED_NO_ANALYSIS_VALUE` next to `file-history-snapshot` (the edits themselves are the tool calls). The shape was not checked against a real log from this environment.
+
 ## 0.1.0a6 – 2026-10-07
 
 ### Changed
