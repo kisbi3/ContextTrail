@@ -26,7 +26,7 @@ from contexttrail.analysis import (AnalysisConfig, Engine, IdAliases, PreparedEx
                                   build_task, integrate_request_data, review_signal_items, no_change_to_verify_limitation,
                                   CHANGE_KINDS, NO_CHANGE_TO_VERIFY_REASON, REVIEW_SIGNALS)
 from contexttrail.analysis import link_request_turns as analysis_link_request_turns
-from contexttrail.analysis import calibration, call_cap, plan_summary
+from contexttrail.analysis import audit_plan_fields, calibration, call_cap, plan_summary
 from contexttrail.analysis import classify_steps as classify_records
 from contexttrail.demo import FixtureRunner, create_demo
 from contexttrail.evaluation import fixture_records, load_fixture
@@ -360,6 +360,7 @@ def plan_work_units(state: StudioState) -> StudioState:
         limit = engine.config.max_units
         past = calibration(engine.store.units(), engine.store.llm_calls(), pool)
         plan = {**plan_summary(units, pool, call_cap(engine.config, limit), limit=limit, past=past),
+                **(audit_plan_fields(units, pool) if engine.config.audit else {}),
                 "output_language": language}
         answer = session.consent(snapshot, plan) if units and session.consent else True
         if not answer:
@@ -765,17 +766,27 @@ def publish_result(state: StudioState) -> StudioState:
     completed = state["completed_units"] + 1
     all_done = (completed == state["total_planned_units"] and not state["missing_sources"]
                 and not state.get("records_waiting"))
-    graph["analysis_status"] = "complete" if all_done and not _incomplete_input(state["limitations"]) else "partial"
+    base = store.graph()
+    audit = engine.config.audit
+    if not audit:
+        # An audit says nothing about the records an ordinary analysis still has to read.
+        graph["analysis_status"] = "complete" if all_done and not _incomplete_input(state["limitations"]) else "partial"
     graph["input_limitations"] = state["limitations"]
     runners = _runners(state, engine)
     graph["analysis_mode"] = "synthetic_mock" if runners.is_mock else "cli_ai"
-    graph["coverage"] = {"selected_records": state["selected_records"],
-                         "completed_units_this_run": completed,
-                         "planned_units_this_run": state["total_planned_units"]}
-    base = store.graph()
+    if not audit:
+        graph["coverage"] = {"selected_records": state["selected_records"],
+                             "completed_units_this_run": completed,
+                             "planned_units_this_run": state["total_planned_units"]}
+    else:
+        # What the audit added is marked, as a note's events are (the dialog-order edges keep their origin).
+        known = {item["id"] for item in base["events"]} | {item["id"] for item in base["edges"]}
+        for item in [*graph["events"], *graph["edges"]]:
+            if item["id"] not in known and not item.get("origin"):
+                item["origin"] = "audit"
     # Events analysed ahead of older records still waiting (`--session`): said so wherever shown.
     ahead = set(base.get("out_of_order_events", []))
-    if engine.config.session:
+    if engine.config.session and not audit:
         ahead |= {event["id"] for event in graph["events"]} - {event["id"] for event in base["events"]}
     ahead &= {event["id"] for event in graph["events"]}
     if ahead:
@@ -819,13 +830,15 @@ def next_unit_route(state: StudioState) -> Literal["select_unit", "finish_run"]:
 
 def finish_run(state: StudioState) -> StudioState:
     try:
-        _, store, _ = _context(state)
+        engine, store, _ = _context(state)
         graph = store.graph()
         calls = store.llm_calls(state["run_id"])
         if state.get("mode") == "cli":
             session = _cli_session(state)
-            pending_count = sum(row["available"] and row["content_hash"] != row["processed_hash"]
-                                for row in store.sources().values())
+            # An audit is done when no audit unit is left; the records an ordinary analysis waits for are not its.
+            pending_count = (state.get("records_waiting", 0) if engine.config.audit else
+                             sum(row["available"] and row["content_hash"] != row["processed_hash"]
+                                 for row in store.sources().values()))
             status = ("partial" if pending_count or state["missing_sources"] or
                       _incomplete_input(state["limitations"]) else
                       "complete" if state["planned_units"] else

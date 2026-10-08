@@ -129,6 +129,13 @@ def parser() -> argparse.ArgumentParser:
                                               "current는 지금 대화 중인 Codex·Claude Code 세션",
                                               "Analyze only this session and its sub-agents first (marked out of order); "
                                               "current is the Codex/Claude Code session running now"))
+        if command in {"analyze", "scan"}:
+            sub.add_argument("--audit", action="store_true",
+                             help=tr("note가 있는 세션을 다시 읽어 note와 이전 분석이 적지 않은 것만 더함(기존 사건은 바꾸지 않음). "
+                                     "--session으로 한 세션만, --units로 단위 수 제한",
+                                     "Re-read the sessions that have notes and add only what the notes and earlier analyses "
+                                     "did not record (existing events are never changed). --session limits it to one session, "
+                                     "--units to a number of work units"))
         if command in {"analyze", "view", "serve"}:
             langsmith_options(sub)
     sub = commands.add_parser("eval", help=tr("별도 상태에서 고정 fixture 평가. 기본 mock, live는 --yes 필요",
@@ -348,6 +355,7 @@ def _options(args, store: Store) -> AnalysisConfig:
     values["max_units"] = getattr(args, "max_units", None)
     values["session"] = _session(getattr(args, "session", None))
     values["trigger"] = getattr(args, "trigger", None)
+    values["audit"] = bool(getattr(args, "audit", False))
     values["runner_name"], values["base_model"] = options.get("runner"), options.get("model")
     values["semantic_review"] = getattr(args, "semantic_review", True)
     values["langsmith_enabled"] = getattr(args, "langsmith_enabled", False)

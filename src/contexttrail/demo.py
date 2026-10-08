@@ -78,7 +78,15 @@ class FixtureRunner:
         data = task["data"]
         if task["stage"] == "extract":
             candidates = []
+            # An audit: the records a note already cites are not written again, as a model told to would do.
+            noted = set()
+            if data.get("journal_audit"):
+                ids, evidence = set(data["journal_audit"]["note_event_ids"]), data.get("existing_evidence", {})
+                noted = {evidence[i]["source_id"] for event in data["existing_events"] if event["id"] in ids
+                         for i in event["evidence_ids"] if i in evidence}
             for record in data["new_records"]:
+                if record["source_id"] in noted:
+                    continue
                 text = "\n".join(line["text"] for line in record["lines"])
                 matching = next((case for case in CASES + CASES_EN if case[0] == text), None)
                 if not matching:
@@ -111,10 +119,21 @@ class FixtureRunner:
         candidates = data["validated_candidates"]["event_candidates"]
         existing = data["existing_events"]
         evidence = data.get("existing_evidence", {})
+        # A candidate the extraction matched to exactly one existing event is that event's duplicate (the draft says so).
+        same = {match["candidate_id"]: match["existing_event_id"]
+                for match in data["validated_candidates"].get("existing_event_matches", [])}
         for candidate in candidates:
+            if candidate["id"] in same:
+                output["candidate_resolutions"].append({"candidate_id": candidate["id"], "candidate_kind": "event",
+                    "disposition": "duplicate", "target_ids": [same[candidate["id"]]],
+                    "reason": tr("합성 fixture의 고정 통합 규칙", "Fixed integration rule of the synthetic fixture"),
+                    "evidence": candidate["evidence"]})
+                continue
             sid = candidate["evidence"][0]["source_id"]
-            match = next((event for event in existing if any(evidence.get(i, {}).get("source_id") == sid
-                                                             for i in event["evidence_ids"])), None)
+            # An audit only adds: a candidate is never taken for an update of an event the notes wrote.
+            match = None if data.get("journal_audit") else next(
+                (event for event in existing if any(evidence.get(i, {}).get("source_id") == sid
+                                                    for i in event["evidence_ids"])), None)
             if match:
                 output["events_to_update"].append({"id": match["id"], "reason": tr("수정된 원문을 다시 반영합니다.", "Re-applying the edited source."),
                     "evidence": candidate["evidence"], "changes": {key: candidate[key] for key in EVENT_FIELDS}})
