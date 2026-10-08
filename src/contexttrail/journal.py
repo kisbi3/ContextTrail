@@ -29,7 +29,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from .analysis import _HEREDOC, _command_text, link_request_turns, step_hint
+from .analysis import (_GIT_CALL, _HEREDOC, _VCS_SUBCOMMANDS, _command_segments, _command_text, _vcs_mutates,
+                       link_request_turns, step_hint)
 from .git_context import Scope
 from .i18n import tr
 from .model import SourceRecord, Snapshot
@@ -488,11 +489,38 @@ def writes_files(command: str) -> bool:
     return bool(_FILE_COMMANDS.search(bare)) or any(target != "/dev/null" for target in _REDIRECT.findall(bare))
 
 
+_REMOTE_ADDRESS = re.compile(r"://|^[\w.-]+@[\w.-]+:")
+
+
+def _tracking_only(sub: str, rest: str) -> bool:
+    """True for `git fetch` that only refreshes remote-tracking refs: no refspec writing a local ref
+    (`origin main:main`) and no `--update-head-ok`. The working tree and the branches stay as they were,
+    so a turn that only looked at the remote has nothing to note. (The analyzer still sees it as `vcs`.)"""
+    if sub != "fetch":
+        return False
+    words = rest.split()
+    if {"-u", "--update-head-ok"} & set(words):
+        return False
+    return not any(":" in word and not word.startswith("-") and not _REMOTE_ADDRESS.search(word) for word in words)
+
+
+def _changes_git_state(command: str) -> bool:
+    """A Git call in the command line that changes the working tree, a branch or the remote."""
+    for segment in _command_segments(command):
+        call = _GIT_CALL.match(segment)
+        if (call and call["sub"] in _VCS_SUBCOMMANDS and _vcs_mutates(call["sub"], call["rest"])
+                and not _tracking_only(call["sub"], call["rest"])):
+            return True
+    return False
+
+
 def unnoted_work(records: list[SourceRecord], since: float) -> list[SourceRecord]:
     """Edits (also through the shell), commits, tests and Git changes recorded after `since`,
     the note calls themselves aside."""
     def work(record: SourceRecord) -> bool:
         hint = step_hint(record)[2]
+        if hint == "vcs":
+            return _changes_git_state(_command_text(record.content.partition("\n")[2], "; "))
         return hint in WORK_HINTS or (hint == "run" and writes_files(_command_text(record.content.partition("\n")[2])))
     return [record for record in quotable(records) if record.role == "tool_call"
             and _seconds(record.recorded_at) > since and work(record)]

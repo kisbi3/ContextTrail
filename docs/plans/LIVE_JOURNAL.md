@@ -162,3 +162,8 @@ note 하나: 출력 200~400토큰, 스킬 본문이 문맥에 1~2k토큰. 세션
 - 찾은 것 7: Claude가 Edit 대신 `printf … >> calc.py`로 고쳐 그 호출이 `run`으로 분류됐고, 알림이 나가지 않았다. 고침: 셸 명령이 파일을 쓰면(따옴표 밖의 `>`·`>>`, `/dev/null`과 `2>&1`은 빼고; `sed -i`·`tee`·`mv`·`cp`·`rm`·`touch`·`mkdir`·`git apply` 등) 남길 작업으로 센다(`writes_files`). 다시 돌리니 알림 → Claude가 플러그인 스킬 `contexttrail:note`를 불러 변경과 그 변경을 `verifies`로 검증한 결과를 적었다. 알림 문구는 두 스킬 이름을 모두 말한다.
 - 찾은 것 8: `install-hooks --claude`와 플러그인을 둘 다 깔면 같은 훅이 둘 돌아 알림이 두 번 가고, 대기열을 두 번 저장할 수 있다. 고침: 훅 본문을 프로젝트별 파일 잠금(`_hook_lock`) 안에서 돌려 둘째는 기다린 뒤 이미 알린 것을 본다. 둘 다 깐 상태로 실제로 돌려 알림은 한 번이었다.
 - 찾은 것 9: heredoc으로 쓴 코드 한 줄(`def neg(a):`)을 인용한 변경 note가 "applied status is only for … citing a patch or diff"로 거부됐다. Claude가 끝 메시지에서 그 코드를 되풀이해 그쪽이 더 최근이었기 때문이다. 고침: `applied`면 도구 호출·결과부터 찾는다(찾은 것 5와 같은 방식). 그 세션 기록에 다시 적어 보니 `applied`로 저장됐다.
+
+### 2026-10-08 — Linux 확인과 `git fetch` 오탐
+
+- **Linux.** cloud 환경(Linux, Python 3.13)에서 전체 테스트가 506 통과, 1 건너뜀(macOS 전용 `sandbox-exec`). Linux에서만 실패하는 것은 없었다.
+- 찾은 것 10: 상태 확인만 한 턴에도 알림이 갔다. `git fetch`가 분석기에서 `vcs`로 분류되고 `WORK_HINTS`가 `vcs`를 남길 작업으로 세기 때문이다. 고침은 note 쪽(`journal._changes_git_state`)에서만: `vcs` 호출 중 작업 트리·브랜치·원격을 바꾸는 Git 하위 명령이 하나도 없으면 센다. 뺀 것은 로컬 ref를 쓰는 refspec(`origin main:main`)과 `--update-head-ok`가 없는 `fetch`뿐이다. `git remote update`는 원래 `vcs`가 아니다. `analysis.command_kind`/`_vcs_mutates`는 그대로이므로 분석기의 `tool_steps` 입력은 바뀌지 않는다.
