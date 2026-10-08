@@ -10,7 +10,7 @@ from typing import Any
 
 from .i18n import language, tr
 from .schema import resolve_quote
-from .util import FlowError, dumps, private_dir
+from .util import FlowError, dumps, input_tokens, private_dir
 
 
 CALL_ID = re.compile(r"llm_[0-9a-f]{32}\Z")
@@ -142,9 +142,10 @@ def _call_card(call: dict, capture: dict | None, records: dict[str, dict]) -> st
     status = call.get("status", "unknown")
     header = f"{call.get('stage', '?')} #{call.get('attempt', '?')} · {status}"
     usage = details.get("usage") or {}
-    tokens = (tr(f"입력 {usage.get('input_tokens', '?'):,} · 출력 {usage.get('output_tokens', '?'):,} 토큰",
-                 f"{usage.get('input_tokens', '?'):,} input · {usage.get('output_tokens', '?'):,} output tokens")
-              if isinstance(usage.get("input_tokens"), int) and isinstance(usage.get("output_tokens"), int)
+    read = input_tokens(usage)
+    tokens = (tr(f"입력 {read:,} · 출력 {usage['output_tokens']:,} 토큰",
+                 f"{read:,} input · {usage['output_tokens']:,} output tokens")
+              if read is not None and isinstance(usage.get("output_tokens"), int)
               else tr("토큰 정보 없음", "no token figures"))
     error = details.get("error") or ""
     normalized = details.get("citation_normalizations", 0)

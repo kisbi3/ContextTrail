@@ -34,6 +34,21 @@ class CallLimitReached(FlowError):
     """The run's cap on model calls was reached; a planned stop, not a failure."""
 
 
+def input_tokens(usage: dict | None) -> int | None:
+    """All input tokens one model call read, or None when the call reported none.
+
+    Claude reports the cached part apart (`cache_creation_input_tokens`, `cache_read_input_tokens`), with
+    `input_tokens` only what was neither written to nor read from the cache, often 2; Codex's `input_tokens`
+    already holds its `cached_input_tokens`."""
+    def count(key: str) -> int | None:
+        value = (usage or {}).get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+    base = count("input_tokens")
+    if base is None:
+        return None
+    return base + (count("cache_creation_input_tokens") or 0) + (count("cache_read_input_tokens") or 0)
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

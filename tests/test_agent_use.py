@@ -78,6 +78,12 @@ def test_the_estimate_follows_this_projects_past_runs(laboratory):
     # A call without a reported count leaves its unit out rather than guessing.
     assert calibration(units, calls + [{"unit_id": "u0", "details": {}}], pool) is None
     assert plan_text(plan_summary([], pool, 30)) == "대기 작업 단위 없음 · 보낼 것이 없습니다"
+    # Claude counts the cached part apart and reports `input_tokens` as what was neither cached nor read
+    # from the cache (often 2); every part is input the model read.
+    claude = [{"unit_id": unit["id"], "details": {"usage": {
+        "input_tokens": 2, "cache_creation_input_tokens": tokens - 402, "cache_read_input_tokens": 400},
+        "duration_ms": 60_000}} for unit in units for _ in range(2)]
+    assert calibration(units, claude, pool)["token_ratio"] == pytest.approx(2.0, rel=0.01)
 
 
 def test_one_session_goes_ahead_with_its_sub_agents_and_its_events_say_so(laboratory):

@@ -27,7 +27,7 @@ from .schema import (DELTA_SCHEMA, EDIT_TOOL_NAMES, EXTRACT_SCHEMA, EvidenceVali
                      record_evidence, review_patch_audit, review_patch_schema, validate_shape)
 from .sources import collect_logs
 from .store import Store
-from .util import BrokenOutput, Cancelled, FlowError, InputBudgetExceeded, digest, dumps, ident, now
+from .util import BrokenOutput, Cancelled, FlowError, InputBudgetExceeded, digest, dumps, ident, input_tokens, now
 
 
 @dataclass
@@ -696,8 +696,8 @@ def calibration(units: list[dict], calls: list[dict], pool: dict[str, SourceReco
         if (unit["status"] != "integrated" or unit["id"].startswith(AUDIT_PREFIX) or not rows
                 or not all(i in pool for i in unit["sources"])):
             continue
-        tokens = [(row["details"].get("usage") or {}).get("input_tokens") for row in rows]
-        if not all(isinstance(t, (int, float)) and not isinstance(t, bool) for t in tokens):
+        tokens = [input_tokens(row["details"].get("usage")) for row in rows]
+        if any(t is None for t in tokens):
             continue
         estimate += _estimated_tokens(sum(unit_cost(pool[i]) for i in unit["sources"]))
         actual += sum(tokens)

@@ -21,6 +21,7 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 - `--session current` reads `OPENCODE_SESSION_ID` too, and inside Claude Code (`CLAUDECODE` set) takes the Claude Code session even when a `CODEX_THREAD_ID` was inherited from the shell that started it.
 
 ### Fixed
+- **The plan's token estimate counts Claude's cached input.** Calibrated from past runs, it summed only `input_tokens`, which the Claude CLI reports apart from the cached part (`cache_creation_input_tokens`, `cache_read_input_tokens`; often 2), so on a project analyzed with Claude it showed about a thousandth of the real input (on this repository: 114 tokens for 15 units, now about 4.5 million). The eval review and the LangSmith trace count the same way.
 - **`file-history-delta` no longer warns as an unsupported Claude record type.** The parser skipped it but neither registry listed it, so every scan of a Claude log that had one reported an "unsupported record" gap. It is now in `IGNORED_NO_ANALYSIS_VALUE` next to `file-history-snapshot` (the edits themselves are the tool calls). The shape was not checked against a real log from this environment.
 
 ## 0.1.0a6 – 2026-10-07

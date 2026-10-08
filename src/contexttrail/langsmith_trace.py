@@ -16,7 +16,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from .i18n import tr
-from .util import FlowError
+from .util import FlowError, input_tokens
 
 # Values that may leave the process in a metadata-only trace. Anything else is dropped:
 # free text (titles, summaries, quotes, prompts, errors from model output) never passes.
@@ -196,11 +196,10 @@ class LangSmithTracer:
                task: dict, schema: dict, output: dict | None, metadata: dict, details: dict,
                started_at: datetime, finished_at: datetime) -> None:
         usage = details.get("usage") if isinstance(details.get("usage"), dict) else {}
-        input_tokens, output_tokens = usage.get("input_tokens"), usage.get("output_tokens")
-        known_tokens = (isinstance(input_tokens, int) and not isinstance(input_tokens, bool) and
-                        isinstance(output_tokens, int) and not isinstance(output_tokens, bool))
-        usage_metadata = ({"input_tokens": input_tokens, "output_tokens": output_tokens,
-                           "total_tokens": input_tokens + output_tokens} if known_tokens else None)
+        read, output_tokens = input_tokens(usage), usage.get("output_tokens")
+        known_tokens = read is not None and isinstance(output_tokens, int) and not isinstance(output_tokens, bool)
+        usage_metadata = ({"input_tokens": read, "output_tokens": output_tokens,
+                           "total_tokens": read + output_tokens} if known_tokens else None)
         inputs = ({"task": task, "schema": schema} if self.include_content else
                   {"input_digest": metadata.get("input_digest"), "input_chars": metadata.get("input_chars"),
                    "request_summary": metadata_only(task.get("data") or {})})
