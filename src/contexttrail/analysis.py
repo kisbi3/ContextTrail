@@ -27,7 +27,7 @@ from .schema import (DELTA_SCHEMA, EDIT_TOOL_NAMES, EXTRACT_SCHEMA, EvidenceVali
                      record_evidence, review_patch_audit, review_patch_schema, validate_shape)
 from .sources import collect_logs
 from .store import Store
-from .util import Cancelled, FlowError, digest, dumps, ident, now
+from .util import BrokenOutput, Cancelled, FlowError, InputBudgetExceeded, digest, dumps, ident, now
 
 
 @dataclass
@@ -73,6 +73,9 @@ class AnalysisConfig:
     # Re-read the sessions an agent wrote notes in and add only what the notes and earlier analyses did not
     # record (docs/plans/LIVE_JOURNAL.md §11). Per run, never saved; the semantic review is not run.
     audit: bool = False
+    # Send again a unit that was skipped after a failure of its own even though its records and the
+    # analysis settings are what they were. Per run, never saved.
+    retry_failed: bool = False
     # Titles and summaries are written in this language; None: detected once per project and saved.
     output_language: str | None = None
     langsmith_enabled: bool = False
@@ -228,6 +231,9 @@ def _incomplete_input(issues: list[str]) -> bool:
         r"re-analyzing an already integrated work unit: .+",
         r"corrected the processed ledger of \d+ already integrated records \(not resent\)\.",
         r"audit: .+",
+        # A unit skipped for a failure of its own (validation after repair, input over budget) and held back.
+        r"skipped unit \w+: .+",
+        r"skipped units held back: \d+\. .+",
     )
     return any(not any(re.fullmatch(pattern, message) for pattern in informational) for message in issues)
 
@@ -634,6 +640,9 @@ def _required_edits(steps: list[dict]) -> dict[str, tuple[str, str | None]]:
 # A unit takes an extraction and an integration call, and at worst read rounds, a repair each
 # and a review: a run bounded by units gets this many calls per unit unless a cap was given.
 CALLS_PER_UNIT = 6
+# A unit is not started with fewer calls left than it needs at the least: an extraction and an integration
+# (one when its extraction is saved and still valid).
+MIN_UNIT_CALLS = 2
 PLAN_CHOICES = (5, 15, 30)
 # Conservative estimate for the prompt, schema, context, and optional read, repair, or review
 # calls a work unit may need. Actual usage depends on the input and the configured model.
@@ -752,6 +761,19 @@ def plan_choices_text(plan: dict) -> str:
     return " · ".join(tr(f"{c['units']:,}개 ≈{_tokens(c['input_tokens'])} 토큰 {c['minutes']}분",
                          f"{c['units']:,} units ≈{_tokens(c['input_tokens'])} tokens {c['minutes']} min")
                      for c in plan["choices"])
+
+
+SKIP_REASONS = {"validation": "the answer still failed validation after the repair round",
+                "input_budget": "the request is over the input budget and nothing is left to trim"}
+
+
+def skipped_unit_message(unit_id: str, kind: str) -> str:
+    return f"skipped unit {unit_id}: {SKIP_REASONS[kind]}; it is held back until its records or the analysis settings change."
+
+
+def held_back_message(count: int) -> str:
+    return (f"skipped units held back: {count}. They are sent again when their records or the analysis settings "
+            f"change, or with --retry-failed.")
 
 
 def audit_plan_fields(units: list[dict], pool: dict[str, SourceRecord]) -> dict:
@@ -1604,6 +1626,7 @@ class Harness:
                                 {"stage": stage, "data": data},
                                 lambda: build_task(stage, data, self.config.output_language))
         read_count, repair_count, attempt = 0, 0, 0
+        broken_retried = False  # an unreadable answer is asked for once more, as a call of its own
         prompt_hash = digest([task["system"], task["instructions"], task["wire_contract"]])
         schema_hash = digest(schema)
         aliases = IdAliases()
@@ -1620,8 +1643,8 @@ class Harness:
                     task = {**task, "data": copy.deepcopy(task["data"])}
                 step = trim_step(task["data"], trimmed)
                 if step is None:
-                    raise FlowError(tr("분석 입력 예산을 초과했습니다. 이 단위는 처리 완료로 저장하지 않습니다.",
-                                       "The analysis input budget was exceeded; this unit is not saved as completed."))
+                    raise InputBudgetExceeded(tr("분석 입력 예산을 초과했습니다. 이 단위는 처리 완료로 저장하지 않습니다.",
+                                                 "The analysis input budget was exceeded; this unit is not saved as completed."))
                 trimmed.append(step)
                 sent = aliases.wire(task)
             attempt += 1
@@ -1696,6 +1719,9 @@ class Harness:
             except BaseException as exc:
                 finish_call("failed", {"error_type": type(exc).__name__,
                     "duration_ms": round((time.monotonic() - call_started) * 1000)})
+                if isinstance(exc, BrokenOutput) and not broken_retried:
+                    broken_retried = True
+                    continue
                 raise
             output_digest = digest(output)
             # Claim validation canonicalizes quotes in place (a few words become whole source
@@ -1956,6 +1982,8 @@ class Engine:
         self.tracer: LangSmithTracer | None = None
         self.detailed_trace = False
         self.review_capture: Callable[[dict], None] | None = None
+        # Records of units the last plan held back after a failure of their own (`_hold_back_failed`).
+        self.held_back: set[str] = set()
 
     def scan(self) -> Snapshot:
         proven = [Path(p) for p in self.store.get_meta("known_worktree_roots", [])]
@@ -2009,8 +2037,8 @@ class Engine:
                             cancel: threading.Event, issues: list[str]) -> PreparedExtraction:
         assigned = [pool[i] for i in unit["sources"]]
         if any(len(r.content) > self.config.record_chars for r in assigned):
-            raise FlowError(tr("이전 보류 단위가 현재 입력 한도를 초과합니다.",
-                               "A previously deferred unit exceeds the current input limit."))
+            raise InputBudgetExceeded(tr("이전 보류 단위가 현재 입력 한도를 초과합니다.",
+                                         "A previously deferred unit exceeds the current input limit."))
         h = Harness(None, pool, graph, self.store, self.config, cancel, run_id, unit["id"],
                     budget=runners.budget, tracer=self.tracer,
                     detailed_trace=self.detailed_trace, review_capture=self.review_capture)
@@ -2414,7 +2442,49 @@ class Engine:
         if family is not None:
             # Out of the oldest-first order on request: this session's units only, the rest wait.
             plans = [unit for unit in plans if in_scope(unit)]
-        return plans, pending, missing
+        return self._hold_back_failed(plans, pool, issues, repair=repair), pending, missing
+
+    def failure_input(self, unit: dict, pool: dict[str, SourceRecord]) -> dict:
+        """What makes a unit the same input again: the routing signature and the hash of each of its records."""
+        return {"signature": self._routing_signature(),
+                "hashes": {i: pool[i].content_hash for i in unit["sources"] if i in pool}}
+
+    def _hold_back_failed(self, plans: list[dict], pool: dict[str, SourceRecord], issues: list[str], *,
+                          repair: bool) -> list[dict]:
+        """Leave out the units that were skipped for a failure of their own and are still the same input.
+
+        Same means the same `_routing_signature` and the same record hashes as when it failed; a record that
+        changed or a setting that changed sends it again (as does `retry_failed`). A skipped unit whose
+        session has notes by now is superseded instead: the agent writes that session. Nothing is written
+        unless `repair` (a preview only reads).
+        """
+        failures = self.store.unit_failures()
+        self.held_back = set()
+        if not failures:
+            return plans
+        noted = self.store.journaled_sessions()
+        kept, held = [], []
+        for unit in plans:
+            entry = failures.get(unit["id"])
+            if not entry:
+                kept.append(unit)
+                continue
+            records = [pool[i] for i in unit["sources"] if i in pool]
+            if not unit["id"].startswith(AUDIT_PREFIX) and records and all(
+                    r.session_id in noted or (r.lineage or {}).get("parent_session_id") in noted for r in records):
+                if repair:
+                    self.store.save_unit(unit["id"], unit["sources"], unit["dependencies"], "superseded")
+                    self.store.clear_unit_failure(unit["id"])
+                continue
+            if not self.config.retry_failed and entry.get("signature") == self._routing_signature() and (
+                    entry.get("hashes") == self.failure_input(unit, pool)["hashes"]):
+                held.append(unit)
+                continue
+            kept.append(unit)
+        self.held_back = {i for unit in held for i in unit["sources"]}
+        if held:
+            issues.append(held_back_message(len(held)))
+        return kept
 
     def _plan_audit_units(self, snapshot: Snapshot, issues: list[str], *,
                           repair: bool = False) -> tuple[list[dict], set[str], list[str]]:
@@ -2469,7 +2539,7 @@ class Engine:
                           "sources": [r.source_id for r in chunk], "dependencies": {}, "status": "parsed", "result": None})
         order = {r.source_id: n for n, r in enumerate(snapshot.records)}
         plans.sort(key=lambda unit: min(order[i] for i in unit["sources"]))
-        return plans, waiting, []
+        return self._hold_back_failed(plans, pool, issues, repair=repair), waiting, []
 
     def analyze(self, runner_factory: Callable[[], Any], *, cancel: threading.Event | None = None,
                 update: Callable[[str], None] | None = None,

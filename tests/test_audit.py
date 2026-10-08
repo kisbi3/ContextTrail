@@ -374,7 +374,10 @@ def test_an_edit_the_notes_missed_must_still_be_cited_and_a_noted_one_need_not_b
     # An audit whose extraction leaves the missed edit out does not pass.
     empty = FixtureRunner()
     assert engine_for(scope, store, homes).analyze(lambda: empty)["status"] == "failed"
-    result = engine_for(scope, store, homes).analyze(FindsTheMissedEdit)
+    # The unit failed on this input, so it is held back until asked for (or the input changes).
+    held = FixtureRunner()
+    assert engine_for(scope, store, homes).analyze(lambda: held)["status"] == "noop" and held.calls == 0
+    result = engine_for(scope, store, homes, retry_failed=True).analyze(FindsTheMissedEdit)
     assert result["status"] == "complete", result
     added = [e for e in store.graph()["events"] if e.get("origin") == "audit"]
     assert [e["title"] for e in added] == ["Add mul()"]

@@ -5,7 +5,7 @@ import threading
 from typing import Any, Callable
 
 from .i18n import tr
-from .util import FlowError
+from .util import CallLimitReached, FlowError
 
 ROUTING_VERSION = "tiered-v2-handoff"
 
@@ -29,9 +29,13 @@ class CallBudget:
     def reserve(self) -> None:
         with self._lock:
             if self.started >= self.maximum:
-                raise FlowError(tr(f"LLM 호출 상한({self.maximum})에 도달했습니다. 저장된 추출은 다음 명시적 실행에서 재사용합니다.",
+                raise CallLimitReached(tr(f"LLM 호출 상한({self.maximum})에 도달했습니다. 저장된 추출은 다음 명시적 실행에서 재사용합니다.",
                                    f"The LLM call cap ({self.maximum}) was reached. Saved extractions are reused by the next explicit run."))
             self.started += 1
+
+    def remaining(self) -> int:
+        with self._lock:
+            return max(0, self.maximum - self.started)
 
 
 class RunnerPool:
