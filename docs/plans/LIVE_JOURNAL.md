@@ -1,6 +1,6 @@
 # 에이전트가 직접 적는 그래프 (live journal)
 
-상태: A~E 구현, 세 도구 모두 실제 확인 (2026-10-07). 남은 것: F(평가), `--audit`, Codex 재확인(크레딧 소진으로 마지막 수정 뒤 미확인). 진행 기록은 §10. 소유자 제안: "별도로 분석을 돌리지 말고, 작업한 AI가 ContextTrail을 써서 그래프를 만들게 하자."
+상태: A~E 구현, 세 도구 모두 실제 확인 (2026-10-07). `--audit`는 설계(§11)와 Mock 구현까지(2026-10-08), 실제 모델 실행은 로컬 확인 필요. 남은 것: F(평가), Codex 재확인(크레딧 소진으로 마지막 수정 뒤 미확인). 진행 기록은 §10. 소유자 제안: "별도로 분석을 돌리지 말고, 작업한 AI가 ContextTrail을 써서 그래프를 만들게 하자."
 
 ## 1. 왜
 
@@ -162,3 +162,65 @@ note 하나: 출력 200~400토큰, 스킬 본문이 문맥에 1~2k토큰. 세션
 - 찾은 것 7: Claude가 Edit 대신 `printf … >> calc.py`로 고쳐 그 호출이 `run`으로 분류됐고, 알림이 나가지 않았다. 고침: 셸 명령이 파일을 쓰면(따옴표 밖의 `>`·`>>`, `/dev/null`과 `2>&1`은 빼고; `sed -i`·`tee`·`mv`·`cp`·`rm`·`touch`·`mkdir`·`git apply` 등) 남길 작업으로 센다(`writes_files`). 다시 돌리니 알림 → Claude가 플러그인 스킬 `contexttrail:note`를 불러 변경과 그 변경을 `verifies`로 검증한 결과를 적었다. 알림 문구는 두 스킬 이름을 모두 말한다.
 - 찾은 것 8: `install-hooks --claude`와 플러그인을 둘 다 깔면 같은 훅이 둘 돌아 알림이 두 번 가고, 대기열을 두 번 저장할 수 있다. 고침: 훅 본문을 프로젝트별 파일 잠금(`_hook_lock`) 안에서 돌려 둘째는 기다린 뒤 이미 알린 것을 본다. 둘 다 깐 상태로 실제로 돌려 알림은 한 번이었다.
 - 찾은 것 9: heredoc으로 쓴 코드 한 줄(`def neg(a):`)을 인용한 변경 note가 "applied status is only for … citing a patch or diff"로 거부됐다. Claude가 끝 메시지에서 그 코드를 되풀이해 그쪽이 더 최근이었기 때문이다. 고침: `applied`면 도구 호출·결과부터 찾는다(찾은 것 5와 같은 방식). 그 세션 기록에 다시 적어 보니 `applied`로 저장됐다.
+
+### 2026-10-08 — Linux 확인과 `git fetch` 오탐
+
+- **Linux.** cloud 환경(Linux, Python 3.13)에서 전체 테스트가 506 통과, 1 건너뜀(macOS 전용 `sandbox-exec`). Linux에서만 실패하는 것은 없었다.
+- 찾은 것 10: 상태 확인만 한 턴에도 알림이 갔다. `git fetch`가 분석기에서 `vcs`로 분류되고 `WORK_HINTS`가 `vcs`를 남길 작업으로 세기 때문이다. 고침은 note 쪽(`journal._changes_git_state`)에서만: `vcs` 호출 중 작업 트리·브랜치·원격을 바꾸는 Git 하위 명령이 하나도 없으면 센다. 뺀 것은 로컬 ref를 쓰는 refspec(`origin main:main`)과 `--update-head-ok`가 없는 `fetch`뿐이다. `git remote update`는 원래 `vcs`가 아니다. `analysis.command_kind`/`_vcs_mutates`는 그대로이므로 분석기의 `tool_steps` 입력은 바뀌지 않는다.
+
+## 11. `analyze --audit` 설계 (2026-10-08)
+
+note가 있는 세션은 분석에서 빠진다(§5). 에이전트가 적지 않은 것은 그래프에 없다. `--audit`는 그 세션을 다시 읽어 **note와 이전 분석이 적지 않은 것만 더하는** 실행이다. 기존 사건은 읽기만 하고 바꾸지 않는다. 사용자가 명시적으로 부를 때만 돈다(자동 갱신 훅은 감사를 하지 않는다).
+
+### 11.1 무엇을 읽나
+
+- **감사 대상 세션**: `Store.journaled_sessions()`의 세션과 그 하위 에이전트 세션(`acknowledge_journaled`와 같은 규칙). `--session ID|current`면 그 세션과 하위 세션만. note가 없는 세션을 지정하면 거부한다("note가 없는 세션: `analyze --session`으로 일반 분석").
+- **감사 대상 기록**: 그 세션들의 기록 중 **통합이 끝난 단위(`integrated`)의 sources에 없는 것**. 곧 (a) note를 쓰기 전에 분석기가 이미 처리한 기록은 다시 읽지 않고, (b) 감사를 마친 기록도 다시 읽지 않는다. 처리 표시(`processed_hash`)는 쓰지 않는다: note가 세션 전체를 처리됨으로 표시하므로 구분이 안 된다. 감사 뒤에 기록 내용이 바뀌어도(마지막 메시지가 길어지는 경우 등) 다시 감사하지 않는다. Git 기록은 세션이 아니므로 감사 대상이 아니다(일반 분석이 그대로 다룬다).
+- **단위**: 일반 분석과 같은 `_session_unit_chunks`(세션·worktree 단위, 압축·3시간 공백에서 끊기, 비용·페이로드 상한, 안전한 경계). 단위 id는 `audit_` 접두사(`ident("audit_", …)`)라서 같은 기록을 묶은 일반 단위와 겹치지 않는다. 같은 `work_units` 표에 저장하고 상태 흐름(`parsed → extracted/draft → integrated`)과 추출 재사용(라우팅 서명·문맥 다이제스트)도 같다. **일반 계획은 `audit_` 단위를 건드리지 않는다**(재계획·supersede·교정 모두 제외). 보정(`calibration`)에서도 뺀다: 감사 단위는 입력이 달라 일반 단위의 비용 추정을 흐린다.
+
+### 11.2 모델에게 note를 어떻게 보여 주나
+
+- 추출 입력은 일반과 같고(`new_records`, `tool_steps`, `user_requests`, `existing_*`), 감사일 때만 `journal_audit`가 더해진다: `{"note_event_ids": [...]}` — 이 단위의 기록을 인용한 note 사건의 id. 사건 내용은 따로 복사하지 않고 `existing_events`(제목·요약·상태·`origin: "note"`)와 `existing_evidence`(인용한 줄)가 보여 준다. 그 사건들이 문맥 선택의 12개 상한에 밀리지 않도록 note id를 단서(`clues`)로 주고 `Harness.keep_events`로 상한을 넘겨 모두 싣는다(상한은 최대 40개, 넘으면 오래된 것부터 줄이고 `input_limitations`에 쓴다).
+- 지시문은 `prompts/audit.md`(영어)를 **감사일 때만** `instructions` 뒤에 붙인다(`build_task`가 `data`에 `journal_audit`가 있을 때만). 일반 요청의 바이트는 바뀌지 않으므로 끝난 단위가 다시 나가지 않는다. 내용: 이 기록은 작업한 에이전트가 이미 note로 적었다 / note가 다루지 않은 결정·변경·결과만 후보로 / note를 되풀이하는 후보는 만들지 말고 확신이 없으면 `existing_event_matches` / 기존 사건을 바꾸지 않고 새 사건과 관계만 더한다(관계는 note 사건에도 이을 수 있다) / 사용자 메시지는 이미 요청 사건이 있다.
+- 통합 요청에도 같은 `journal_audit`와 지시문이 붙는다(통합자가 note를 바꾸지 않도록).
+- **의미 검토(semantic review)는 감사에서 끈다.** 감사는 값싼 그물이어야 하고, 검토 신호가 남는 사건은 `semantic_review_audit.status = skipped_disabled`로 기록된다.
+
+### 11.3 중복을 어떻게 막나
+
+1. **구성상**: 이미 분석된 기록과 감사를 마친 기록은 읽지 않는다(11.1).
+2. **필수 인용**: 일반 분석은 "파일을 확실히 고친 호출은 어느 사건이 인용해야 한다"(`required_citations`)를 요구한다. 감사에서는 **이미 그래프의 어느 사건이 인용한 호출은 요구하지 않는다.** 그렇지 않으면 note가 적은 편집마다 중복 후보를 강요한다. 거꾸로, 어느 사건도 인용하지 않은 편집은 여전히 인용해야 한다 — 에이전트가 빠뜨린 편집을 찾는 것이 감사의 핵심이다.
+3. **모델**: 11.2의 지시문과 `existing_event_matches`. 추출이 후보 하나를 정확히 한 기존 사건에 대응시키면 `draft_delta`가 그 후보를 중복으로 처리하고 관계를 기존 사건으로 옮긴다(기존 경로).
+4. **코드(추출 뒤)**: 후보의 종류가 note 사건과 같고 인용한 줄(source_id, 시작·끝 줄)이 그 note 사건의 것과 정확히 같으면 코드가 `existing_event_matches`를 더해 중복으로 처리한다(감사 건수에 센다). 줄이 겹치기만 하는 경우는 건드리지 않는다: 한 줄에 서로 다른 두 결과가 있을 수 있다.
+5. **코드(통합 검사)**: 감사의 delta는 **더하기만** 한다. `events_to_update`, `edges_to_invalidate`, `open_items_to_resolve`가 비어 있지 않거나 `open_items_to_upsert`가 기존 항목의 id를 쓰면 거부하고 한 번의 수리로 되돌린다(영어 한 줄). note 사건과 간선에는 `origin: "note"`가 있고, 감사가 더한 사건·간선에는 `origin: "audit"`를 붙인다(대화 순서 간선의 `dialog_turn`은 그대로). `origin`은 화면에 영향을 주지 않는다.
+6. 사용자 메시지: 감사에서는 `add_user_requests`를 하지 않는다. note의 첫 발행이 `link_request_turns`로 이미 모든 사용자 메시지의 요청 사건을 만들었으므로, 코드가 같은 메시지의 요청 후보를 또 더하면 중복이 된다. 요청 사건이 없는 메시지(note 뒤에 생긴 것)는 발행 직전 `link_request_turns`가 일반 경로로 더한다.
+
+### 11.4 기록과 어떻게 맞물리나
+
+- `journal_sessions`와 `acknowledge_journaled`는 그대로다: 감사는 이 목록을 읽기만 한다. 감사가 발행할 때 단위의 기록을 처리됨으로 표시하지만 이미 처리됨이다.
+- 발행은 일반과 같은 `publish`(단위를 `integrated`로)다. 그래프의 `analysis_status`/`coverage`는 **바꾸지 않는다**: 감사는 일반 분석의 남은 기록을 말해 주지 않는다. `--session`의 "순서 밖 사건" 표시도 하지 않는다(감사는 일반 분석이 다루지 않는 기록이다).
+- 실행 결과의 상태는 감사 단위가 남았는지로 정한다(`records_waiting`): 다 했으면 `complete`, 아니면 `partial`(종료 코드 2). 일반 분석의 남은 기록 때문에 `partial`이 되지 않는다.
+- 같은 세션에 note를 더 쓴 뒤 다시 감사하면, 새로 생긴 기록(감사 단위에 없는 것)만 새 단위로 읽는다. 이미 감사한 기록의 단위는 그대로다.
+
+### 11.5 비용 안내와 동의
+
+- 같은 `consent(snapshot, plan)` 경로다. `plan`에 `audit: true`와 대상 세션 수가 들어가고, `plan_text`는 맨 앞에 "감사 (note가 있는 N개 세션을 다시 읽음)"을 붙인다. 숫자(단위·호출 상한·입력 토큰·시간)는 일반 분석과 같은 추정이다(문자 수 ×3, 과거 단위 3개 이상이면 보정). 감사 단위는 note가 대부분을 덮으면 추출 호출 한 번으로 끝나므로(후보가 없으면 통합 호출이 없다) 실제는 이 추정보다 작다. 이 문서의 숫자는 로컬 측정 전까지 추정이다.
+- `--units N`, `--max-calls`, `--yes`, 저장된 `consent:<runner>`는 그대로다. 호출 상한은 단위당 6(최대치)이다. `scan --audit`는 모델 없이 감사 계획을 보여 준다(`runner_calls: 0`).
+- 감사는 `--trigger hook`과 함께 쓸 수 없다(자동 갱신은 감사를 하지 않는다).
+
+### 11.6 하지 않는 것, 로컬에서 확인할 것
+
+- 하지 않음: 감사가 note의 상태나 내용을 고치는 일, note가 없는 세션의 감사, 감사 결과의 신뢰도 점수.
+- 로컬 확인 필요: 실제 모델(Codex/Claude)로 한 세션을 감사해 (a) note를 되풀이하는 후보가 얼마나 나오는지(중복률), (b) 빠뜨린 편집을 실제로 찾는지, (c) 단위당 호출·토큰이 추정보다 작은지. F단계 평가와 한 번에 한다.
+
+### 2026-10-08 — `analyze --audit` 구현 (Mock만)
+
+§11대로 구현했다. 변경: `analysis.py`(`AnalysisConfig.audit`, `_plan_audit_units`, `audit_notes`/`uncited_edits`/`match_noted_duplicates`/`audit_guard`, `Harness.keep_events`, `build_task`의 감사 지시문, `plan_text`), `studio_graph.py`(계획의 `audit` 필드, 발행 때 `origin: "audit"`, 상태·`analysis_status`·`coverage` 처리), `cli.py`(`analyze`/`scan`의 `--audit`), `prompts/audit.md`, `demo.py`(FixtureRunner가 감사를 안다: note가 인용한 기록은 후보로 쓰지 않고, 추출이 중복으로 대응시킨 후보는 더하지 않고, 갱신하지 않는다). 테스트 `tests/test_audit.py` 17개, 전체 524 통과·1 건너뜀(macOS 전용).
+
+설계와 달라진 점·알아둘 것:
+- **통합 요청은 기본(`draft`)에서 패치 호출이다.** 그래프가 비어 있지 않으면 초안 발행이 없으므로, 후보가 있는 감사 단위는 추출 1 + 통합 1회다. 후보가 없으면(note가 모두 덮은 경우) 추출 1회로 끝난다. 테스트 conftest가 `integrate_output="full"`을 기본으로 바꾸므로 감사 테스트는 기본값(`draft`)을 명시하고, `full`에서도 가드가 같게 동작하는지 따로 본다.
+- **중복 막기 4번(코드)** 는 종류가 같고 인용한 줄이 정확히 같을 때만 건드린다. 줄이 겹치기만 하면 건드리지 않는다.
+- 감사 결과 상태는 `records_waiting`(남은 감사 기록)으로 정한다. 일반 분석의 남은 기록은 세지 않는다.
+- `calibration`은 `audit_` 단위를 뺀다. 감사 비용 보정은 감사 실행이 쌓인 뒤에 따로 만든다(지금은 일반 단위 기준 추정).
+- `status`/`find`의 "감사 안 한 note 세션 N개"는 같은 날 더했다(`freshness.unaudited`, 저장소만 읽는다). 아직 안 한 것: TUI에서 감사를 시작하는 키.
+
+**로컬 확인 필요(이 환경에는 실제 기록·CLI가 없다).** §11.6의 (a) 중복률, (b) 빠뜨린 편집 발견, (c) 호출·토큰이 추정보다 작은지. 같은 세션으로 F단계 평가(분석기 결과와 note 비교)를 하면서 `contexttrail scan --audit`로 계획을 보고 `contexttrail analyze --audit --session <id> --units 3`로 한 번 돌려 본다.

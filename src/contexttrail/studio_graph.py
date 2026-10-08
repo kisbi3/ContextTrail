@@ -13,7 +13,7 @@ import threading
 import uuid
 
 from contexttrail.schema import draft_delta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, TypedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +26,8 @@ from contexttrail.analysis import (AnalysisConfig, Engine, IdAliases, PreparedEx
                                   build_task, integrate_request_data, review_signal_items, no_change_to_verify_limitation,
                                   CHANGE_KINDS, NO_CHANGE_TO_VERIFY_REASON, REVIEW_SIGNALS)
 from contexttrail.analysis import link_request_turns as analysis_link_request_turns
-from contexttrail.analysis import calibration, call_cap, plan_summary
+from contexttrail.analysis import (MIN_UNIT_CALLS, audit_plan_fields, calibration, call_cap, plan_summary,
+                                  skipped_unit_message)
 from contexttrail.analysis import classify_steps as classify_records
 from contexttrail.demo import FixtureRunner, create_demo
 from contexttrail.evaluation import fixture_records, load_fixture
@@ -35,10 +36,11 @@ from contexttrail.i18n import tr
 from contexttrail.model import Snapshot
 from contexttrail.render import graph_summary
 from contexttrail.runners.cli_runner import CLIRunner
-from contexttrail.routing import RunnerPool
+from contexttrail.routing import RunnerPool, TaskValidationError
 from contexttrail.schema import EXTRACT_SCHEMA, EvidenceValidator, delta_schema
 from contexttrail.store import Store
-from contexttrail.util import Cancelled, FlowError, ident, private_dir
+from contexttrail.util import (CallLimitReached, Cancelled, FlowError, InputBudgetExceeded, ident, now,
+                               private_dir)
 
 
 ROOT = Path(tempfile.gettempdir()) / "contexttrail-studio-fixtures"
@@ -92,6 +94,9 @@ class _CliInvocation:
     reused: int = 0
     issues: list[str] | None = None
     batch_outcomes: dict[int, dict | BaseException] | None = None
+    # Units skipped in this run for a failure of their own (`_skip_unit`).
+    skipped: list[str] = field(default_factory=list)
+    skip_error: str | None = None
     # One worker extracts the next unit while this one is integrated (extract_workers == 1).
     prefetch: tuple[int, Any] | None = None
     prefetch_cancel: threading.Event | None = None
@@ -155,6 +160,8 @@ class StudioState(TypedDict, total=False):
     records_waiting: int
     missing_sources: int
     unit_index: int
+    unit_skipped: dict | None
+    records_held: int
     unit_id: str
     source_ids: list[str]
     provider: str
@@ -360,11 +367,19 @@ def plan_work_units(state: StudioState) -> StudioState:
         limit = engine.config.max_units
         past = calibration(engine.store.units(), engine.store.llm_calls(), pool)
         plan = {**plan_summary(units, pool, call_cap(engine.config, limit), limit=limit, past=past),
+                **(audit_plan_fields(units, pool) if engine.config.audit else {}),
                 "output_language": language}
         answer = session.consent(snapshot, plan) if units and session.consent else True
         if not answer:
             raise Cancelled(tr("외부 전송에 동의하지 않아 분석하지 않았습니다.",
                             "Not analyzed: consent to send data externally was not given."))
+        if units:
+            # Before the first unit: what can be checked without a model (the CLI, its sandbox and its login;
+            # `preflight` calls none). A runner that cannot work stops the run here, not unit by unit. No runner
+            # is built before the consent above, nor after a cancel.
+            if session.cancel.is_set():
+                raise Cancelled(tr("분석 중단", "Analysis stopped"))
+            session.runners.get("extract")
         # A consent may answer with a unit count (the screen's choice); True keeps the plan as it is.
         if answer is not True:
             limit = int(answer)
@@ -379,12 +394,26 @@ def plan_work_units(state: StudioState) -> StudioState:
     return {"planned_units": [{**unit, "provider": pool[unit["sources"][0]].provider}
                               for unit in units], "total_planned_units": total,
             "records_waiting": len(pending - chosen),
+            "records_held": len(pending & engine.held_back),
             "missing_sources": len(missing), "pending_records": len(pending),
             "limitations": issues}
 
 
+def _can_start(state: StudioState) -> bool:
+    """Whether the calls left can carry the next unit: not started otherwise, so no unit is cut off half way by
+    the cap. A saved extraction that is still valid needs the integration only."""
+    if state.get("mode") != "cli" or state["unit_index"] >= len(state["planned_units"]):
+        return True
+    session = _cli_session(state)
+    planned = state["planned_units"][state["unit_index"]]
+    unit = session.engine.store.unit(planned["id"]) or planned  # a batch may have extracted it since the plan
+    reusable = (unit["status"] in {"extracted", "draft"} and
+                (unit.get("result") or {}).get("routing_signature") == session.engine._routing_signature())
+    return session.runners.budget.remaining() >= (1 if reusable else MIN_UNIT_CALLS)
+
+
 def initial_route(state: StudioState) -> Literal["select_unit", "finish_run"]:
-    return "select_unit" if state["planned_units"] else "finish_run"
+    return "select_unit" if state["planned_units"] and _can_start(state) else "finish_run"
 
 
 def select_unit(state: StudioState) -> StudioState:
@@ -765,17 +794,30 @@ def publish_result(state: StudioState) -> StudioState:
     completed = state["completed_units"] + 1
     all_done = (completed == state["total_planned_units"] and not state["missing_sources"]
                 and not state.get("records_waiting"))
-    graph["analysis_status"] = "complete" if all_done and not _incomplete_input(state["limitations"]) else "partial"
+    base = store.graph()
+    audit = engine.config.audit
+    if not audit:
+        # An audit says nothing about the records an ordinary analysis still has to read.
+        graph["analysis_status"] = "complete" if all_done and not _incomplete_input(state["limitations"]) else "partial"
     graph["input_limitations"] = state["limitations"]
     runners = _runners(state, engine)
     graph["analysis_mode"] = "synthetic_mock" if runners.is_mock else "cli_ai"
-    graph["coverage"] = {"selected_records": state["selected_records"],
-                         "completed_units_this_run": completed,
-                         "planned_units_this_run": state["total_planned_units"]}
-    base = store.graph()
+    if not audit:
+        graph["coverage"] = {"selected_records": state["selected_records"],
+                             "completed_units_this_run": completed,
+                             "planned_units_this_run": state["total_planned_units"]}
+    else:
+        # What the audit added is marked, as a note's events are (the dialog-order edges keep their origin).
+        known = {item["id"] for item in base["events"]} | {item["id"] for item in base["edges"]}
+        for item in [*graph["events"], *graph["edges"]]:
+            if item["id"] not in known and not item.get("origin"):
+                item["origin"] = "audit"
+    # A unit skipped earlier and sent again after others were integrated joins the graph out of order.
+    previous = store.unit_failures().get(state["unit_id"])
+    late = bool(previous) and store.integrated_units() > previous.get("integrated_units", 0)
     # Events analysed ahead of older records still waiting (`--session`): said so wherever shown.
     ahead = set(base.get("out_of_order_events", []))
-    if engine.config.session:
+    if late or (engine.config.session and not audit):
         ahead |= {event["id"] for event in graph["events"]} - {event["id"] for event in base["events"]}
     ahead &= {event["id"] for event in graph["events"]}
     if ahead:
@@ -793,6 +835,7 @@ def publish_result(state: StudioState) -> StudioState:
     published = store.publish(graph, [state["unit_id"]],
                               {i: pool[i].content_hash for i in state["source_ids"]},
                               state["evidence"], expected_version=base["version"])
+    store.clear_unit_failure(state["unit_id"])
     if state.get("mode") == "cli":
         session = _cli_session(state)
         session.completed = completed
@@ -810,30 +853,53 @@ def publish_result(state: StudioState) -> StudioState:
 
 
 def advance_unit(state: StudioState) -> StudioState:
-    return {"unit_index": state["unit_index"] + 1}
+    return {"unit_index": state["unit_index"] + 1, "unit_skipped": None}
 
 
 def next_unit_route(state: StudioState) -> Literal["select_unit", "finish_run"]:
-    return "select_unit" if state["unit_index"] < len(state["planned_units"]) else "finish_run"
+    return "select_unit" if state["unit_index"] < len(state["planned_units"]) and _can_start(state) else "finish_run"
 
 
 def finish_run(state: StudioState) -> StudioState:
     try:
-        _, store, _ = _context(state)
+        engine, store, _ = _context(state)
         graph = store.graph()
         calls = store.llm_calls(state["run_id"])
         if state.get("mode") == "cli":
             session = _cli_session(state)
-            pending_count = sum(row["available"] and row["content_hash"] != row["processed_hash"]
-                                for row in store.sources().values())
-            status = ("partial" if pending_count or state["missing_sources"] or
-                      _incomplete_input(state["limitations"]) else
-                      "complete" if state["planned_units"] else
-                      "noop" if graph["version"] else "no_data")
-            details = {"run_id": state["run_id"], "runner_calls": session.runners.budget.started,
+            # An audit is done when no audit unit is left; the records an ordinary analysis waits for are not its.
+            # Records of units held back after a failure of their own are not waiting for this run either: a run
+            # with nothing else to do ends as a no-op, and `status` counts those units apart.
+            held = engine.held_back
+            pending_count = (max(0, state.get("records_waiting", 0) - state.get("records_held", 0))
+                             if engine.config.audit else
+                             sum(row["available"] and row["content_hash"] != row["processed_hash"] and i not in held
+                                 for i, row in store.sources().items()))
+            budget = session.runners.budget
+            # The loop ends early only when the calls left cannot carry the next unit (`_can_start`).
+            stopped_for_calls = state.get("unit_index", 0) < len(state.get("planned_units", []))
+            if stopped_for_calls:
+                status = "partial" if session.completed else "call_limit"
+            elif session.skipped and not session.completed:
+                status = "failed"  # every unit tried failed for its own reasons: the run achieved nothing
+            else:
+                status = ("partial" if pending_count or session.skipped or state["missing_sources"] or
+                          _incomplete_input(state["limitations"]) else
+                          "complete" if state["planned_units"] else
+                          "noop" if graph["version"] else "no_data")
+            details = {"run_id": state["run_id"], "runner_calls": budget.started,
                        "completed_units": session.completed, "reused_extractions": session.reused,
+                       "skipped_units": len(session.skipped),
                        "snapshot_id": state["snapshot_id"], "limitations": state["limitations"],
                        "pending_records": pending_count, "graph_version": graph["version"]}
+            if status == "failed":
+                details["error"] = session.skip_error
+            if stopped_for_calls:
+                details["stop_reason"] = tr(
+                    f"남은 AI 호출 {budget.remaining()}개(상한 {budget.maximum})로는 다음 작업 단위를 끝낼 수 없어 시작하지 않았습니다. "
+                    f"저장된 결과는 그대로이고, 다시 실행하거나 --max-calls를 늘리면 이어집니다.",
+                    f"Not enough AI calls left ({budget.remaining()} of {budget.maximum}) to finish the next work unit, so it was "
+                    f"not started. Saved results are kept; run again or raise --max-calls to continue.")
             store.finish_run(state["run_id"], status, details)
             return {"result": {"status": status, "graph": graph, **details}}
         status = (graph["analysis_status"] if state["planned_units"] else
@@ -864,7 +930,7 @@ def _record_failure(store: Store, run_id: str, exc: BaseException, *,
                     completed: int, reused: int = 0, runner_calls: int = 0,
                     limitations: list[str] | None = None) -> tuple[str, dict]:
     status = "cancelled" if isinstance(exc, (Cancelled, KeyboardInterrupt)) else (
-        "partial" if completed else "failed")
+        "partial" if completed else "call_limit" if isinstance(exc, CallLimitReached) else "failed")
     message = str(exc) if isinstance(exc, FlowError) else tr(f"내부 오류: {type(exc).__name__}",
                                                              f"Internal error: {type(exc).__name__}")
     details = {"run_id": run_id, "runner_calls": runner_calls,
@@ -895,6 +961,55 @@ def _guard(node):
     return run
 
 
+def _skip_unit(state: StudioState, exc: BaseException) -> StudioState:
+    """Record a unit as skipped for a failure of its own and let the rest of its nodes pass.
+
+    Only failures that are the unit's (an answer that failed validation after the repair round, a request over
+    the input budget with nothing left to trim) come here. The failure is saved with the routing signature and the
+    record hashes, so the unit is held back while it is the same input (`Engine._hold_back_failed`).
+    """
+    engine, store, snapshot = _context(state)
+    session = _cli_session(state)
+    pool = {r.source_id: r for r in snapshot.records}
+    unit = state["planned_units"][state["unit_index"]]
+    kind = "input_budget" if isinstance(exc, InputBudgetExceeded) else "validation"
+    store.record_unit_failure(unit["id"], {**engine.failure_input(unit, pool), "kind": kind,
+                                           "message": str(exc)[:300], "sources": list(unit["sources"]),
+                                           "audit": engine.config.audit, "at": now(),
+                                           "integrated_units": store.integrated_units()})
+    session.skipped.append(unit["id"])
+    session.skip_error = str(exc)
+    limitations = [*state["limitations"], skipped_unit_message(unit["id"], kind)]
+    session.issues = limitations
+    with _prepared_lock:
+        _prepared_extractions.pop((state["run_id"], state["unit_index"]), None)
+        _prepared_integrations.pop((state["run_id"], state["unit_index"]), None)
+    session.update(tr(f"작업 단위 건너뜀 · {state['unit_index'] + 1}/{len(state['planned_units'])} · "
+                      + ("입력 예산 초과" if kind == "input_budget" else "검증 실패"),
+                      f"Work unit skipped · {state['unit_index'] + 1}/{len(state['planned_units'])} · "
+                      + ("input over budget" if kind == "input_budget" else "validation failed")))
+    return {"unit_skipped": {"unit_id": unit["id"], "kind": kind}, "limitations": limitations}
+
+
+def _skippable(node):
+    """A unit-level node that, in a CLI run, turns a failure of the unit's own into a skipped unit; the other
+    nodes of that unit then pass. Anything else (the runner, the call cap, an unknown error) still stops the run."""
+    def run(state: StudioState) -> StudioState:
+        if state.get("unit_skipped"):
+            return {}
+        try:
+            return node(state)
+        except (TaskValidationError, InputBudgetExceeded) as exc:
+            if state.get("mode") != "cli":
+                raise
+            return _skip_unit(state, exc)
+    return run
+
+
+_UNIT_NODES = {"prepare_extract_input", "extract_model_and_validate", "validate_candidates",
+               "prepare_integrate_input", "integrate_model_and_validate", "route_semantic_review",
+               "semantic_review_model_validate", "link_request_turns", "summarize_graph_changes", "publish_result"}
+
 workflow = StateGraph(StudioState)
 for name, node in (("prepare_run", prepare_run), ("scan_sources", scan_sources),
                    ("classify_steps", classify_steps), ("plan_work_units", plan_work_units), ("select_unit", select_unit),
@@ -909,7 +1024,7 @@ for name, node in (("prepare_run", prepare_run), ("scan_sources", scan_sources),
                    ("summarize_graph_changes", summarize_graph_changes),
                    ("publish_result", publish_result), ("advance_unit", advance_unit),
                    ("finish_run", finish_run)):
-    workflow.add_node(name, _guard(node))
+    workflow.add_node(name, _guard(_skippable(node) if name in _UNIT_NODES else node))
 workflow.add_edge(START, "prepare_run")
 workflow.add_edge("prepare_run", "scan_sources")
 workflow.add_edge("scan_sources", "classify_steps")

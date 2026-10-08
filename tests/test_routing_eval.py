@@ -173,16 +173,18 @@ def test_pending_cache_is_invalidated_on_extract_model_change(laboratory):
 
 def test_global_call_cap_across_parallel_workers(laboratory):
     _, store, engine, records, make = laboratory
-    engine.config.extract_workers, engine.config.max_calls = 2, 1
-    records.extend([make('none', key='a', session='one'), make('none', key='b', session='two')])
+    engine.config.extract_workers, engine.config.max_calls = 2, 3
+    records.extend([make(CASES[0][0], key='a', session='one'), make(CASES[4][0], key='b', session='two')])
     first = engine.analyze(FixtureRunner)
-    assert first['runner_calls'] == 1
-    assert len(store.llm_calls()) == 1
-    assert first['status'] in {'partial', 'failed'}
+    # Two extractions and the first integration use the cap; the second unit's saved extraction is not
+    # integrated with no call left, and the unit is not started.
+    assert first['runner_calls'] == 3
+    assert len(store.llm_calls()) == 3
+    assert first['status'] == 'partial' and first['completed_units'] == 1
     engine.config.max_calls = 10
     second = engine.analyze(FixtureRunner)
-    assert second['status'] == 'complete'
-    assert second['runner_calls'] <= 1
+    # The first unit's events changed the second one's context, so its extraction is made again.
+    assert second['status'] == 'complete' and second['completed_units'] == 1
 
 
 def test_parallel_cancel_preserves_no_publication(laboratory):

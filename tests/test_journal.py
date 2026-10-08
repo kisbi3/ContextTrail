@@ -274,6 +274,23 @@ def test_a_file_changed_through_the_shell_counts_as_work_to_note():
         assert not journal.unnoted_work([call(command)], 0.0), command
 
 
+def test_a_fetch_that_only_updates_remote_tracking_is_not_work_to_note():
+    from contexttrail.model import SourceRecord
+    def call(command):
+        return SourceRecord("c", "claude", SESSION, "tool_call", "Tool: Bash\n" + json.dumps({"command": command}), {},
+                            recorded_at="2026-10-07T10:00:00Z")
+    # A status check: the working tree and the branches stay as they were.
+    for command in ["git fetch", "git fetch origin", "git fetch --all --prune", "git -C app fetch origin main",
+                    "git fetch --tags https://example.com/r.git", "git fetch origin && git status -sb",
+                    "git fetch origin; git log --oneline -3", "git remote update"]:
+        assert not journal.unnoted_work([call(command)], 0.0), command
+    # A fetch that writes a local branch, or any change next to it, still is.
+    for command in ["git fetch origin main:main", "git fetch --update-head-ok origin main",
+                    "git fetch origin && git merge origin/main", "git fetch && git pull", "git pull", "git push origin main",
+                    "git checkout -b topic", "git add -A"]:
+        assert journal.unnoted_work([call(command)], 0.0), command
+
+
 def test_the_reminder_is_never_taken_for_a_persons_request(project):
     from dataclasses import replace
     from contexttrail.model import SourceRecord, is_user_prompt

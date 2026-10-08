@@ -38,7 +38,7 @@ def test_rejected_model_response_is_visible_and_old_eval_can_be_reviewed(tmp_pat
     report = run_eval("demo", output, "mock", AnalysisConfig())
     assert report["first_run"]["status"] == "failed"
     captures = [json.loads(path.read_text()) for path in (output / "call-review").glob("*.json")]
-    assert len(captures) == 2
+    assert len(captures) == 6  # the demo's three units are each tried and repaired once; none stops the others
     assert all(item["response"]["event_candidates"][0]["evidence"][0]["quote"] == "<invented-quote>"
                for item in captures)
     page = (output / "review.html").read_text()

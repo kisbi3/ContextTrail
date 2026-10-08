@@ -18,6 +18,7 @@ _SQL_VARIABLES = 900
 
 
 JOURNAL_KEY = "journal_sessions"
+FAILURES_KEY = "unit_failures"
 
 
 class Store:
@@ -208,6 +209,35 @@ class Store:
         with self.connection() as db, db:
             db.executemany("UPDATE source_records SET processed_hash=? WHERE id=? AND content_hash=?",
                            [(content_hash, source_id, content_hash) for source_id, content_hash in processed.items()])
+
+    def unit_failures(self) -> dict[str, dict]:
+        """Units skipped for a failure of their own, by unit ID: what failed, and the input it failed on."""
+        return self.get_meta(FAILURES_KEY, {}) or {}
+
+    def record_unit_failure(self, unit_id: str, entry: dict) -> None:
+        failures = self.unit_failures()
+        failures[unit_id] = {**entry, "attempts": failures.get(unit_id, {}).get("attempts", 0) + 1}
+        self.set_meta(FAILURES_KEY, failures)
+
+    def clear_unit_failure(self, unit_id: str) -> dict | None:
+        """Forget a unit's failure (it was integrated, or superseded); returns the entry it had."""
+        failures = self.unit_failures()
+        entry = failures.pop(unit_id, None)
+        if entry is not None:
+            self.set_meta(FAILURES_KEY, failures)
+        return entry
+
+    def integrated_units(self) -> int:
+        """How many work units are integrated (it only grows, so it orders a failure against later units)."""
+        with self.connection() as db:
+            return db.execute("SELECT COUNT(*) FROM work_units WHERE status='integrated'").fetchone()[0]
+
+    def unit(self, unit_id: str) -> dict | None:
+        with self.connection() as db:
+            row = db.execute("SELECT * FROM work_units WHERE id=?", (unit_id,)).fetchone()
+        return None if row is None else {**dict(row), "sources": json.loads(row["sources"]),
+                                         "dependencies": json.loads(row["dependencies"]),
+                                         "result": json.loads(row["result"]) if row["result"] is not None else None}
 
     def units(self) -> list[dict]:
         with self.connection() as db:

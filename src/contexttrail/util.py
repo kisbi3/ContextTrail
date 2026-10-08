@@ -22,6 +22,18 @@ class Cancelled(FlowError):
     pass
 
 
+class BrokenOutput(FlowError):
+    """The model's final answer was not readable JSON; a call may be tried once more."""
+
+
+class InputBudgetExceeded(FlowError):
+    """One unit's request is over the input budget and nothing is left to trim; the unit's fault, not the run's."""
+
+
+class CallLimitReached(FlowError):
+    """The run's cap on model calls was reached; a planned stop, not a failure."""
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

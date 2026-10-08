@@ -129,6 +129,18 @@ def parser() -> argparse.ArgumentParser:
                                               "current는 지금 대화 중인 Codex·Claude Code 세션",
                                               "Analyze only this session and its sub-agents first (marked out of order); "
                                               "current is the Codex/Claude Code session running now"))
+        if command == "analyze":
+            sub.add_argument("--retry-failed", action="store_true",
+                             help=tr("실패해서 건너뛴 작업 단위를 기록과 설정이 그대로여도 다시 보냄(이번 실행만)",
+                                     "Send again the work units skipped after a failure of their own, even though their records and "
+                                     "settings are unchanged (this run only)"))
+        if command in {"analyze", "scan"}:
+            sub.add_argument("--audit", action="store_true",
+                             help=tr("note가 있는 세션을 다시 읽어 note와 이전 분석이 적지 않은 것만 더함(기존 사건은 바꾸지 않음). "
+                                     "--session으로 한 세션만, --units로 단위 수 제한",
+                                     "Re-read the sessions that have notes and add only what the notes and earlier analyses "
+                                     "did not record (existing events are never changed). --session limits it to one session, "
+                                     "--units to a number of work units"))
         if command in {"analyze", "view", "serve"}:
             langsmith_options(sub)
     sub = commands.add_parser("eval", help=tr("별도 상태에서 고정 fixture 평가. 기본 mock, live는 --yes 필요",
@@ -348,6 +360,8 @@ def _options(args, store: Store) -> AnalysisConfig:
     values["max_units"] = getattr(args, "max_units", None)
     values["session"] = _session(getattr(args, "session", None))
     values["trigger"] = getattr(args, "trigger", None)
+    values["audit"] = bool(getattr(args, "audit", False))
+    values["retry_failed"] = bool(getattr(args, "retry_failed", False))
     values["runner_name"], values["base_model"] = options.get("runner"), options.get("model")
     values["semantic_review"] = getattr(args, "semantic_review", True)
     values["langsmith_enabled"] = getattr(args, "langsmith_enabled", False)
@@ -384,6 +398,11 @@ def _brief(result: dict) -> None:
     if result.get("pending_records"):
         print(tr(f"아직 분석하지 않은 기록 {result['pending_records']:,}개 (다음 실행에서 이어서)",
                  f"{result['pending_records']:,} records not yet analyzed (the next run continues)"))
+    if result.get("skipped_units"):
+        print(tr(f"건너뛴 작업 단위 {result['skipped_units']}개 (같은 입력으로는 다시 보내지 않음; 강제: --retry-failed)",
+                 f"{result['skipped_units']} work units skipped (not sent again while the input is unchanged; force: --retry-failed)"))
+    if result.get("stop_reason"):
+        print(tr("중단:", "Stopped:"), safe_text(result["stop_reason"]))
     if result.get("error"):
         print(tr("오류:", "Error:"), safe_text(result["error"]))
     if limitations:
@@ -852,7 +871,10 @@ def main(argv: list[str] | None = None) -> int:
                 _brief(result)
             else:
                 plain(store, ascii_only=args.ascii)
-            return {"failed": 1, "partial": 2, "cancelled": 130}.get(result["status"], 0)
+            if result.get("stop_reason") and not args.brief:
+                print(safe_text(result["stop_reason"]), file=sys.stderr)
+            # call_limit is a planned stop (like partial), not a failure: the automatic hook does not count it.
+            return {"failed": 1, "partial": 2, "call_limit": 2, "cancelled": 130}.get(result["status"], 0)
         plain(store, ascii_only=args.ascii)
         return 0
     except KeyboardInterrupt:

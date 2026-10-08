@@ -74,13 +74,20 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
     graph = store.graph()
     index = store.get_meta(INDEX_KEY)
     sources = store.sources()
-    pending = sum(1 for row in sources.values() if row["available"] and row["processed_hash"] != row["content_hash"])
-    units = sum(1 for unit in store.units() if unit["status"] not in UNIT_DONE)
+    stored_units = store.units()
+    failed = held_failures(store, sources, stored_units)
+    held = {i for entry in failed.values() for i in entry["sources"]}
+    # Records of a unit skipped for a failure of its own are counted with that unit, not as waiting.
+    pending = sum(1 for i, row in sources.items()
+                  if row["available"] and row["processed_hash"] != row["content_hash"] and i not in held)
+    units = sum(1 for unit in stored_units if unit["status"] not in UNIT_DONE and unit["id"] not in failed)
     result: dict[str, Any] = {
         "graph": {"version": graph["version"], "analysis_status": graph.get("analysis_status"),
                   "analyzed_at": graph.get("analyzed_at")},
         "scanned_at": index.get("scanned_at") if index else None,
         "pending": {"records": pending, "units": units},
+        "failed_units": len(failed),
+        "unaudited": unaudited(store, sources, stored_units),
         "since_scan": None, "took_ms": 0}
     if not index:
         result["took_ms"] = int((time.perf_counter() - started) * 1000)
@@ -189,6 +196,51 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
     return result
 
 
+def held_failures(store: Store, sources: dict[str, dict], units: list[dict]) -> dict[str, dict]:
+    """The units skipped for a failure of their own that are still the input they failed on and still not done.
+
+    From the store alone. The routing signature is not compared here: a changed setting sends the unit again
+    at the next run, and until then it is still counted as skipped.
+    """
+    failures = store.unit_failures()
+    if not failures:
+        return {}
+    status = {unit["id"]: unit["status"] for unit in units}
+    covered = {i for unit in units if unit["status"] == "integrated" for i in unit["sources"]}
+    held = {}
+    for unit_id, entry in failures.items():
+        ids = entry.get("sources") or []
+        if status.get(unit_id) in UNIT_DONE or not ids:
+            continue
+        rows = [sources.get(i) for i in ids]
+        if not all(row and row["available"] and row["content_hash"] == (entry.get("hashes") or {}).get(i)
+                   for i, row in zip(ids, rows)):
+            continue
+        waiting = (not all(i in covered for i in ids) if entry.get("audit") else
+                   any(row["processed_hash"] != row["content_hash"] for row in rows))
+        if waiting:
+            held[unit_id] = entry
+    return held
+
+
+def unaudited(store: Store, sources: dict[str, dict], units: list[dict]) -> dict[str, int]:
+    """What `analyze --audit` would read, from the store alone: the stored records of sessions with notes
+    (and their sub-agents) that no integrated unit covers. A record too large to send stays in the count."""
+    journaled = store.journaled_sessions()
+    if not journaled:
+        return {"sessions": 0, "records": 0}
+    covered = {i for unit in units if unit["status"] == "integrated" for i in unit["sources"]}
+    records, sessions = 0, set()
+    for source_id, row in sources.items():
+        meta = row["metadata"]
+        if not row["available"] or meta.get("provider") == "git" or source_id in covered:
+            continue
+        if meta.get("session_id") in journaled or (meta.get("lineage") or {}).get("parent_session_id") in journaled:
+            records += 1
+            sessions.add((meta.get("provider"), meta.get("session_id")))
+    return {"sessions": len(sessions), "records": records}
+
+
 def check_from_store(scope: Scope, store: Store, *, budget_bytes: int | None = FIND_BUDGET_BYTES) -> dict[str, Any] | None:
     """The check with the project's saved source directories; None when the state cannot be read."""
     try:
@@ -246,6 +298,12 @@ def summary(result: dict[str, Any] | None) -> str:
         when = ago(since.get("newest_change_at"))
         parts.append(tr(f"scan 이후 바뀐 기록 파일 {changed}개 (파싱 안 함" + (f", 최근 {when}" if when else "") + ")",
                         f"{changed} transcript files changed since the scan (not parsed" + (f", newest {when}" if when else "") + ")"))
+    skipped = result.get("failed_units", 0)
+    if skipped:
+        parts.append(tr(f"실패로 건너뛴 작업 단위 {skipped}개", f"{skipped} work units skipped after a failure"))
+    audit = (result.get("unaudited") or {}).get("sessions", 0)
+    if audit:
+        parts.append(tr(f"감사 안 한 note 세션 {audit}개", f"{audit} noted sessions not audited"))
     return " + ".join(parts) if parts else tr("최신", "up to date")
 
 
@@ -285,6 +343,18 @@ def status_lines(result: dict[str, Any], folder: Path) -> list[str]:
                         f"To update: contexttrail analyze {folder} --units N  (from an agent: /contexttrail-update N)"))
     else:
         lines.append(tr("그래프가 기록을 따라잡고 있습니다.", "The graph is up to date with the transcripts."))
+    skipped = result.get("failed_units", 0)
+    if skipped:
+        lines.append(tr(f"실패해서 건너뛴 작업 단위 {skipped}개: 기록이나 설정이 바뀌기 전에는 다시 보내지 않습니다. "
+                        f"다시 보내려면: contexttrail analyze {folder} --retry-failed",
+                        f"{skipped} work units skipped after a failure of their own: not sent again until their records or "
+                        f"settings change. To send them again: contexttrail analyze {folder} --retry-failed"))
+    audit = result.get("unaudited") or {}
+    if audit.get("sessions"):
+        lines.append(tr(f"note가 있는 세션 {audit['sessions']}개(기록 {audit['records']}개)는 아직 감사하지 않았습니다. "
+                        f"note가 빠뜨린 것을 찾으려면: contexttrail analyze {folder} --audit --units N (미리 보기: scan --audit)",
+                        f"{audit['sessions']} sessions with notes ({audit['records']} records) have not been audited. "
+                        f"To find what the notes missed: contexttrail analyze {folder} --audit --units N (preview: scan --audit)"))
     return lines
 
 

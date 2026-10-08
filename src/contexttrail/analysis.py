@@ -27,7 +27,7 @@ from .schema import (DELTA_SCHEMA, EDIT_TOOL_NAMES, EXTRACT_SCHEMA, EvidenceVali
                      record_evidence, review_patch_audit, review_patch_schema, validate_shape)
 from .sources import collect_logs
 from .store import Store
-from .util import Cancelled, FlowError, digest, dumps, ident, now
+from .util import BrokenOutput, Cancelled, FlowError, InputBudgetExceeded, digest, dumps, ident, now
 
 
 @dataclass
@@ -70,6 +70,12 @@ class AnalysisConfig:
     session: str | None = None
     # Who started this run: None for a person, "hook" for the opt-in automatic analysis. Per run, never saved.
     trigger: str | None = None
+    # Re-read the sessions an agent wrote notes in and add only what the notes and earlier analyses did not
+    # record (docs/plans/LIVE_JOURNAL.md §11). Per run, never saved; the semantic review is not run.
+    audit: bool = False
+    # Send again a unit that was skipped after a failure of its own even though its records and the
+    # analysis settings are what they were. Per run, never saved.
+    retry_failed: bool = False
     # Titles and summaries are written in this language; None: detected once per project and saved.
     output_language: str | None = None
     langsmith_enabled: bool = False
@@ -114,6 +120,8 @@ class AnalysisConfig:
         if self.integrate_output not in {"full", "patch", "draft"}:
             raise FlowError(tr("integrate_output은 full, patch 또는 draft이어야 합니다.",
                                "integrate_output must be full, patch or draft."))
+        if self.audit and self.trigger == "hook":
+            raise FlowError(tr("자동 갱신은 감사(--audit)를 하지 않습니다.", "Automatic updates never run an audit (--audit)."))
         if self.record_chars > self.unit_chars or self.unit_chars >= self.task_chars:
             raise FlowError(tr("record_chars ≤ unit_chars < task_chars 조건이 필요합니다.",
                                "record_chars ≤ unit_chars < task_chars is required."))
@@ -162,7 +170,9 @@ EVIDENCE_POLICY_REUSE = (
 
 def build_task(stage: str, data: dict, language: str | None = None) -> dict:
     """One source of truth for the Runner request and the local input preview."""
-    return {"system": prompt("common"), "stage": stage, "instructions": prompt(stage), "data": data,
+    # An audit adds its own rules after the stage's; an ordinary request is the same bytes as before.
+    instructions = prompt(stage) + ("\n\n" + prompt("audit") if data.get("journal_audit") else "")
+    return {"system": prompt("common"), "stage": stage, "instructions": instructions, "data": data,
             # Titles and summaries follow the project's language, whatever the records use (common.md).
             "output_language": language or DEFAULT_LANGUAGE,
             "wire_contract": "Use IDs in the short form shown in the input (S12, E3). "
@@ -220,6 +230,10 @@ def _incomplete_input(issues: list[str]) -> bool:
         r"Merge commit [0-9a-f]+ is read as its diff against the first parent only\.",
         r"re-analyzing an already integrated work unit: .+",
         r"corrected the processed ledger of \d+ already integrated records \(not resent\)\.",
+        r"audit: .+",
+        # A unit skipped for a failure of its own (validation after repair, input over budget) and held back.
+        r"skipped unit \w+: .+",
+        r"skipped units held back: \d+\. .+",
     )
     return any(not any(re.fullmatch(pattern, message) for pattern in informational) for message in issues)
 
@@ -228,6 +242,9 @@ CONTEXT_POLICY_VERSION = "relevance_v2"
 # `lean`: earlier work reaches the model as graph (events, edges, quotes) and a few records, not as
 # whole records. Cut finely, a piece's neighbours are already in the graph.
 LEAN_CITED_LINES, LEAN_PREVIOUS_RECORDS, LEAN_CONTEXT_EVENTS = 3, 2, 12
+# An audit unit (`analyze --audit`) is stored under this prefix, so the ordinary plan leaves it alone, and
+# shows the model up to AUDIT_NOTES note events of the unit's records in full, past the context event limit.
+AUDIT_PREFIX, AUDIT_NOTES = "audit_", 40
 # Lean mode's budget for context-only text and its cap on nearby records of the other source type.
 LEAN_CONTEXT_CHARS, LEAN_CROSS_RECORDS = 24_000, 3
 LEAN_INDEX_RECORDS, LEAN_INDEX_EVENTS, LEAN_INDEX_FILES = 100, 60, 50  # the event index is by relevance; it must not grow with the graph
@@ -623,6 +640,9 @@ def _required_edits(steps: list[dict]) -> dict[str, tuple[str, str | None]]:
 # A unit takes an extraction and an integration call, and at worst read rounds, a repair each
 # and a review: a run bounded by units gets this many calls per unit unless a cap was given.
 CALLS_PER_UNIT = 6
+# A unit is not started with fewer calls left than it needs at the least: an extraction and an integration
+# (one when its extraction is saved and still valid).
+MIN_UNIT_CALLS = 2
 PLAN_CHOICES = (5, 15, 30)
 # Conservative estimate for the prompt, schema, context, and optional read, repair, or review
 # calls a work unit may need. Actual usage depends on the input and the configured model.
@@ -673,7 +693,8 @@ def calibration(units: list[dict], calls: list[dict], pool: dict[str, SourceReco
     estimate = actual = duration = counted = 0
     for unit in units:
         rows = by_unit.get(unit["id"])
-        if unit["status"] != "integrated" or not rows or not all(i in pool for i in unit["sources"]):
+        if (unit["status"] != "integrated" or unit["id"].startswith(AUDIT_PREFIX) or not rows
+                or not all(i in pool for i in unit["sources"])):
             continue
         tokens = [(row["details"].get("usage") or {}).get("input_tokens") for row in rows]
         if not all(isinstance(t, (int, float)) and not isinstance(t, bool) for t in tokens):
@@ -726,7 +747,10 @@ def plan_text(plan: dict) -> str:
     language = (tr(f" · 출력 언어 {plan['output_language']}", f" · output language {plan['output_language']}")
                 if plan.get("output_language") else "")
     tokens, minutes = _tokens(plan['input_tokens_this_run']), plan.get('minutes_this_run', 0)
-    return tr(f"대기 {plan['units']:,}개 단위 · 이번 실행 {plan['units_this_run']:,}개 "
+    audit = (tr(f"감사: note가 있는 {plan.get('sessions', 0)}개 세션을 다시 읽어 빠진 것만 더함 · ",
+                f"Audit: re-reads {plan.get('sessions', 0)} noted session(s) and adds only what is missing · ")
+             if plan.get("audit") else "")
+    return audit + tr(f"대기 {plan['units']:,}개 단위 · 이번 실행 {plan['units_this_run']:,}개 "
               f"(AI 호출 ≤{plan['max_calls']}) · 입력 약 {tokens} 토큰 · 약 {minutes}분({basis}){language}",
               f"{plan['units']:,} units pending · {plan['units_this_run']:,} this run "
               f"(AI calls ≤{plan['max_calls']}) · input ≈{tokens} tokens · ≈{minutes} min ({basis}){language}")
@@ -737,6 +761,71 @@ def plan_choices_text(plan: dict) -> str:
     return " · ".join(tr(f"{c['units']:,}개 ≈{_tokens(c['input_tokens'])} 토큰 {c['minutes']}분",
                          f"{c['units']:,} units ≈{_tokens(c['input_tokens'])} tokens {c['minutes']} min")
                      for c in plan["choices"])
+
+
+SKIP_REASONS = {"validation": "the answer still failed validation after the repair round",
+                "input_budget": "the request is over the input budget and nothing is left to trim"}
+
+
+def skipped_unit_message(unit_id: str, kind: str) -> str:
+    return f"skipped unit {unit_id}: {SKIP_REASONS[kind]}; it is held back until its records or the analysis settings change."
+
+
+def held_back_message(count: int) -> str:
+    return (f"skipped units held back: {count}. They are sent again when their records or the analysis settings "
+            f"change, or with --retry-failed.")
+
+
+def audit_plan_fields(units: list[dict], pool: dict[str, SourceRecord]) -> dict:
+    """What an audit plan says besides the figures of any plan: that it is one, and how many sessions it reads."""
+    return {"audit": True, "sessions": len({pool[i].session_id for unit in units for i in unit["sources"] if i in pool})}
+
+
+def audit_notes(graph: dict, saved: dict[str, dict], source_ids: set[str]) -> tuple[list[str], int]:
+    """The note events that cite these records (oldest first, the latest AUDIT_NOTES), and how many were left out."""
+    cited = [event["id"] for event in graph["events"] if event.get("origin") == "note"
+             and any((saved.get(i) or {}).get("source_id") in source_ids for i in event.get("evidence_ids", []))]
+    return cited[-AUDIT_NOTES:], max(0, len(cited) - AUDIT_NOTES)
+
+
+def uncited_edits(required: dict[str, tuple[str, str | None]], saved: dict[str, dict]) -> dict[str, tuple[str, str | None]]:
+    """The file edits an audit still has to see cited: those no event of the graph cites yet."""
+    cited = {item["source_id"] for item in saved.values()}
+    return {call: pair for call, pair in required.items() if call not in cited and pair[1] not in cited}
+
+
+def match_noted_duplicates(output: dict, graph: dict, saved: dict[str, dict]) -> int:
+    """Candidates that repeat a note: same kind, and exactly the lines of one note event. Each becomes an
+    `existing_event_matches` entry (the draft then settles it as that note's duplicate). Returns how many."""
+    def spans(citations: list[dict]) -> frozenset:
+        return frozenset((c["source_id"], c["start_line"], c["end_line"]) for c in citations)
+    notes = [(event, spans([saved[i] for i in event.get("evidence_ids", []) if i in saved]))
+             for event in graph["events"] if event.get("origin") == "note"]
+    matched = {item["candidate_id"] for item in output["existing_event_matches"]}
+    added = 0
+    for candidate in output["event_candidates"]:
+        if candidate["id"] in matched or not candidate["evidence"]:
+            continue
+        same = [event for event, lines in notes if event["kind"] == candidate["kind"] and lines == spans(candidate["evidence"])]
+        if len(same) == 1:
+            output["existing_event_matches"].append({
+                "candidate_id": candidate["id"], "existing_event_id": same[0]["id"],
+                "reason": "audit: same kind and same cited lines as this note event",
+                "evidence": copy.deepcopy(candidate["evidence"])})
+            added += 1
+    return added
+
+
+def audit_guard(delta: dict, graph: dict) -> None:
+    """An audit only adds. It never changes what the notes or earlier analyses recorded."""
+    problems = [f"{key} must be empty" for key in ("events_to_update", "edges_to_invalidate", "open_items_to_resolve")
+                if delta.get(key)]
+    existing = {item["id"] for item in graph["open_items"]}
+    if any(item.get("id") in existing for item in delta.get("open_items_to_upsert", [])):
+        problems.append("open_items_to_upsert may only add new open items")
+    if problems:
+        raise FlowError("audit run adds events, relations and open items and changes nothing that exists: "
+                        + "; ".join(problems) + ". Add the missing event instead and leave the existing one as it is.")
 
 
 def _one_line(text: str, limit: int = 240) -> str:
@@ -1110,6 +1199,8 @@ class Harness:
         self.allowed_event_ids: set[str] = set()
         self.allowed_record_ids: set[str] = set()
         self.allowed_file_ids: set[str] = set()
+        # Events the context shows whatever its limit (an audit shows every note of the unit's records).
+        self.keep_events: set[str] = set()
 
     def provide(self, source_id: str, start: int | None = None, end: int | None = None) -> dict:
         record = self.pool[source_id]
@@ -1232,7 +1323,10 @@ class Harness:
         visible_events = [e for e in self.graph["events"] if visible_event(e)]
         ordered = sorted(visible_events, key=rank, reverse=True)
         lean = self.config.context_mode == "lean"
-        selected = ordered[:min(self.config.context_events, LEAN_CONTEXT_EVENTS) if lean else self.config.context_events]
+        limit = min(self.config.context_events, LEAN_CONTEXT_EVENTS) if lean else self.config.context_events
+        # Named events rank first (`clues`), so the first `kept` of `ordered` are the kept ones when visible.
+        kept = sum(1 for e in ordered if e["id"] in self.keep_events)
+        selected = ordered[:max(limit, kept)]
         selected_ids = {e["id"] for e in selected}
         visible_ids_for_events = {e["id"] for e in visible_events}
         selected_event_ids = {e["id"] for e in selected}
@@ -1532,6 +1626,7 @@ class Harness:
                                 {"stage": stage, "data": data},
                                 lambda: build_task(stage, data, self.config.output_language))
         read_count, repair_count, attempt = 0, 0, 0
+        broken_retried = False  # an unreadable answer is asked for once more, as a call of its own
         prompt_hash = digest([task["system"], task["instructions"], task["wire_contract"]])
         schema_hash = digest(schema)
         aliases = IdAliases()
@@ -1548,8 +1643,8 @@ class Harness:
                     task = {**task, "data": copy.deepcopy(task["data"])}
                 step = trim_step(task["data"], trimmed)
                 if step is None:
-                    raise FlowError(tr("분석 입력 예산을 초과했습니다. 이 단위는 처리 완료로 저장하지 않습니다.",
-                                       "The analysis input budget was exceeded; this unit is not saved as completed."))
+                    raise InputBudgetExceeded(tr("분석 입력 예산을 초과했습니다. 이 단위는 처리 완료로 저장하지 않습니다.",
+                                                 "The analysis input budget was exceeded; this unit is not saved as completed."))
                 trimmed.append(step)
                 sent = aliases.wire(task)
             attempt += 1
@@ -1624,6 +1719,9 @@ class Harness:
             except BaseException as exc:
                 finish_call("failed", {"error_type": type(exc).__name__,
                     "duration_ms": round((time.monotonic() - call_started) * 1000)})
+                if isinstance(exc, BrokenOutput) and not broken_retried:
+                    broken_retried = True
+                    continue
                 raise
             output_digest = digest(output)
             # Claim validation canonicalizes quotes in place (a few words become whole source
@@ -1879,9 +1977,13 @@ class Engine:
         self.scope, self.store = scope, store
         self.config = config or AnalysisConfig()
         self.config.validate()
+        if self.config.audit:
+            self.config.semantic_review = False  # an audit is the cheap net; review signals are only recorded
         self.tracer: LangSmithTracer | None = None
         self.detailed_trace = False
         self.review_capture: Callable[[dict], None] | None = None
+        # Records of units the last plan held back after a failure of their own (`_hold_back_failed`).
+        self.held_back: set[str] = set()
 
     def scan(self) -> Snapshot:
         proven = [Path(p) for p in self.store.get_meta("known_worktree_roots", [])]
@@ -1917,6 +2019,8 @@ class Engine:
         limit = self.config.max_units
         plan = plan_summary(units, pool, call_cap(self.config, limit), limit=limit,
                             past=calibration(self.store.units(), self.store.llm_calls(), pool))
+        if self.config.audit:
+            plan = {**plan, **audit_plan_fields(units, pool)}
         return {**plan, "output_language": self.resolve_language(snapshot)}
 
     def _routing_signature(self) -> str:
@@ -1925,20 +2029,31 @@ class Engine:
                        prompt("common"), prompt("extract"), EXTRACT_SCHEMA,
                        self.config.extract_model, self.config.escalation_model,
                        self.config.runner_name, self.config.base_model, self.config.extract_effort,
-                       self.config.output_language, *([self.config.context_mode] if self.config.context_mode != "lean" else [])])
+                       self.config.output_language, *([self.config.context_mode] if self.config.context_mode != "lean" else []),
+                       *(["audit-v1", prompt("audit")] if self.config.audit else [])])
 
     def _prepare_extraction(self, unit: dict, pool: dict[str, SourceRecord], graph: dict,
                             snapshot_id: str, run_id: str, runners: RunnerPool,
                             cancel: threading.Event, issues: list[str]) -> PreparedExtraction:
         assigned = [pool[i] for i in unit["sources"]]
         if any(len(r.content) > self.config.record_chars for r in assigned):
-            raise FlowError(tr("이전 보류 단위가 현재 입력 한도를 초과합니다.",
-                               "A previously deferred unit exceeds the current input limit."))
+            raise InputBudgetExceeded(tr("이전 보류 단위가 현재 입력 한도를 초과합니다.",
+                                         "A previously deferred unit exceeds the current input limit."))
         h = Harness(None, pool, graph, self.store, self.config, cancel, run_id, unit["id"],
                     budget=runners.budget, tracer=self.tracer,
                     detailed_trace=self.detailed_trace, review_capture=self.review_capture)
-        context = h.context(assigned)
+        notes: list[str] = []
+        if self.config.audit:
+            # The notes of these records are shown in full (named, so they rank first and pass the event limit).
+            notes, omitted = audit_notes(graph, h.saved, set(unit["sources"]))
+            h.keep_events = set(notes)
+            if omitted:
+                issues.append(f"audit: {omitted} older note events of these records are not shown to the model.")
+        context = h.context(assigned, clues=" ".join(notes))
         data, required = extract_request_data(unit, snapshot_id, assigned, h, context, issues)
+        if self.config.audit:
+            data["journal_audit"] = {"note_event_ids": notes}
+            required = uncited_edits(required, h.saved)
         validator = EvidenceValidator(h.pool, h.provided, assigned_source_ids=set(unit["sources"]),
                                       required_citations=required)
         return PreparedExtraction(h, validator, context, data, graph["version"])
@@ -2040,7 +2155,14 @@ class Engine:
                 output, waived, dropped = self._salvage_extraction(exc, validator, unit["id"], snapshot_id, graph)
         if output is None:
             raise FlowError(tr("검증된 추출 결과가 없습니다.", "No validated extraction result."))
-        requests_added = add_user_requests(output, [pool[i] for i in unit["sources"]], validator)
+        if self.config.audit:
+            # The notes' first publish made a request event of every message; code settles an exact repeat of a note.
+            requests_added = []
+            if match_noted_duplicates(output, graph, h.saved):
+                validator.check_extraction(output, unit["id"], snapshot_id, graph)
+                validator.normalizations.append({"mode": "audit_duplicate_of_note_matched"})
+        else:
+            requests_added = add_user_requests(output, [pool[i] for i in unit["sources"]], validator)
         cached = {"payload": output, "evidence": validator.evidence, "routing_signature": signature,
                   "user_requests_added": requests_added, "waived_citations": waived,
                   "dropped_candidates": dropped,
@@ -2079,6 +2201,11 @@ class Engine:
                               for item in output["event_candidates"]),
                            *(item["text"] for item in output["open_items"]),
                            *(item["existing_event_id"] for item in output["existing_event_matches"])])
+        notes: list[str] = []
+        if self.config.audit:
+            notes, _ = audit_notes(graph, h.saved, set(unit["sources"]))
+            h.keep_events = set(notes)
+            clues = "\n".join([clues, *notes])
         context = h.context(assigned, clues=clues)
         _rehydrate(h.pool, h.provided, extracted["evidence"])
         h.dependencies.update(extracted["dependencies"])
@@ -2096,6 +2223,8 @@ class Engine:
                     "assigned_source_ids": unit["sources"], **model_context(context)}
             if self.config.integrate_evidence == "reuse":
                 data["evidence_policy"] = EVIDENCE_POLICY_REUSE
+            if self.config.audit:
+                data["journal_audit"] = {"note_event_ids": notes}
         else:
             data = None
         return PreparedIntegration(h, validator, data, graph["version"])
@@ -2115,8 +2244,10 @@ class Engine:
         if data is not None:
             candidate_set = data["validated_candidates"]
             reuse = self.config.integrate_evidence == "reuse"
-            check = lambda o: validator.apply_delta(o, graph, snapshot_id, run_id, candidate_set,
-                                                    evidence_reuse=reuse)
+            def check(o):
+                if self.config.audit:
+                    audit_guard(o, graph)
+                return validator.apply_delta(o, graph, snapshot_id, run_id, candidate_set, evidence_reuse=reuse)
             mode = self.config.integrate_output
             draft = draft_delta(candidate_set, graph["version"], snapshot_id) if mode != "full" else None
             published = False
@@ -2141,6 +2272,8 @@ class Engine:
                 h.runner = runners.get("integrate")
                 delta = h.task("integrate", data, check, validator=validator)
             prepared.delta = delta
+            if self.config.audit:
+                audit_guard(delta, graph)
             new_graph = validator.apply_delta(delta, graph, snapshot_id, run_id, candidate_set,
                                              evidence_reuse=reuse)
             # What code dropped from the extraction is said whatever the integrator wrote.
@@ -2219,6 +2352,8 @@ class Engine:
 
         `repair` lets an analysis run (under the analysis lock) correct the processed ledger;
         previews only read."""
+        if self.config.audit:
+            return self._plan_audit_units(snapshot, issues, repair=repair)
         pool = {r.source_id: r for r in snapshot.records}
         source_rows = self.store.sources()
         missing = [i for i, row in source_rows.items() if not row["available"]]
@@ -2228,6 +2363,8 @@ class Engine:
                    if i in pool and row["processed_hash"] != pool[i].content_hash}
         plans, scheduled, settled, regrouped = [], set(), {}, {}
         for unit in self.store.units():
+            if unit["id"].startswith(AUDIT_PREFIX):
+                continue  # an audit unit belongs to `analyze --audit` (`_plan_audit_units`)
             if unit["status"] == "integrated":
                 if not all(i in pool for i in unit["sources"]):
                     continue  # a deleted record is not a retraction
@@ -2305,7 +2442,104 @@ class Engine:
         if family is not None:
             # Out of the oldest-first order on request: this session's units only, the rest wait.
             plans = [unit for unit in plans if in_scope(unit)]
-        return plans, pending, missing
+        return self._hold_back_failed(plans, pool, issues, repair=repair), pending, missing
+
+    def failure_input(self, unit: dict, pool: dict[str, SourceRecord]) -> dict:
+        """What makes a unit the same input again: the routing signature and the hash of each of its records."""
+        return {"signature": self._routing_signature(),
+                "hashes": {i: pool[i].content_hash for i in unit["sources"] if i in pool}}
+
+    def _hold_back_failed(self, plans: list[dict], pool: dict[str, SourceRecord], issues: list[str], *,
+                          repair: bool) -> list[dict]:
+        """Leave out the units that were skipped for a failure of their own and are still the same input.
+
+        Same means the same `_routing_signature` and the same record hashes as when it failed; a record that
+        changed or a setting that changed sends it again (as does `retry_failed`). A skipped unit whose
+        session has notes by now is superseded instead: the agent writes that session. Nothing is written
+        unless `repair` (a preview only reads).
+        """
+        failures = self.store.unit_failures()
+        self.held_back = set()
+        if not failures:
+            return plans
+        noted = self.store.journaled_sessions()
+        kept, held = [], []
+        for unit in plans:
+            entry = failures.get(unit["id"])
+            if not entry:
+                kept.append(unit)
+                continue
+            records = [pool[i] for i in unit["sources"] if i in pool]
+            if not unit["id"].startswith(AUDIT_PREFIX) and records and all(
+                    r.session_id in noted or (r.lineage or {}).get("parent_session_id") in noted for r in records):
+                if repair:
+                    self.store.save_unit(unit["id"], unit["sources"], unit["dependencies"], "superseded")
+                    self.store.clear_unit_failure(unit["id"])
+                continue
+            if not self.config.retry_failed and entry.get("signature") == self._routing_signature() and (
+                    entry.get("hashes") == self.failure_input(unit, pool)["hashes"]):
+                held.append(unit)
+                continue
+            kept.append(unit)
+        self.held_back = {i for unit in held for i in unit["sources"]}
+        if held:
+            issues.append(held_back_message(len(held)))
+        return kept
+
+    def _plan_audit_units(self, snapshot: Snapshot, issues: list[str], *,
+                          repair: bool = False) -> tuple[list[dict], set[str], list[str]]:
+        """The work units of `analyze --audit` (docs/plans/LIVE_JOURNAL.md §11.1).
+
+        The records of the sessions an agent wrote notes in (and their sub-agents) that no integrated unit
+        covers yet: an earlier analysis or an earlier audit. Cut like any session, stored as `audit_` units.
+        Returns the units, the records still to audit and no missing sources. `repair` is unused: nothing
+        in the ledger needs correcting."""
+        pool = {r.source_id: r for r in snapshot.records}
+        noted = self.store.journaled_sessions()
+        stored = self.store.units()
+        covered = {i for unit in stored if unit["status"] == "integrated" for i in unit["sources"]}
+
+        def of_noted_session(record: SourceRecord) -> bool:
+            return record.provider != "git" and (record.session_id in noted
+                                                 or (record.lineage or {}).get("parent_session_id") in noted)
+        family = None
+        if self.config.session:
+            family = session_family(snapshot.records, self.config.session)
+            if not any(of_noted_session(r) for r in snapshot.records if r.session_id in family):
+                raise FlowError(tr(f"세션 {self.config.session}에는 note가 없어 감사할 것이 없습니다. "
+                                   f"note가 없는 세션은 analyze --session으로 일반 분석합니다.",
+                                   f"Session {self.config.session} has no notes, so there is nothing to audit; "
+                                   f"analyze a session without notes with analyze --session."))
+        eligible = []
+        for record in snapshot.records:
+            if not of_noted_session(record) or record.source_id in covered:
+                continue
+            if family is not None and record.session_id not in family:
+                continue
+            if len(record.content) > self.config.record_chars:
+                issues.append(f"audit: record over the size limit, not read: {record.source_id} ({len(record.content)} chars)")
+                continue
+            eligible.append(record)
+        if not noted:
+            issues.append("audit: no session has notes, so there is nothing to audit.")
+        waiting = {r.source_id for r in eligible}
+        plans, scheduled = [], set()
+        for unit in stored:
+            if not unit["id"].startswith(AUDIT_PREFIX) or unit["status"] in {"integrated", "superseded"}:
+                continue
+            ids = unit["sources"]
+            if not set(ids) <= waiting or scheduled.intersection(ids):
+                continue  # not in this run's scope, or its records are covered by now
+            if any(pool[i].content_hash != h for i, h in unit["dependencies"].items() if i in pool):
+                unit["result"], unit["status"] = None, "invalidated"
+            plans.append(unit)
+            scheduled.update(ids)
+        for chunk in _session_unit_chunks([r for r in eligible if r.source_id not in scheduled], self.config, issues):
+            plans.append({"id": ident(AUDIT_PREFIX, [(r.source_id, r.content_hash) for r in chunk]),
+                          "sources": [r.source_id for r in chunk], "dependencies": {}, "status": "parsed", "result": None})
+        order = {r.source_id: n for n, r in enumerate(snapshot.records)}
+        plans.sort(key=lambda unit: min(order[i] for i in unit["sources"]))
+        return self._hold_back_failed(plans, pool, issues, repair=repair), waiting, []
 
     def analyze(self, runner_factory: Callable[[], Any], *, cancel: threading.Event | None = None,
                 update: Callable[[str], None] | None = None,

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ..i18n import tr
-from ..util import Cancelled, FlowError, dumps, safe_text
+from ..util import BrokenOutput, Cancelled, FlowError, dumps, safe_text
 
 ADAPTER_VERSION = "cli-platform-sandbox-v3-output-checks"
 MAX_OUTPUT = 8 * 1024 * 1024
@@ -131,8 +131,8 @@ def parse_codex_output(text: str, result_file: Path | None = None) -> tuple[dict
         if not isinstance(value, dict):
             raise ValueError("not object")
     except ValueError as exc:
-        raise FlowError(tr("Codex의 최종 구조화 JSON을 읽을 수 없습니다.",
-                           "Codex's final structured JSON could not be read.")) from exc
+        raise BrokenOutput(tr("Codex의 최종 구조화 JSON을 읽을 수 없습니다.",
+                              "Codex's final structured JSON could not be read.")) from exc
     return value, usage
 
 
@@ -150,8 +150,10 @@ def parse_claude_output(text: str) -> tuple[dict, dict | None]:
         if not isinstance(value, dict):
             raise ValueError("not object")
     except (ValueError, TypeError) as exc:
-        raise FlowError(tr("Claude의 최종 구조화 JSON을 읽을 수 없습니다.",
-                           "Claude's final structured JSON could not be read.")) from exc
+        # An error or denied-tool envelope is the CLI saying no, not a broken answer; only unreadable JSON is retried.
+        kind = BrokenOutput if isinstance(exc, (json.JSONDecodeError, TypeError)) or str(exc) == "not object" else FlowError
+        raise kind(tr("Claude의 최종 구조화 JSON을 읽을 수 없습니다.",
+                      "Claude's final structured JSON could not be read.")) from exc
     return value, envelope.get("usage")
 
 

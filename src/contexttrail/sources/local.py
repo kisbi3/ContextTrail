@@ -35,6 +35,8 @@ IGNORED_NO_ANALYSIS_VALUE = {
     # `system:compact_boundary` is deliberately absent: it becomes a record
     # below and marks a work-unit boundary, so it is not "unread".
     "file-history-snapshot": "file backup snapshot list — no narrative",
+    # The change-only form of the snapshot above; the edits themselves are the Edit/Write tool calls.
+    "file-history-delta": "file backup change list — no narrative; the edits are in the tool calls",
     "last-prompt": "current leaf UUID pointer — no content",
     "custom-title": "session title given by the person",
     "ai-title": "session title given by Claude — event titles are written anew in the extract stage",
@@ -61,8 +63,10 @@ KNOWN_UNPARSED = {
     # file and re-sends it on every turn; deciding how to model that is open.
     "world_state": "holds the full project instructions (AGENTS.md etc.) but is not sent to analysis yet",
     # 473 enqueue records across 22 of 40 real Claude files, each carrying the
-    # full text of a prompt the person queued. If a queued prompt never also
-    # appears as a `user` record, the request is invisible to the graph.
+    # full text of a prompt the person queued. Counted against the `user` records
+    # (docs/reports/SESSION_2026-09-28.md 4.3): 338 are also a `user` record, 110 are
+    # synthetic blocks Claude wrote (task-notification and the like), and 25 are something the
+    # person typed that appears nowhere else, so those requests are invisible to the graph.
     "queue-operation": "holds the full text of a request the person queued but is not sent to analysis yet",
     # 91 records in real logs. A stop hook that ran checks is direct evidence of
     # verification, and a failing one is direct evidence of a failed attempt.
