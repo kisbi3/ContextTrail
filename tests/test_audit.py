@@ -395,3 +395,24 @@ def test_the_cli_audits_one_noted_session_and_reports_it(project, capsys):
     other = homes["claude_home"] / "projects" / "app" / "plain.jsonl"
     other.write_text(dumps(row(folder, 0, "user", [{"type": "text", "text": "hello there"}], session="plain")) + "\n")
     assert main(["analyze", str(folder), "--audit", "--session", "plain", "--no-tui", "--brief"]) == 1
+
+
+def test_status_and_find_say_how_many_noted_sessions_have_not_been_audited(project, capsys):
+    from contexttrail.freshness import check, status_lines, summary
+    folder, scope, store, homes = project
+    assert check(scope, store, **homes)["unaudited"] == {"sessions": 0, "records": 0}
+    write_notes(scope, store, homes)
+    engine = engine_for(scope, store, homes)
+    engine.scan()  # saves the scan index the status reads; the notes already stored their session's records
+    result = check(scope, store, **homes)
+    assert result["unaudited"] == {"sessions": 1, "records": 8}
+    assert "감사" in summary(result) and "1" in summary(result)
+    assert any("--audit" in line for line in status_lines(result, folder))
+    capsys.readouterr()
+    assert main(["status", str(folder), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["unaudited"] == {"sessions": 1, "records": 8}
+    # An audit covers them; a session that grows has only its new records left.
+    engine.analyze(FixtureRunner)
+    after = check(scope, store, **homes)
+    assert after["unaudited"] == {"sessions": 0, "records": 0}
+    assert "감사" not in summary(after) and not any("--audit" in line for line in status_lines(after, folder))
