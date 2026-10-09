@@ -26,7 +26,7 @@ from .schema import (DELTA_SCHEMA, EDIT_TOOL_NAMES, EXTRACT_SCHEMA, EvidenceVali
                      delta_for_model, draft_delta, edited_files, merge_review_patch, reconcile_review_patch,
                      record_evidence, review_patch_audit, review_patch_schema, validate_shape)
 from .sources import collect_logs
-from .store import Store
+from .store import Store, in_journal
 from .util import BrokenOutput, Cancelled, FlowError, InputBudgetExceeded, digest, dumps, ident, input_tokens, now
 
 
@@ -2610,7 +2610,7 @@ class Engine:
         self.held_back = set()
         if not failures:
             return plans
-        noted = self.store.journaled_sessions()
+        noted, since = self.store.journaled_sessions(), self.store.journal_since()
         kept, held = [], []
         for unit in plans:
             entry = failures.get(unit["id"])
@@ -2619,7 +2619,7 @@ class Engine:
                 continue
             records = [pool[i] for i in unit["sources"] if i in pool]
             if not unit["id"].startswith(AUDIT_PREFIX) and records and all(
-                    r.session_id in noted or (r.lineage or {}).get("parent_session_id") in noted for r in records):
+                    in_journal(r.session_id, r.lineage, r.recorded_at, noted, since) for r in records):
                 if repair:
                     self.store.save_unit(unit["id"], unit["sources"], unit["dependencies"], "superseded")
                     self.store.clear_unit_failure(unit["id"])
@@ -2643,13 +2643,14 @@ class Engine:
         Returns the units, the records still to audit and no missing sources. `repair` is unused: nothing
         in the ledger needs correcting."""
         pool = {r.source_id: r for r in snapshot.records}
-        noted = self.store.journaled_sessions()
+        noted, since = self.store.journaled_sessions(), self.store.journal_since()
         stored = self.store.units()
         covered = {i for unit in stored if unit["status"] == "integrated" for i in unit["sources"]}
 
         def of_noted_session(record: SourceRecord) -> bool:
-            return record.provider != "git" and (record.session_id in noted
-                                                 or (record.lineage or {}).get("parent_session_id") in noted)
+            # A noted session's records from before notes were on are ordinary analysis, not an audit.
+            return record.provider != "git" and in_journal(record.session_id, record.lineage, record.recorded_at,
+                                                           noted, since)
         family = None
         if self.config.session:
             family = session_family(snapshot.records, self.config.session)

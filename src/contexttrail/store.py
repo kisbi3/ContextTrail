@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -18,7 +19,29 @@ _SQL_VARIABLES = 900
 
 
 JOURNAL_KEY = "journal_sessions"
+JOURNAL_SETTINGS_KEY = "journal"  # journal.SETTINGS_KEY: {"enabled_at", "since"}
 FAILURES_KEY = "unit_failures"
+
+
+def _timestamp(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def in_journal(session_id: str | None, lineage: dict | None, recorded_at: str | None,
+               sessions: dict | set, since: float | None) -> bool:
+    """Whether notes account for a record: it belongs to a noted session (or one of its sub-agents) and was
+    written once notes were on (`since`). A noted session's older records stay with analysis; a record with
+    no time counts as noted."""
+    if session_id not in sessions and (lineage or {}).get("parent_session_id") not in sessions:
+        return False
+    stamp = _timestamp(recorded_at)
+    return since is None or stamp is None or stamp >= since
 
 
 class Store:
@@ -194,15 +217,41 @@ class Store:
         if session_id not in sessions:
             self.set_meta(JOURNAL_KEY, {**sessions, session_id: now()})
 
+    def journal_since(self) -> float | None:
+        """Since when notes account for the noted sessions: the earlier of when notes were first turned on and
+        the oldest record a note cites (`journal.write` keeps it as `since`). State saved before that was kept
+        falls back to `enabled_at` and the notes in the graph. None: no boundary is known."""
+        settings = self.get_meta(JOURNAL_SETTINGS_KEY) or {}
+        if settings.get("since"):
+            return _timestamp(settings["since"])
+        times = [t for t in [_timestamp(settings.get("enabled_at"))] if t is not None]
+        times += [t for event in self.graph()["events"] if event.get("origin") == "note"
+                  and (t := _timestamp(event.get("recorded_at"))) is not None]
+        return min(times) if times else None
+
     def acknowledge_journaled(self, records: list[SourceRecord]) -> int:
-        """Mark the records of sessions an agent wrote notes in as processed, so analysis does not write the
-        same work a second time; a sub-agent session counts with its parent. Returns how many were marked."""
+        """Mark the records notes account for as processed (`in_journal`), so analysis does not write the same
+        work a second time; a sub-agent session counts with its parent. A noted session's records from before
+        notes were on stay with analysis, and are given back to it when an earlier version (or a note) marked
+        them, unless an analysis covered them. Returns how many were marked."""
         sessions = self.journaled_sessions()
         if not sessions:
             return 0
-        selected = [r for r in records if r.session_id in sessions
-                    or (r.lineage or {}).get("parent_session_id") in sessions]
+        since = self.journal_since()
+        selected, earlier = [], []
+        for r in records:
+            if in_journal(r.session_id, r.lineage, r.recorded_at, sessions, since):
+                selected.append(r)
+            elif r.session_id in sessions or (r.lineage or {}).get("parent_session_id") in sessions:
+                earlier.append(r)
         self.mark_processed({r.source_id: r.content_hash for r in selected})
+        if earlier:
+            covered = {i for unit in self.units() if unit["status"] == "integrated" for i in unit["sources"]}
+            back = [r.source_id for r in earlier if r.source_id not in covered
+                    and (r.lineage or {}).get("kind") != "environment_context"]
+            with self.connection() as db, db:
+                db.executemany("UPDATE source_records SET processed_hash=NULL WHERE id=? AND processed_hash IS NOT NULL",
+                               [(i,) for i in back])
         return len(selected)
 
     def mark_processed(self, processed: dict[str, str]) -> None:

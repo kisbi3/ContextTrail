@@ -48,7 +48,8 @@ def project(tmp_path):
     store = Store(scope.state_dir, scope.id)
     store.set_meta("options", {"codex_home": str(tmp_path / "codex"), "claude_home": str(claude),
                                "opencode_home": str(tmp_path / "opencode")})
-    journal.enable(store)
+    # Notes were on before this session started (the transcript is from 10:00 on 2026-10-07).
+    store.set_meta(journal.SETTINGS_KEY, {"enabled_at": "2026-10-07T09:00:00+00:00", "since": "2026-10-07T09:00:00+00:00"})
     return folder, scope, store
 
 
@@ -429,3 +430,39 @@ def test_a_change_made_through_the_shell_cites_the_call_before_a_message_repeati
     result = note(scope, store, kind="action", title="Add neg", quotes=["def neg(a):"])
     assert result["event"]["status"] == "applied"
     assert store.evidence(result["event"]["evidence_ids"][0])["source"]["role"] == "tool_call"
+
+
+def test_a_sessions_records_from_before_notes_were_on_stay_with_analysis(project, tmp_path):
+    from contexttrail.analysis import AnalysisConfig, Engine
+    folder, scope, store = project
+    # Notes were turned on halfway through the session: after the edit and its failing run (10:00-10:04).
+    store.set_meta(journal.SETTINGS_KEY, {"enabled_at": "2026-10-07T10:04:30+00:00", "since": "2026-10-07T10:04:30+00:00"})
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    note(scope, store, kind="outcome", status="reported_complete", title="Says it is done",
+         quotes=["All concurrency tests pass now, the fix is complete."])
+    # The note was published with only the records it accounts for, and a later scan keeps it that way.
+    engine = Engine(scope, store, AnalysisConfig(**homes))
+    engine.preview_plan(engine.scan())
+    rows = store.sources()
+    by_line = {row["metadata"]["recorded_at"][11:16]: bool(row["processed_hash"]) for row in rows.values()
+               if row["metadata"].get("recorded_at")}
+    assert by_line["10:05"] and not any(by_line[t] for t in ("10:00", "10:01", "10:03"))
+    assert not any(e["kind"] == "question" for e in store.graph()["events"])  # the 10:00 request is analysis's
+    # Turning notes off and on keeps the boundary: what notes wrote never goes back to analysis.
+    journal.disable(store)
+    journal.enable(store)
+    assert store.get_meta(journal.SETTINGS_KEY)["since"].startswith("2026-10-07T10:04:30")
+
+
+def test_records_an_earlier_version_marked_for_a_noted_session_are_given_back(project, tmp_path):
+    from contexttrail.analysis import AnalysisConfig, Engine
+    folder, scope, store = project
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    note(scope, store, kind="action", title="Lock the store", quotes=["write_atomically(path)"])
+    assert all(row["processed_hash"] for row in store.sources().values())
+    # State saved before the boundary was kept: only enabled_at, set after the session's first records.
+    store.set_meta(journal.SETTINGS_KEY, {"enabled_at": "2026-10-07T10:00:30+00:00"})
+    engine = Engine(scope, store, AnalysisConfig(**homes))
+    engine.preview_plan(engine.scan())
+    pending = [row["metadata"]["recorded_at"][11:16] for row in store.sources().values() if not row["processed_hash"]]
+    assert pending == ["10:00"]  # before notes were on and before anything a note cites (10:01)

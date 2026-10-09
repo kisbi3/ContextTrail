@@ -37,7 +37,7 @@ from .model import SourceRecord, Snapshot
 from .schema import SHORT_QUOTE_CHARS, STATUSES, EvidenceValidator, draft_delta, occurrences, resolve_quote
 from .sources.local import jsonl_files, parse_claude, parse_codex, source_homes
 from .sources.opencode import opencode_databases, parse_opencode
-from .store import Store
+from .store import Store, in_journal
 from .util import FlowError, ident, now, private_dir
 
 # A person's request is made into an event by code from the transcript (`link_request_turns`), so the
@@ -311,6 +311,15 @@ def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str,
     times = sorted(record.recorded_at for record in cited if record.recorded_at)
     try:
         with store.analyze_lock():
+            # Notes account for the session from when they were turned on, or from the oldest record a note
+            # cites if that is earlier; older records of the session stay with analysis (`Store.in_journal`).
+            known = store.journal_since()
+            since = min([t for t in [known, _seconds(times[0]) if times else None] if t is not None], default=None)
+            if since is not None and since != known:
+                stamp = datetime.fromtimestamp(since, timezone.utc).isoformat().replace("+00:00", "Z")
+                store.set_meta(SETTINGS_KEY, {**(store.get_meta(SETTINGS_KEY) or {}), "since": stamp})
+            ours = {record.source_id for record in records
+                    if in_journal(record.session_id, record.lineage, record.recorded_at, {session_id}, since)}
             store.ingest(records, partial=True)
             graph = store.graph()
             relations = {name: [event_id_of(value, graph, aliases) for value in values]
@@ -343,13 +352,13 @@ def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str,
             for item in new["edges"]:
                 if item["id"] not in before:
                     item["origin"] = ORIGIN
-            new, turn_evidence = link_request_turns(new, graph, pool, list(pool), validator.evidence,
-                                                    store.evidence_many, run_id)
+            new, turn_evidence = link_request_turns(new, graph, pool, [i for i in pool if i in ours],
+                                                    validator.evidence, store.evidence_many, run_id)
             if new.get("analysis_status") in (None, "no_data"):
                 new["analysis_status"] = "partial"
             # The session is the agent's to write from now on: its records count as processed, here and at
             # every later scan (`Store.acknowledge_journaled`), so analysis does not write the same work again.
-            published = store.publish(new, [], {record.source_id: record.content_hash for record in records},
+            published = store.publish(new, [], {r.source_id: r.content_hash for r in records if r.source_id in ours},
                                       {**validator.evidence, **turn_evidence}, expected_version=graph["version"])
             store.note_session(session_id)
             # Transcript time, not the clock: the hook compares it with the records' own times.
@@ -450,11 +459,13 @@ def enabled(store: Store) -> bool:
 
 
 def enable(store: Store) -> None:
-    store.set_meta(SETTINGS_KEY, {"enabled_at": now()})
+    # `since` stays at the first time: what notes wrote before a pause must not go back to analysis.
+    moment = now()
+    store.set_meta(SETTINGS_KEY, {"enabled_at": moment, "since": (store.get_meta(SETTINGS_KEY) or {}).get("since") or moment})
 
 
 def disable(store: Store) -> None:
-    store.set_meta(SETTINGS_KEY, {})
+    store.set_meta(SETTINGS_KEY, {key: value for key, value in (store.get_meta(SETTINGS_KEY) or {}).items() if key == "since"})
 
 
 def _mark(store: Store, session_id: str, key: str, moment: str | None = None) -> None:

@@ -27,7 +27,7 @@ from .i18n import tr
 from .model import Snapshot
 from .sources.local import jsonl_files, parse_claude, parse_codex, source_homes
 from .sources.opencode import opencode_databases, parse_opencode, session_times
-from .store import Store
+from .store import Store, in_journal
 from .util import digest, now
 
 INDEX_KEY = "source_index"
@@ -142,7 +142,7 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
     kept: dict[str, dict[str, Any]] = {}
     parsed_now = False
 
-    journaled = store.journaled_sessions()
+    journaled, noted_since = store.journaled_sessions(), store.journal_since()
 
     def tally(records) -> dict[str, Any]:
         count, newest, by_source, sessions = 0, None, {}, set()
@@ -151,7 +151,7 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
             if row and row["content_hash"] == record.content_hash:
                 continue
             # The agent writes these sessions itself (`contexttrail note`); analysis will not read them.
-            if record.session_id in journaled or (record.lineage or {}).get("parent_session_id") in journaled:
+            if in_journal(record.session_id, record.lineage, record.recorded_at, journaled, noted_since):
                 continue
             count += 1
             sessions.add((record.provider, record.session_id))
@@ -226,7 +226,7 @@ def held_failures(store: Store, sources: dict[str, dict], units: list[dict]) -> 
 def unaudited(store: Store, sources: dict[str, dict], units: list[dict]) -> dict[str, int]:
     """What `analyze --audit` would read, from the store alone: the stored records of sessions with notes
     (and their sub-agents) that no integrated unit covers. A record too large to send stays in the count."""
-    journaled = store.journaled_sessions()
+    journaled, noted_since = store.journaled_sessions(), store.journal_since()
     if not journaled:
         return {"sessions": 0, "records": 0}
     covered = {i for unit in units if unit["status"] == "integrated" for i in unit["sources"]}
@@ -235,7 +235,7 @@ def unaudited(store: Store, sources: dict[str, dict], units: list[dict]) -> dict
         meta = row["metadata"]
         if not row["available"] or meta.get("provider") == "git" or source_id in covered:
             continue
-        if meta.get("session_id") in journaled or (meta.get("lineage") or {}).get("parent_session_id") in journaled:
+        if in_journal(meta.get("session_id"), meta.get("lineage"), meta.get("recorded_at"), journaled, noted_since):
             records += 1
             sessions.add((meta.get("provider"), meta.get("session_id")))
     return {"sessions": len(sessions), "records": records}
