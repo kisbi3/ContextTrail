@@ -17,7 +17,7 @@ from . import journal
 from .agent_commands import OPENCODE_PERMISSION_HINT, install_agent_commands
 from .auto_update import install_hooks
 from .agent_view import find, find_text, show, show_text
-from .analysis import AnalysisConfig, Engine, _evidence_ids, classify_steps, plan_choices_text, plan_text
+from .analysis import AnalysisConfig, Engine, _evidence_ids, classify_steps, plan_choices_text, plan_text, since_cutoff
 from .demo import FixtureRunner, create_demo
 from .diagram import flow_diagram
 from .evaluation import call_timeline, run_eval, summarize_calls
@@ -129,6 +129,17 @@ def parser() -> argparse.ArgumentParser:
                                               "current는 지금 대화 중인 Codex·Claude Code 세션",
                                               "Analyze only this session and its sub-agents first (marked out of order); "
                                               "current is the Codex/Claude Code session running now"))
+        sub.add_argument("--recent", type=int, metavar="N",
+                         help=tr("가장 최근 N개 세션(과 하위 에이전트)만 먼저 분석(순서 밖 분석으로 표시). note가 있는 세션은 세지 않음. "
+                                 "세션 안에서는 오래된 것부터, 나머지 세션은 나중의 일반 실행이 채움",
+                                 "Analyze only the N most recent sessions (and their sub-agents) first (marked out of order). "
+                                 "Sessions with notes are not counted. Oldest first within them; the other sessions are "
+                                 "filled in by a later ordinary run"))
+        sub.add_argument("--since", metavar="WHEN",
+                         help=tr("이 시각 이후에 끝난 세션만 먼저 분석: 기간(36h, 7d, 2w)이나 날짜(2026-10-01, UTC). "
+                                 "--recent와 함께 주면 그 안의 최근 N개",
+                                 "Analyze only the sessions that ended after this first: an age (36h, 7d, 2w) or a date "
+                                 "(2026-10-01, UTC). With --recent, the latest N of them"))
         if command == "analyze":
             sub.add_argument("--retry-failed", action="store_true",
                              help=tr("실패해서 건너뛴 작업 단위를 기록과 설정이 그대로여도 다시 보냄(이번 실행만)",
@@ -359,6 +370,8 @@ def _options(args, store: Store) -> AnalysisConfig:
         values["max_calls"], values["calls_fixed"] = args.max_calls, True
     values["max_units"] = getattr(args, "max_units", None)
     values["session"] = _session(getattr(args, "session", None))
+    values["recent"] = getattr(args, "recent", None)
+    values["since"] = since_cutoff(args.since) if getattr(args, "since", None) else None
     values["trigger"] = getattr(args, "trigger", None)
     values["audit"] = bool(getattr(args, "audit", False))
     values["retry_failed"] = bool(getattr(args, "retry_failed", False))
