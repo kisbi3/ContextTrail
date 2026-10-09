@@ -105,6 +105,20 @@ def test_a_session_whose_parent_is_not_in_the_project_counts_on_its_own(laborato
     assert processed(store) == {"r2"}
 
 
+def test_a_claude_session_with_a_sub_agent_in_its_own_session_is_still_a_session(laboratory):
+    # Claude Code keeps a sub-agent's records under its parent's session ID, naming that session as parent.
+    _, store, engine, records, make = laboratory
+    sessions(records, make, 3)
+    records.append(replace(make(CASES[1][0], key="task", session="s2", role="assistant"), recorded_at="2026-10-03T11:00:00Z",
+                           lineage={"kind": "subagent", "parent_session_id": "s2"}))
+    engine.config.recent = 1
+    plan = engine.preview_plan(engine.scan())
+    assert [s["id"] for s in plan["selection"]["sessions"]] == ["s2"] and plan["selection"]["candidates"] == 3
+    store.note_session("s2")
+    plan = engine.preview_plan(engine.scan())
+    assert [s["id"] for s in plan["selection"]["sessions"]] == ["s1"] and plan["selection"]["noted"] == 1
+
+
 def test_since_takes_the_sessions_that_ended_after_it_and_recent_the_latest_of_them(laboratory):
     _, store, engine, records, make = laboratory
     sessions(records, make, 5)

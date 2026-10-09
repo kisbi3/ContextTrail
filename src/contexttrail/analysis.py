@@ -738,8 +738,9 @@ def recent_sessions(records: list[SourceRecord], *, recent: int | None, since: s
     writes those; they would only use up the count). Selected: those that ended at or after `since`, then
     the latest `recent` of them. Returned oldest first: the order they are analysed in."""
     sessions = _transcript_sessions(records)
+    # A Claude Code sub-agent's records keep its parent's session ID and name that same session as parent.
     parent = {r.session_id: r.lineage.get("parent_session_id") for r in records
-              if r.session_id in sessions and r.lineage.get("parent_session_id")}
+              if r.session_id in sessions and r.lineage.get("parent_session_id") not in (None, r.session_id)}
     tops = sorted(s for s in sessions if parent.get(s) not in sessions)
     last: dict[str, float] = {}
     for record in records:
