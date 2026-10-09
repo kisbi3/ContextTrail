@@ -26,7 +26,7 @@ from contexttrail.analysis import (AnalysisConfig, Engine, IdAliases, PreparedEx
                                   build_task, integrate_request_data, review_signal_items, no_change_to_verify_limitation,
                                   CHANGE_KINDS, NO_CHANGE_TO_VERIFY_REASON, REVIEW_SIGNALS)
 from contexttrail.analysis import link_request_turns as analysis_link_request_turns
-from contexttrail.analysis import (MIN_UNIT_CALLS, audit_plan_fields, calibration, call_cap, plan_summary,
+from contexttrail.analysis import (MIN_UNIT_CALLS, calibration, call_cap, plan_summary,
                                   skipped_unit_message)
 from contexttrail.analysis import classify_steps as classify_records
 from contexttrail.demo import FixtureRunner, create_demo
@@ -367,7 +367,7 @@ def plan_work_units(state: StudioState) -> StudioState:
         limit = engine.config.max_units
         past = calibration(engine.store.units(), engine.store.llm_calls(), pool)
         plan = {**plan_summary(units, pool, call_cap(engine.config, limit), limit=limit, past=past),
-                **(audit_plan_fields(units, pool) if engine.config.audit else {}),
+                **engine.plan_fields(units, pool),
                 "output_language": language}
         answer = session.consent(snapshot, plan) if units and session.consent else True
         if not answer:
@@ -815,9 +815,9 @@ def publish_result(state: StudioState) -> StudioState:
     # A unit skipped earlier and sent again after others were integrated joins the graph out of order.
     previous = store.unit_failures().get(state["unit_id"])
     late = bool(previous) and store.integrated_units() > previous.get("integrated_units", 0)
-    # Events analysed ahead of older records still waiting (`--session`): said so wherever shown.
+    # Events analysed ahead of older records still waiting (`--session`, `--recent`, `--since`): said so wherever shown.
     ahead = set(base.get("out_of_order_events", []))
-    if late or (engine.config.session and not audit):
+    if late or (engine.ahead_of_order and not audit):
         ahead |= {event["id"] for event in graph["events"]} - {event["id"] for event in base["events"]}
     ahead &= {event["id"] for event in graph["events"]}
     if ahead:

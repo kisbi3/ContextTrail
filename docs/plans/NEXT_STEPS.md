@@ -1,11 +1,11 @@
-# 다음 작업 (2026-10-08 기준)
+# 다음 작업 (2026-10-09 기준)
 
 이 문서는 대화 압축 뒤 이어서 할 일을 모은다. 결정과 배경은 `docs/DECISIONS.md`에 있다. 끝난 항목은 이 문서에서 지우고 DECISIONS에 기록한다. 2026-10-08에 2026-09-29판을 정리했다: 끝난 항목을 지우고, 낡은 이름(`projectflow`)과 테스트 수를 걷어냈다(2026-09-27 평가 표는 5절에 원문 그대로 남겼다. README와 `docs/README.md`가 이 문서를 증거로 가리킨다).
 
 ## 현재 상태
 
-- 자동 테스트 526개 통과, 1개 건너뜀(macOS 전용 `sandbox-exec`). Linux(cloud, Python 3.13)에서 확인했고 CI는 ubuntu·macOS × Python 3.11–3.13에서 `scripts/test.sh -q`를 돈다.
-- 개발 알파 `0.1.0a6`. 실행 중인 에이전트가 직접 적는 note(`contexttrail note`)와 분석 보강 `analyze --audit`까지 구현됐다(`docs/plans/LIVE_JOURNAL.md`). note는 세 도구에서 실제 확인했고, `--audit`는 Mock만 확인했다.
+- 자동 테스트 561개 통과, 1개 건너뜀(macOS 전용 `sandbox-exec`). Linux(cloud, Python 3.13)에서 확인했고 CI는 ubuntu·macOS × Python 3.11–3.13에서 `scripts/test.sh -q`를 돈다.
+- 개발 알파 `0.1.0a6`. 실행 중인 에이전트가 직접 적는 note(`contexttrail note`)와 분석 보강 `analyze --audit`까지 구현됐다(`docs/plans/LIVE_JOURNAL.md`). note는 세 도구에서 실제 확인했고, `--audit`와 `--recent`/`--since`는 Mock만 확인했다.
 - 설치된 명령과 스킬에 반영하려면 소유자가 로컬에서 `./install.sh`를 다시 실행해야 한다.
 
 ## 1. 로컬에서만 할 수 있는 것 (실제 기록·CLI·계정 필요)
@@ -14,6 +14,7 @@
 - **F단계 평가:** 같은 세션을 분석기로 돌린 결과와 note를 비교한다(`LIVE_JOURNAL.md` §6).
 - **Codex 재확인:** 크레딧을 채운 뒤, 마지막 수정(대기열·`--verifies` 거부) 뒤의 실행을 한 번 본다.
 - **플러그인과 훅 실제 확인**, `./install.sh` 재설치.
+- **최근 세션 먼저 실모델 확인:** 큰 프로젝트에서 `contexttrail scan --recent 5`로 계획 문구와 `plan.selection`을 보고, `analyze --recent 5 --units 8`을 돌려 `out_of_order_events` 표시, 고른 세션 사이 관계가 끊기는 정도, 뒤이은 일반 실행이 나머지를 채우는지를 본다(`RECENT_SESSIONS_FIRST.md`).
 - **`file-history-delta` 모양 확인:** 2026-10-08에 `IGNORED_NO_ANALYSIS_VALUE`에 넣었지만 실제 로그의 내용은 보지 못했다. 서사에 쓸 내용이 있으면 `KNOWN_UNPARSED`로 옮긴다.
 
 ## 2. 코드로 할 수 있는 것
@@ -24,7 +25,7 @@
 - **단위 탓 실패의 건너뛰기는 구현됐다**(2026-10-08, `PERFORMANCE_PLAN.md` §16). 실제 모델로 어떤 종류가 얼마나 건너뛰어지는지는 `contexttrail ops`와 `status`의 `failed_units`로 로컬에서 본다. 통합 실패 단위의 초안 발행은 보류.
 - **요청 항목 상자:** 한 메시지에 요청이 여러 개면 항목 상자로 나누고 각자 해당 부분을 인용한다(2026-09-26 승인). 프롬프트 변경과 실제 평가가 필요하다.
 - **소유자 결정 대기:** 사용자 메시지만 인용한 `actor=user` `goal`/`proposal`을 답변 관계가 없어도 `question`/`asked`로 고칠지. 지금은 `answers` 관계가 있을 때만 고친다(`retype_answered_user_goals`).
-- **전체 이력 분석 순서:** 기본(오래된 것부터)을 바꿀지는 소유자가 정한다. 큰 프로젝트는 수십 시간이 걸려 `--session current`나 note를 주로 쓰는 쪽을 권했다.
+- **전체 이력 분석 순서:** 소유자 결정(2026-10-09)으로 기본은 오래된 것부터 그대로 두고, 최근 세션 먼저는 선택 기능(`--recent`, `--since`)으로 구현했다(`RECENT_SESSIONS_FIRST.md`, DECISIONS 2026-10-09). 남은 것: 저장하는 분석 기간 제한("이 날짜 이후만")은 필요가 확인될 때 따로 설계한다(같은 문서 5절). TUI에서 `--recent` 고르기는 아직 없다(명령줄 옵션이고 `R`은 그 설정으로 돈다).
 
 ## 3. 오픈소스 공개 준비에 남은 것
 

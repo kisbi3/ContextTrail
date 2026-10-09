@@ -10,7 +10,7 @@ import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
@@ -68,6 +68,11 @@ class AnalysisConfig:
     calls_fixed: bool = False  # max_calls was given for this run, so a unit count does not raise it
     # A session (with its sub-agents) analysed ahead of the oldest-first order.
     session: str | None = None
+    # The N most recent sessions without notes, and/or those that ended after `since` (a UTC ISO time; the
+    # command line resolves `7d` or a date to it), with their sub-agents: the same out-of-order run as
+    # `session`, for several sessions at once (docs/plans/RECENT_SESSIONS_FIRST.md). Per run, never saved.
+    recent: int | None = None
+    since: str | None = None
     # Who started this run: None for a person, "hook" for the opt-in automatic analysis. Per run, never saved.
     trigger: str | None = None
     # Re-read the sessions an agent wrote notes in and add only what the notes and earlier analyses did not
@@ -90,6 +95,21 @@ class AnalysisConfig:
             raise FlowError(tr("max_calls는 양수여야 합니다.", "max_calls must be a positive number."))
         if self.max_units is not None and self.max_units < 1:
             raise FlowError(tr("처리할 작업 단위 수는 1 이상이어야 합니다.", "The number of work units to process must be at least 1."))
+        if self.recent is not None and self.recent < 1:
+            raise FlowError(tr("--recent는 1 이상이어야 합니다.", "--recent must be at least 1."))
+        if self.since is not None and _record_timestamp(self.since) is None:
+            raise FlowError(tr(f"--since 시각을 읽을 수 없습니다: {self.since!r}", f"Cannot read the --since time: {self.since!r}"))
+        if self.recent is not None or self.since is not None:
+            if self.session:
+                raise FlowError(tr("--session과 --recent/--since는 함께 쓸 수 없습니다: 세션을 직접 고르거나 최근 세션을 고르세요.",
+                                   "--session cannot be combined with --recent/--since: name the session or take the recent ones."))
+            if self.audit:
+                raise FlowError(tr("--audit은 note가 있는 세션을 읽고 --recent/--since는 note가 없는 세션을 고릅니다. 감사할 세션은 --session으로 고르세요.",
+                                   "--audit reads the sessions that have notes, and --recent/--since pick sessions without them; "
+                                   "choose the session to audit with --session."))
+            if self.trigger == "hook":
+                raise FlowError(tr("자동 갱신은 오래된 것부터 처리합니다: --recent/--since를 쓸 수 없습니다.",
+                                   "Automatic analysis goes oldest first: --recent/--since cannot be used."))
         for value in (self.extract_model, self.integrate_model, self.escalation_model):
             if value is not None and (not value.strip() or any(ord(c) < 32 for c in value)):
                 raise FlowError(tr("모델 식별자는 비어 있거나 제어 문자를 포함할 수 없습니다.",
@@ -654,24 +674,100 @@ def call_cap(config: "AnalysisConfig", limit: int | None) -> int:
     return config.max_calls if config.calls_fixed or not limit else CALLS_PER_UNIT * limit
 
 
+TRANSCRIPT_PROVIDERS = ("codex", "claude", "opencode")
+
+
+def _transcript_sessions(records: list[SourceRecord]) -> set[str]:
+    return {r.session_id for r in records if r.session_id and r.provider in TRANSCRIPT_PROVIDERS}
+
+
+def _with_sub_agents(family: set[str], records: list[SourceRecord]) -> set[str]:
+    """The sessions, and the sub-agent sessions they started (at any depth)."""
+    parents = {r.session_id: r.lineage.get("parent_session_id") for r in records
+               if r.session_id and r.lineage.get("parent_session_id")}
+    family = set(family)
+    while True:
+        more = {child for child, parent in parents.items() if parent in family} - family
+        if not more:
+            return family
+        family |= more
+
+
 def session_family(records: list[SourceRecord], wanted: str) -> set[str]:
     """The session a prefix names, and the sub-agent sessions it started (at any depth)."""
-    sessions = {r.session_id for r in records if r.session_id and r.provider in ("codex", "claude", "opencode")}
-    found = sorted(s for s in sessions if s.startswith(wanted))
+    found = sorted(s for s in _transcript_sessions(records) if s.startswith(wanted))
     if not found:
         raise FlowError(tr(f"이 프로젝트 범위의 기록에 세션 {wanted}가 없습니다.",
                            f"No session {wanted} in the records of this project scope."))
     if len(found) > 1 and wanted not in found:
         raise FlowError(tr(f"세션 {wanted}에 해당하는 세션이 {len(found)}개입니다. 더 길게 지정하세요.",
                            f"{len(found)} sessions match {wanted}; give a longer prefix."))
-    family = {wanted if wanted in found else found[0]}
-    parents = {r.session_id: r.lineage.get("parent_session_id") for r in records
-               if r.session_id and r.lineage.get("parent_session_id")}
-    while True:
-        more = {child for child, parent in parents.items() if parent in family} - family
-        if not more:
-            return family
-        family |= more
+    return _with_sub_agents({wanted if wanted in found else found[0]}, records)
+
+
+_SINCE_AGE = re.compile(r"^\s*(\d+)\s*([hdw])\s*$")
+
+
+def since_cutoff(text: str, now_: datetime | None = None) -> str:
+    """`--since` as a UTC time: an age back from now (`36h`, `7d`, `2w`), or a date or time (`2026-10-01`; UTC
+    when it names no zone)."""
+    found = _SINCE_AGE.match(text or "")
+    if found:
+        seconds = int(found.group(1)) * {"h": 3600, "d": 86400, "w": 7 * 86400}[found.group(2)]
+        moment = (now_ or datetime.now(timezone.utc)) - timedelta(seconds=seconds)
+    else:
+        try:
+            parsed = datetime.fromisoformat((text or "").strip().replace("Z", "+00:00"))
+        except ValueError:
+            raise FlowError(tr(f"--since는 기간(36h, 7d, 2w)이나 날짜(2026-10-01)여야 합니다: {text!r}",
+                               f"--since is an age (36h, 7d, 2w) or a date (2026-10-01): {text!r}")) from None
+        moment = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+SELECTION_LISTED = 5   # sessions a plan names; the rest are counted
+
+
+def recent_sessions(records: list[SourceRecord], *, recent: int | None, since: str | None,
+                    noted: set[str]) -> dict:
+    """The most recent sessions of the project, each with its sub-agents (docs/plans/RECENT_SESSIONS_FIRST.md).
+
+    A session is a transcript session that no other session of the project started; a sub-agent follows its
+    parent, and a session whose parent is not in the project counts as one of its own. A session is as recent
+    as the latest record of the session and its sub-agents. Sessions with notes are not candidates (the agent
+    writes those; they would only use up the count). Selected: those that ended at or after `since`, then
+    the latest `recent` of them. Returned oldest first: the order they are analysed in."""
+    sessions = _transcript_sessions(records)
+    parent = {r.session_id: r.lineage.get("parent_session_id") for r in records
+              if r.session_id in sessions and r.lineage.get("parent_session_id")}
+    tops = sorted(s for s in sessions if parent.get(s) not in sessions)
+    last: dict[str, float] = {}
+    for record in records:
+        stamp = _record_timestamp(record.recorded_at)
+        if record.session_id in sessions and stamp is not None:
+            last[record.session_id] = max(stamp, last.get(record.session_id, stamp))
+    families = {top: _with_sub_agents({top}, records) for top in tops}
+    noted_tops = [top for top in tops if top in noted]
+    found = [(max((last[s] for s in families[top] if s in last), default=None), top)
+             for top in tops if top not in noted]
+    cutoff = _record_timestamp(since) if since else None
+    if cutoff is not None:
+        found = [(at, top) for at, top in found if at is not None and at >= cutoff]
+    found.sort(key=lambda item: (item[0] is not None, item[0] or 0.0, item[1]))
+    candidates = len(tops) - len(noted_tops)
+    if recent:
+        found = found[-recent:]
+    if not found:
+        raise FlowError(tr(f"고를 최근 세션이 없습니다 (note가 없는 세션 {candidates}개"
+                           f"{f', 제외한 note 세션 {len(noted_tops)}개' if noted_tops else ''}"
+                           f"{f', {since} 이후 끝난 세션 없음' if cutoff is not None else ''}).",
+                           f"No recent session to take ({candidates} sessions without notes"
+                           f"{f', {len(noted_tops)} noted sessions left out' if noted_tops else ''}"
+                           f"{f', none ended since {since}' if cutoff is not None else ''})."))
+    chosen = [{"id": top, "last": (datetime.fromtimestamp(at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                   if at is not None else None), "family": families[top]} for at, top in found]
+    return {"kind": "recent", "family": set().union(*(item["family"] for item in chosen)), "sessions": chosen,
+            "candidates": candidates, "noted": len(noted_tops), "recent": recent, "since": since}
 
 
 def _estimated_tokens(chars: int) -> int:
@@ -750,10 +846,38 @@ def plan_text(plan: dict) -> str:
     audit = (tr(f"감사: note가 있는 {plan.get('sessions', 0)}개 세션을 다시 읽어 빠진 것만 더함 · ",
                 f"Audit: re-reads {plan.get('sessions', 0)} noted session(s) and adds only what is missing · ")
              if plan.get("audit") else "")
-    return audit + tr(f"대기 {plan['units']:,}개 단위 · 이번 실행 {plan['units_this_run']:,}개 "
+    return audit + selection_text(plan.get("selection")) + tr(f"대기 {plan['units']:,}개 단위 · 이번 실행 {plan['units_this_run']:,}개 "
               f"(AI 호출 ≤{plan['max_calls']}) · 입력 약 {tokens} 토큰 · 약 {minutes}분({basis}){language}",
               f"{plan['units']:,} units pending · {plan['units_this_run']:,} this run "
               f"(AI calls ≤{plan['max_calls']}) · input ≈{tokens} tokens · ≈{minutes} min ({basis}){language}")
+
+
+def selection_plan_fields(selection: dict | None, units: list[dict], pool: dict[str, SourceRecord]) -> dict:
+    """What a plan says about the recent sessions a run takes first: which, how many units each, what is left out."""
+    if not selection or selection["kind"] != "recent":
+        return {}
+    def count(family: set[str]) -> int:
+        return sum(1 for unit in units if pool[unit["sources"][0]].session_id in family)
+    return {"selection": {"recent": selection["recent"], "since": selection["since"],
+                          "candidates": selection["candidates"], "noted": selection["noted"],
+                          "sessions": [{"id": item["id"], "last": item["last"], "units": count(item["family"])}
+                                       for item in selection["sessions"]]}}
+
+
+def selection_text(selection: dict | None) -> str:
+    """The line a consent shows when a run takes the most recent sessions first; empty for an ordinary run."""
+    if not selection:
+        return ""
+    sessions = selection["sessions"]
+    days = sorted(item["last"][:10] for item in sessions if item["last"])
+    span = (days[0] if days[0] == days[-1] else f"{days[0]} ~ {days[-1]}") if days else "?"
+    named = ", ".join(item["id"][:8] for item in sessions[-SELECTION_LISTED:])
+    names = (("… " if len(sessions) > SELECTION_LISTED else "") + named)
+    noted = selection["noted"]
+    return tr(f"최근 세션 먼저: {len(sessions)}개 세션({span}; {names})의 단위만"
+              f"{f' · note 세션 {noted}개 제외' if noted else ''} · 나머지 세션은 나중의 일반 실행(오래된 것부터)이 채움 · ",
+              f"Recent sessions first: only the units of {len(sessions)} sessions ({span}; {names})"
+              f"{f' · {noted} noted sessions left out' if noted else ''} · the other sessions wait for a later ordinary run (oldest first) · ")
 
 
 def plan_choices_text(plan: dict) -> str:
@@ -1984,6 +2108,10 @@ class Engine:
         self.review_capture: Callable[[dict], None] | None = None
         # Records of units the last plan held back after a failure of their own (`_hold_back_failed`).
         self.held_back: set[str] = set()
+        # The sessions this run takes ahead of the oldest-first order, and whether records outside them still
+        # wait (then what the run adds is out of order); set by `_plan_units`.
+        self.selection: dict | None = None
+        self.ahead_of_order = False
 
     def scan(self) -> Snapshot:
         proven = [Path(p) for p in self.store.get_meta("known_worktree_roots", [])]
@@ -2019,9 +2147,13 @@ class Engine:
         limit = self.config.max_units
         plan = plan_summary(units, pool, call_cap(self.config, limit), limit=limit,
                             past=calibration(self.store.units(), self.store.llm_calls(), pool))
+        return {**plan, **self.plan_fields(units, pool), "output_language": self.resolve_language(snapshot)}
+
+    def plan_fields(self, units: list[dict], pool: dict[str, SourceRecord]) -> dict:
+        """What the plan of this run says besides its figures: an audit, or the recent sessions it takes first."""
         if self.config.audit:
-            plan = {**plan, **audit_plan_fields(units, pool)}
-        return {**plan, "output_language": self.resolve_language(snapshot)}
+            return audit_plan_fields(units, pool)
+        return selection_plan_fields(self.selection, units, pool)
 
     def _routing_signature(self) -> str:
         # the default mode adds nothing, so changing the default does not resend finished units
@@ -2427,7 +2559,8 @@ class Engine:
             unit_id = ident("unit_", [(r.source_id, r.content_hash) for r in chunk])
             plans.append({"id": unit_id, "sources": [r.source_id for r in chunk],
                           "dependencies": {}, "status": "parsed", "result": None})
-        family = session_family(snapshot.records, self.config.session) if self.config.session else None
+        self.selection = self._select_sessions(snapshot)
+        family = self.selection["family"] if self.selection else None
 
         def in_scope(unit: dict) -> bool:
             return family is None or all(pool[i].session_id in family for i in unit["sources"])
@@ -2439,10 +2572,24 @@ class Engine:
             if repair:
                 for unit in replaced:
                     self.store.save_unit(unit["id"], unit["sources"], unit["dependencies"], "superseded")
+        self.ahead_of_order = False
         if family is not None:
-            # Out of the oldest-first order on request: this session's units only, the rest wait.
-            plans = [unit for unit in plans if in_scope(unit)]
+            # Out of the oldest-first order on request: the chosen sessions' units only (oldest first among
+            # them), the rest wait. What is added is out of order while any record outside them waits.
+            order = {r.source_id: n for n, r in enumerate(snapshot.records)}
+            plans = sorted((unit for unit in plans if in_scope(unit)), key=lambda unit: min(order[i] for i in unit["sources"]))
+            self.ahead_of_order = any(pool[i].session_id not in family for i in pending)
         return self._hold_back_failed(plans, pool, issues, repair=repair), pending, missing
+
+    def _select_sessions(self, snapshot: Snapshot) -> dict | None:
+        """The sessions an ordinary run takes ahead of the oldest-first order (`--session`, `--recent`, `--since`)."""
+        config = self.config
+        if config.session:
+            return {"kind": "session", "family": session_family(snapshot.records, config.session)}
+        if config.recent is not None or config.since is not None:
+            return recent_sessions(snapshot.records, recent=config.recent, since=config.since,
+                                   noted=set(self.store.journaled_sessions()))
+        return None
 
     def failure_input(self, unit: dict, pool: dict[str, SourceRecord]) -> dict:
         """What makes a unit the same input again: the routing signature and the hash of each of its records."""
