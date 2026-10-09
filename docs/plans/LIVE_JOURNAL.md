@@ -224,3 +224,23 @@ note가 있는 세션은 분석에서 빠진다(§5). 에이전트가 적지 않
 - `status`/`find`의 "감사 안 한 note 세션 N개"는 같은 날 더했다(`freshness.unaudited`, 저장소만 읽는다). 아직 안 한 것: TUI에서 감사를 시작하는 키.
 
 **로컬 확인 필요(이 환경에는 실제 기록·CLI가 없다).** §11.6의 (a) 중복률, (b) 빠뜨린 편집 발견, (c) 호출·토큰이 추정보다 작은지. 같은 세션으로 F단계 평가(분석기 결과와 note 비교)를 하면서 `contexttrail scan --audit`로 계획을 보고 `contexttrail analyze --audit --session <id> --units 3`로 한 번 돌려 본다.
+
+### 2026-10-09 — 실제 모델 확인: Codex 재확인, F단계 평가, `--recent`, `--audit`
+
+**Codex 재확인 (codex-cli 0.162, `exec -s workspace-write`).** note 이야기 없이 함수 추가와 실행을 시켰다. 알림 → Codex가 `contexttrail-note` 스킬을 읽고 note 두 개를 적었다. 샌드박스라 둘 다 `q_…`로 대기열에 들어갔고, 결과 note는 `--verifies q_…`로 변경 note에 이었다. 턴 끝 훅이 둘 다 저장했고(변경은 `apply_patch` 호출을 인용해 `applied`, 결과는 `observed_success`), 그래프에서 변경이 "검증"으로 이어졌다. `codex exec`는 stdin이 열려 있으면 입력을 기다리므로 `< /dev/null`로 돌린다.
+- 찾은 것 10: Codex 0.16x는 Stop 훅의 이유를 `<hook_prompt hook_run_id=…>`로 감싸 사용자 역할로 넣고, Claude Code는 불린 스킬의 본문("Base directory for this skill: …")을 사용자 역할로 넣는다. 둘 다 사람의 요청 사건이 됐다. 고침: `HARNESS_TEXT`에 넣었다(모델 입력 변경: `user_requests`에서 빠진다). 이미 그래프에 생긴 것은 그대로 남는다.
+
+**F단계: 같은 세션을 분석기와 note로 (plug-proj, Claude 세션 3개).** note 상태를 옆에 두고, 같은 기록을 분석기(Claude runner, sonnet, medium)로 처음부터 분석했다. 4단위, 호출 8번, 81초, 입력 약 16.8만 토큰(대부분 캐시 생성), 출력 약 1.1만 토큰.
+- 둘 다 잡은 것: note가 있는 두 세션에서 변경과 관측 성공 결과, 그리고 그 둘을 잇는 `verifies`. 분석기는 `structural`, note는 `explicit`.
+- 분석기만 잡은 것: 알림이 가지 않아 note가 없던 첫 세션(셸 편집, 찾은 것 7로 고친 뒤의 일), Git 사건(첫 커밋, 커밋 안 된 변경), 요청 → 변경 `motivates`(추정), 요청 → 마지막 보고 `answers`.
+- 분석기의 잡음: note를 쓰는 과정 자체(거부된 note, 다시 쓴 note)를 프로젝트 작업으로 적었다. heredoc 변경은 분석기도 `reported_complete`로 적었다(note는 찾은 것 9를 고친 뒤 `applied`).
+- note의 잡음: 스킬 본문이 요청 사건이 됐다(찾은 것 10).
+- 비용: note를 쓴 턴은 쓰지 않은 비슷한 턴보다 캐시 읽기 약 7만 토큰, 캐시 생성 약 0.5천 토큰, 출력 약 0.7천 토큰, 6초가 더 들었다(`claude -p` usage). 분석기는 단위마다 캐시 생성 약 3만 토큰과 출력 약 2.6천 토큰이다. 캐시 생성이 캐시 읽기보다 훨씬 비싸서 note 쪽이 몇 배 싸다(정확한 요금은 재지 않았다).
+
+**`--recent 3` (이 저장소).** 고른 세션 3개(10-06 "ok" 응답 시험 두 개, 10-09 `/clear`만 있는 세션), note 세션 1개 제외. 3단위, 호출 5번, 입력 약 28.7만 토큰(추정 약 51만), 상태 `partial`, 남은 기록 5,016개. 새 사건 4개 모두 `out_of_order_events`. `/clear`만 있는 세션은 사건을 만들지 않았다.
+
+**`--audit` (plug-proj 세션 2개, oc-proj 세션 4개: Claude, Codex 2, opencode).** 각각 2단위 호출 4번, 4단위 호출 9번.
+- note를 되풀이한 중복은 없었다.
+- 실제로 빠진 것을 찾았다: opencode 세션에서 note는 확인을 `reported_complete`로만 적었는데, 감사가 실행 출력(`minus(5, 3)` → 2)을 `observed_success`로 더하고 note의 변경에 `verifies`로 이었다. 요청 → 마지막 보고 `answers`도 더했다.
+- 잡음: note를 쓰는 과정(거부된 note, 다시 쓴 note, "Stop hook이 note를 요청함" 요청)을 사건으로 적었고, 거부된 note에서 note의 변경으로 `revises`를 잘못 걸기도 했다. 고침: `prompts/audit.md`에 "note 호출, 그 출력, 알림은 이 그래프의 장부이지 프로젝트 작업이 아니다"를 넣었다(감사 요청에만 들어가는 모델 입력 변경). 실제 모델로 다시 돌려 보지는 않았다(이미 감사한 세션은 다시 읽지 않는다).
+- 찾은 것 11 (결정 필요): 이 저장소의 세션 d790ebf2는 9월 26일부터 이어졌고 10월 7일에 note를 켰다. `acknowledge_journaled`는 note 세션의 기록 전부를 처리됨으로 표시하므로, note 이전 약 124단위의 이력이 일반 분석에서 빠져 `--audit`로만 읽힌다. 감사 단위도 오래된 것부터라 3단위로는 note 이전의 9월 기록만 읽는다. 고칠 방향: note를 켠 시각(`journal.enabled_at`) 이전 기록은 일반 분석에 남긴다. 고치면 이 저장소에 약 124단위가 다시 대기로 돌아오고, 자동 갱신이 그만큼 호출을 쓴다.

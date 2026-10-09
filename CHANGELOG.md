@@ -19,6 +19,7 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 - **Note checks found on first use of the plugin (2).** A `git fetch` that only refreshes remote-tracking refs (no refspec writing a local ref, no `--update-head-ok`) no longer counts as work to note, so a turn that only checked the remote is not sent back for a note; the filter lives in `journal.py`, and the analyzer's `tool_steps` still classify the call as `vcs` (no model input changes).
 
 ### Changed
+- The audit prompt says the agent's `contexttrail note` calls, their output and the note reminders are bookkeeping of the graph, not project work (a real-model audit had written refused and retried notes as events). Model input change, audit requests only.
 - Codex's wrapper for a Stop hook's message (`<hook_prompt …>`, Codex 0.16x) and the skill body Claude Code puts in the user role (`Base directory for this skill:`) are harness text, not a person's request; seen on the Codex re-check, where the note reminder had become a request event. Model input change: these messages no longer enter `user_requests`.
 - Events are marked out-of-order (`out_of_order_events`) only while records outside the chosen session still wait. `--session` used to mark them always, also when nothing else was left to analyze.
 - `--session current` reads `OPENCODE_SESSION_ID` too, and inside Claude Code (`CLAUDECODE` set) takes the Claude Code session even when a `CODEX_THREAD_ID` was inherited from the shell that started it.

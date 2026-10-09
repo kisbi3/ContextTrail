@@ -14,6 +14,9 @@ run is a check for what the notes and the earlier analyses missed, not a second 
   it may check a change a note recorded, so connect it to that note event.
 - Relations may start or end at an existing event, including a note. Add them to a new event only.
 - The user's messages already have request events; do not write them again.
+- The agent's `contexttrail note` calls, their output (a note stored, queued or refused) and the
+  ContextTrail reminders to write notes are bookkeeping of this graph, not work on the project:
+  return no candidate for them and relate no event to them.
 - An empty result is correct when the notes cover everything: set event_candidates to [].
 - Integration: leave every existing event, relation and open item as it is. Do not use
   events_to_update, edges_to_invalidate or open_items_to_resolve, and do not reuse the id of an
