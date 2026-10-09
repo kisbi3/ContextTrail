@@ -66,9 +66,12 @@ HARNESS_TEXT = ("<task-notification>", "<command-name>", "<command-message>", "<
                 "Caveat: The messages below were generated", "[Request interrupted by user", "<system-reminder>",
                 "<user_instructions>", "<environment_context>", "<bash-input>", "<bash-stdout>", "<bash-stderr>",
                 "<user-prompt-submit-hook>", "# AGENTS.md instructions",
-                # The note reminder a hook sends back (opencode posts it as a user message) and Claude Code's wrapper.
+                # The note reminder a hook sends back (opencode posts it as a user message) and the wrappers of
+                # Claude Code and Codex (0.16x).
                 "ContextTrail notes are on for this project", "ContextTrail stored the notes queued",
-                "Stop hook feedback")
+                "Stop hook feedback", "<hook_prompt",
+                # A skill's body, which Claude Code puts in the user role when the agent invokes the skill.
+                "Base directory for this skill:")
 
 
 def is_user_prompt(record: SourceRecord) -> bool:

@@ -297,6 +297,9 @@ def test_the_reminder_is_never_taken_for_a_persons_request(project):
     record = SourceRecord("r", "opencode", SESSION, "user", journal.REMINDER, {})
     assert not is_user_prompt(record)
     assert not is_user_prompt(replace(record, content="Stop hook feedback:\n" + journal.REMINDER))
+    # Codex wraps a Stop hook's reason, and Claude Code puts an invoked skill's body in the user role.
+    assert not is_user_prompt(replace(record, content='<hook_prompt hook_run_id="stop:1:/h/hooks.json">' + journal.REMINDER))
+    assert not is_user_prompt(replace(record, content="Base directory for this skill: /h/.claude/skills/contexttrail-note\n\nUse this"))
 
 
 def test_the_opencode_plugin_passes_the_session_and_sends_the_reminder():
