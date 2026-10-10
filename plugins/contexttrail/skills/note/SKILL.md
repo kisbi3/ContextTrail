@@ -11,7 +11,7 @@ Notes are on for a project when an end-of-turn hook asks you to record this turn
 
 When to write a note (one `note` call per event; several per turn is fine):
 - a decision or proposal was made (`--kind decision` or `--kind proposal`), quoting the message that made it;
-- you edited files (`--kind action`, or `--kind revision` when it fixes or replaces an earlier change; add `--revises <event>`), quoting a distinctive line of the edit you made;
+- you edited files (`--kind action`, or `--kind revision` when it fixes or replaces an earlier change; add `--revises <event>`), quoting a distinctive line of the edit you made, one `--quote` per edited file (a commit line alone does not cite the edits, and an audit would record them again);
 - you ran a test, build or command and saw its result (`--kind outcome`), quoting the result line. `--status observed_success` or `observed_failure` only when you quote the tool's own output; a claim made only in conversation is `reported_complete` or `reported_failure`. Add `--verifies <event>` naming the change that run checked;
 - you committed (`--kind outcome --status observed_success`), quoting the commit output.
 The person's requests are recorded by code from the transcript; do not note them. Do not note reading files or searching. Do not note what you are unsure of.
