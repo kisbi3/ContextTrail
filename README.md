@@ -6,7 +6,7 @@
 
 ContextTrail reads the transcripts the three tools keep locally (Codex and Claude Code JSONL files, the opencode SQLite database), plus the project's Git history, and asks the Codex or Claude CLI you already have installed (sandboxed, read-only) to reconstruct the flow. Every event and every arrow carries a quote from the source, and the code checks each quote against the record before anything is stored. You get a terminal view, a local browser view, `find`/`show`/`status` commands, and two agent skills so Codex, Claude Code and opencode can answer "why did we drop X?" from the saved graph instead of from memory, and can tell when that graph is behind the transcripts.
 
-Development alpha `0.1.0a6`. Linux and macOS, Python 3.11+. [What has been measured](#6-what-has-been-measured) is further down; nothing on this page is an estimate presented as a result.
+Development alpha `0.1.0a7`. Linux and macOS, Python 3.11+. [What has been measured](#6-what-has-been-measured) is further down; nothing on this page is an estimate presented as a result.
 
 ![The terminal view on the synthetic demo: the event flow on top, the selected event with its links and quoted evidence below](docs/images/tui-demo-en.png)
 
@@ -164,7 +164,7 @@ Earlier in the same flow a change is `applied · unverified` because its tests w
 - **Costs tokens from your own account.** The pipeline is tuned so a cheap model does the work: on the measured fixture, Claude Sonnet finishes a work unit in about a minute. The plan shown before a run estimates calls, tokens and minutes.
 - **Is incremental.** Finished work units are never re-sent. Re-running with no new records makes zero calls.
 
-Version: `0.1.0a6` · Linux / SSH primary, macOS measured · names are provisional.
+Version: `0.1.0a7` · Linux / SSH primary, macOS measured · names are provisional.
 
 **Languages:** the terminal, TUI, browser view and CLI help are in English or Korean, chosen from `--language`, `CONTEXTTRAIL_LANGUAGE`, the project's saved output language, or the locale. Event titles and summaries are written in the language of your own messages (`--language` overrides). Everything the model reads is English. A Korean README is not written yet.
 

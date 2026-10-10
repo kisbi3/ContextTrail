@@ -4,8 +4,8 @@
 
 ## 현재 상태
 
-- 자동 테스트 561개 통과, 1개 건너뜀(macOS 전용 `sandbox-exec`). Linux(cloud, Python 3.13)에서 확인했고 CI는 ubuntu·macOS × Python 3.11–3.13에서 `scripts/test.sh -q`를 돈다.
-- 개발 알파 `0.1.0a6`. 실행 중인 에이전트가 직접 적는 note(`contexttrail note`)와 분석 보강 `analyze --audit`까지 구현됐다(`docs/plans/LIVE_JOURNAL.md`). note는 세 도구에서 실제 확인했고, `--audit`와 `--recent`/`--since`는 Mock만 확인했다.
+- 자동 테스트 566개 통과, 1개 건너뜀(macOS 전용 `sandbox-exec`). Linux(cloud, Python 3.13)에서 확인했고 CI는 ubuntu·macOS × Python 3.11–3.13에서 `scripts/test.sh -q`를 돈다.
+- 개발 알파 `0.1.0a7`(2026-10-11 배포). 실행 중인 에이전트가 직접 적는 note(`contexttrail note`), Claude Code 플러그인, 분석 보강 `analyze --audit`, 최근 세션 먼저(`--recent`/`--since`)가 들어 있다(`docs/plans/LIVE_JOURNAL.md`). 모두 실제 모델로 확인했다(`LIVE_JOURNAL.md` §10).
 - 설치된 명령과 스킬에 반영하려면 소유자가 로컬에서 `./install.sh`를 다시 실행해야 한다.
 
 ## 1. 로컬에서만 할 수 있는 것 (실제 기록·CLI·계정 필요)

@@ -1,7 +1,7 @@
 {
   "name": "contexttrail",
   "displayName": "ContextTrail",
-  "version": "0.1.0a6",
+  "version": "0.1.0a7",
   "description": "Read and write this project's ContextTrail graph from Claude Code. The CLI is a separate install: `pipx install contexttrail` (each hook does nothing while the `contexttrail` command is missing).",
   "author": {
     "name": "Jaesung Kim"

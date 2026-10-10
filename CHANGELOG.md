@@ -2,7 +2,7 @@
 
 All notable changes to ContextTrail are listed here, newest first. Dates are the dates the change landed on `main`. Measurements behind each entry are in `docs/plans/PERFORMANCE_PLAN.md` and `docs/DECISIONS.md`.
 
-## Unreleased
+## 0.1.0a7 – 2026-10-11
 
 ### Added
 - **`--recent N` and `--since WHEN`: analyze the latest sessions first.** For the first analysis of a big project: only the units of the N most recent sessions (or those that ended after an age such as `7d` or a date) and their sub-agents are planned, oldest first within them, and what they add is marked out of order while other records still wait; the project stays `partial` and a later ordinary run fills in the rest oldest first. A session is as recent as the latest record of it and its sub-agents (a Claude Code sub-agent's records, kept under its parent's session ID, do not make that session look like someone else's sub-agent); sessions with notes are not candidates and are not counted. The consent screen and `scan` (`plan.selection`) name the sessions taken first and how many units each has. The options are refused together with `--session`, `--audit` and `--trigger hook`, and an empty selection is an error, not a silent run. `--units`, `--max-calls`, skipped-unit hold-back and the call cap work as with `--session`. No model input changes. Design and decisions: `docs/plans/RECENT_SESSIONS_FIRST.md`.
