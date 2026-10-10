@@ -4,8 +4,8 @@ import sys
 import threading
 import time
 import pytest
-from contexttrail.runners.cli_runner import (CLIRunner, claude_reported_model, execute, parse_codex_output,
-                                            parse_claude_output)
+from contexttrail.runners.cli_runner import (CLIRunner, claude_reported_model, execute, newest_in_family,
+                                            parse_codex_output, parse_claude_output)
 from contexttrail.schema import EXTRACT_SCHEMA, DELTA_SCHEMA
 from contexttrail.util import FlowError, Cancelled
 
@@ -73,7 +73,7 @@ def test_claude_argv_disables_builtin_mcp_and_config():
 def test_runner_always_names_its_model_and_passes_effort():
     codex=CLIRunner('codex',effort='high'); codex.executable='/usr/bin/codex'
     args=codex.build_cli({})
-    assert args[args.index('--model')+1]=='gpt-6-sol' and args[-1]=='-'
+    assert args[args.index('--model')+1]=='gpt-sol' and args[-1]=='-'
     assert any(args[i:i+2]==['-c','model_reasoning_effort="high"'] for i in range(len(args)))
     claude=CLIRunner('claude',effort='medium'); claude.executable='/usr/bin/claude'
     args=claude.build_cli({})
@@ -82,6 +82,26 @@ def test_runner_always_names_its_model_and_passes_effort():
     plain=CLIRunner('claude'); plain.executable='/usr/bin/claude'
     assert '--effort' not in plain.build_cli({})
     with pytest.raises(FlowError): CLIRunner('codex',effort='extreme')
+
+
+def test_codex_family_name_resolves_to_the_newest_listed_version():
+    catalog=json.dumps({'models':[{'slug':'gpt-6-sol','visibility':'list'},{'slug':'gpt-6.1-sol','visibility':'list'},
+        {'slug':'gpt-5.6-sol','visibility':'list'},{'slug':'gpt-7-sol','visibility':'hide'},
+        {'slug':'gpt-6.2-luna','visibility':'list'},{'slug':'gpt-6.10-solar','visibility':'list'}]})
+    assert newest_in_family(catalog,'sol')=='gpt-6.1-sol'
+    assert newest_in_family(catalog,'luna')=='gpt-6.2-luna'
+    assert newest_in_family(catalog,'astra') is None and newest_in_family('not json','sol') is None
+    seen=[]
+    def run(command):
+        seen.append(command); return 0, catalog, ''
+    codex=CLIRunner('codex'); codex.executable='/usr/bin/codex'
+    assert codex._resolve_family(run)=='gpt-6.1-sol' and seen==[['/usr/bin/codex','debug','models','--bundled']]
+    pinned=CLIRunner('codex',model='gpt-6-sol'); pinned.executable='/usr/bin/codex'
+    assert pinned._resolve_family(run)=='gpt-6-sol' and len(seen)==1
+    claude=CLIRunner('claude'); claude.executable='/usr/bin/claude'
+    assert claude._resolve_family(run)=='sonnet' and len(seen)==1
+    with pytest.raises(FlowError,match='gpt-<버전>-sol'):
+        codex._resolve_family(lambda command: (1,'',''))
 
 
 def test_claude_reports_the_model_that_answered():

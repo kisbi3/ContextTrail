@@ -39,7 +39,7 @@ Source snapshot
 
 ## 모델과 추론 수준
 
-Runner는 모델을 항상 이름으로 지정한다. 격리 환경은 사용자의 CLI 설정 파일을 가져가지 않으므로, 지정하지 않으면 CLI 자체 기본값이 버전·계정에 따라 조용히 바뀔 수 있기 때문이다. 기본값은 `runners/cli_runner.py`의 `DEFAULT_MODELS`(Codex `gpt-6-sol`, Claude `sonnet`)이고 `--model`이 우선한다. 추론 수준은 역할별로 지정하며 기본은 모두 `medium`이다(2026-09-27 전에는 통합·재검토 `high`). Codex에는 `-c model_reasoning_effort=…`, Claude에는 `--effort`로 전달한다. `project eval` 보고서의 `by_requested_model.calls_by_effort`와 `project ops --details`의 `reasoning_effort`로 확인한다.
+Runner는 모델을 항상 이름으로 지정한다. 격리 환경은 사용자의 CLI 설정 파일을 가져가지 않으므로, 지정하지 않으면 CLI 자체 기본값이 버전·계정에 따라 조용히 바뀔 수 있기 때문이다. 기본값은 `runners/cli_runner.py`의 `DEFAULT_MODELS`(Codex `gpt-sol`, Claude `sonnet`)이고 `--model`이 우선한다. Codex는 버전이 붙은 이름만 받으므로, 버전 없는 이름(`gpt-sol`, `gpt-luna`)은 첫 호출 전 점검에서 설치된 Codex에 들어 있는 모델 목록(`codex debug models --bundled`, 격리 안에서 실행)의 그 계열 최신 버전으로 바꿔 지정한다(2026-10-10 기준 `gpt-6.1-sol`). 호출 기록에는 바꾼 이름이 남는다. 찾지 못하면 다른 모델로 넘어가지 않고 멈춘다. 추론 수준은 역할별로 지정하며 기본은 모두 `medium`이다(2026-09-27 전에는 통합·재검토 `high`). Codex에는 `-c model_reasoning_effort=…`, Claude에는 `--effort`로 전달한다. `project eval` 보고서의 `by_requested_model.calls_by_effort`와 `project ops --details`의 `reasoning_effort`로 확인한다.
 
 변경안 재검토는 기본으로 실행한다. 신호는 확인 대상이 없는 관측 결과(`unlinked_observed_outcome`), 수정 대상이 없는 수정(`unlinked_revision`), 기존 사건 갱신, 기존 관계 무효화다. 새 관측 결과마다 신호를 내지 않는다. 인용은 코드가 이미 확인하고, 코드가 알 수 없는 것은 빠진 연결이기 때문이다. `--no-review`는 이번 실행에서만 끈다.
 

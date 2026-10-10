@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -20,7 +21,29 @@ ADAPTER_VERSION = "cli-platform-sandbox-v3-output-checks"
 MAX_OUTPUT = 8 * 1024 * 1024
 # A run always names its model: the sandbox hides the user's CLI config, so without this
 # the CLI's own default (which can change between releases) would silently decide.
-DEFAULT_MODELS = {"codex": "gpt-6-sol", "claude": "sonnet"}
+DEFAULT_MODELS = {"codex": "gpt-sol", "claude": "sonnet"}
+# Codex takes only versioned names. A name without a version (`gpt-sol`) asks for the newest model of
+# that family in the catalog shipped with the installed Codex; preflight resolves it, and calls record
+# the resolved name. Claude resolves its own aliases (`sonnet`) and reports the model that answered.
+FAMILY_NAME = re.compile(r"gpt-([a-z]+)")
+
+
+def newest_in_family(catalog: str, family: str) -> str | None:
+    """The listed `gpt-<version>-<family>` model with the highest version in `codex debug models` output."""
+    try:
+        data = json.loads(catalog)
+    except ValueError:
+        return None
+    models = data.get("models") if isinstance(data, dict) else data
+    pattern, best = re.compile(rf"gpt-(\d+(?:\.\d+)*)-{re.escape(family)}"), None
+    for item in models if isinstance(models, list) else []:
+        slug = item.get("slug") if isinstance(item, dict) else None
+        found = pattern.fullmatch(slug or "")
+        if found and item.get("visibility", "list") == "list":
+            version = tuple(int(part) for part in found[1].split("."))
+            if best is None or version > best[0]:
+                best = (version, slug)
+    return best[1] if best else None
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
@@ -418,6 +441,8 @@ class CLIRunner:
                 if code or not {"shell_tool", "unified_exec"} <= self.features:
                     raise FlowError(tr("Codex 도구 비활성화 capability를 확인할 수 없습니다.",
                                        "Could not confirm Codex's capability to disable tools."))
+                self.model = self._resolve_family(lambda command: execute(
+                    self.sandbox_command(work, output, command), timeout=15, env=env, cwd=cwd))
         credential, _ = self._credential()
         if not credential.is_file() or credential.is_symlink():
             raise FlowError(tr("파일 기반 CLI 인증을 찾지 못했습니다. keyring 전용 인증은 이 alpha에서 미지원입니다.",
@@ -427,6 +452,19 @@ class CLIRunner:
                 "auth": "credential_file_present_not_authenticated_tested",
                 "sandbox": "macos-seatbelt" if sys.platform == "darwin" else "bubblewrap",
                 "live_model_test": False}
+
+    def _resolve_family(self, run) -> str | None:
+        family = FAMILY_NAME.fullmatch(self.model or "")
+        if self.name != "codex" or not family:
+            return self.model
+        code, catalog, _ = run([self.executable, "debug", "models", "--bundled"])
+        resolved = None if code else newest_in_family(catalog, family[1])
+        if not resolved:
+            raise FlowError(tr(f"설치된 Codex의 모델 목록에서 {self.model}의 최신 모델을 찾지 못했습니다. "
+                               f"--model gpt-<버전>-{family[1]}처럼 버전을 붙여 지정하세요.",
+                               f"Could not find the newest {self.model} model in the installed Codex's model list. "
+                               f"Name it with a version, such as --model gpt-<version>-{family[1]}."))
+        return resolved
 
     def build_cli(self, schema: dict, *, work: str = "/work", output: str = "/out") -> list[str]:
         executable = self._require_executable()

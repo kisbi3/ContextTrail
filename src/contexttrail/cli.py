@@ -91,8 +91,8 @@ def parser() -> argparse.ArgumentParser:
         sub = commands.add_parser(command, help=help_text)
         sub.add_argument("folder", nargs="?", default=".")
         sub.add_argument("--runner", choices=["codex", "claude"])
-        sub.add_argument("--model", help=tr("Runner 기본 모델 대신 쓸 모델; 기본 Codex gpt-6-sol, Claude sonnet",
-                                           "Model instead of the runner's default: Codex gpt-6-sol, Claude sonnet"))
+        sub.add_argument("--model", help=tr("Runner 기본 모델 대신 쓸 모델; 기본 Codex gpt-sol(설치된 Codex의 최신 Sol), Claude sonnet",
+                                           "Model instead of the runner's default: Codex gpt-sol (the installed Codex's newest Sol), Claude sonnet"))
         route_options(sub)
         sub.add_argument("--codex-home", type=Path)
         sub.add_argument("--claude-home", type=Path)

@@ -28,7 +28,7 @@ project analyze . --runner codex \
   --workers 2 --max-calls 50
 ```
 
-`--model`은 공통 요청값이다. 단계별 값이 있으면 해당 단계가 우선한다. 둘 다 없으면 CLI 자체 기본값이 아니라 ContextTrail의 Runner 기본 모델(Codex `gpt-6-sol`, Claude `sonnet`)을 이름으로 지정한다. 단계별 추론 수준은 `--extract-effort`·`--integrate-effort`·`--escalation-effort`로 정한다. 옵션은 프로젝트 상태에 보존한다. 조건부 의미 재검토는 기본으로 실행하며, 재검토 모델은 `--escalation-model`로 설정한다(없으면 Runner 기본 모델). 이용 불가능한 모델이나 인증·한도 오류에서 다른 모델/공급자로 몰래 전환하지 않는다.
+`--model`은 공통 요청값이다. 단계별 값이 있으면 해당 단계가 우선한다. 둘 다 없으면 CLI 자체 기본값이 아니라 ContextTrail의 Runner 기본 모델(Codex `gpt-sol`은 설치된 Codex의 최신 Sol로 바꿔서, Claude `sonnet`)을 이름으로 지정한다. 단계별 추론 수준은 `--extract-effort`·`--integrate-effort`·`--escalation-effort`로 정한다. 옵션은 프로젝트 상태에 보존한다. 조건부 의미 재검토는 기본으로 실행하며, 재검토 모델은 `--escalation-model`로 설정한다(없으면 Runner 기본 모델). 이용 불가능한 모델이나 인증·한도 오류에서 다른 모델/공급자로 몰래 전환하지 않는다.
 
 - `extract`: 정규화된 새 원문에서 분류와 사건·근거 추출을 한 번에 수행한다.
 - 검증 복구: 추출 계약이 제한된 수리 뒤에도 실패한 경우에만, 설정된 경우 재검토 모델로 구조적 복구를 시도한다. 유효한 초안은 의미 검토를 위해 다시 추출하지 않는다.
