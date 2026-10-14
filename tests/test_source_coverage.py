@@ -402,6 +402,8 @@ def test_the_session_start_hook_records_are_dropped_without_a_warning(tmp_path):
                  {"type": "attachment", "cwd": str(folder), "uuid": "a2",
                   "attachment": {"type": "hook_additional_context", "hookEvent": "SessionStart",
                                  "content": ["ContextTrail project memory for this session"]}},
+                 {"type": "attachment", "cwd": str(folder), "uuid": "a3",
+                  "attachment": {"type": "hook_blocking_error", "hookEvent": "Stop", "blockingError": {}}},
                  {"type": "user", "cwd": str(folder), "uuid": "u1",
                   "message": {"role": "user", "content": "설치 스크립트를 고쳐줘."}}])
     snapshot = parse_claude(path, Scope.resolve(folder))
