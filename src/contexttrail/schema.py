@@ -913,6 +913,7 @@ class EvidenceValidator:
             quoted = str(exc)
         candidates = set()
         claim_errors: list[str] = [quoted] if quoted else []
+        self.settle_unbacked_claims(output)
         for item in output["event_candidates"]:
             if not item["id"].startswith("tmp:") or item["id"] in candidates:
                 raise FlowError("event candidate IDs must be unique tmp: IDs.")
@@ -927,6 +928,7 @@ class EvidenceValidator:
                     claim_errors.append(str(exc))
         existing = {e["id"] for e in graph["events"]}
         endpoints = {e["id"]: e for e in graph["events"]} | {e["id"]: e for e in output["event_candidates"]}
+        broken: list[tuple[dict, str]] = []
         for edge in output["edge_candidates"]:
             if edge["from_event_id"] not in candidates | existing or edge["to_event_id"] not in candidates | existing:
                 raise FlowError("an extracted relation refers to an event that does not exist.")
@@ -935,7 +937,9 @@ class EvidenceValidator:
             try:
                 check_relation(edge, endpoints)
             except FlowError as exc:
-                claim_errors.append(str(exc))
+                broken.append((edge, str(exc)))
+        self.drop_rule_breaking_relations(output, broken)
+        for edge in output["edge_candidates"]:
             try:
                 self.citations(edge["evidence"])
             except FlowError:
@@ -1078,6 +1082,46 @@ class EvidenceValidator:
         if filled:
             self.normalizations.append({"mode": "evidence_reused_from_candidates", "items": filled})
         return filled
+
+    def settle_unbacked_claims(self, output: dict) -> None:
+        """Claims a candidate's own citations do not back, read as the weaker claim they do back, instead of costing
+        a repair round with the whole unit resent (each was seen live on a Codex-heavy project):
+
+        - a change marked `applied` that cites no tool record or Git evidence is the agent's report of a change:
+          `reported_complete` (`applied_without_patch_as_reported`);
+        - an outcome marked `observed_*` that cites no original tool result is a reported result: `reported_complete`
+          (`observed_without_result_as_reported`);
+        - an event whose basis is `tool_record` but cites no tool call or result rests on what it does cite:
+          `git_artifact` with Git evidence, else `explicit_statement` (`tool_basis_without_tool_record`)."""
+        for item in output["event_candidates"]:
+            records = [self.records.get(citation["source_id"]) for citation in item["evidence"]]
+            records = [r for r in records if r is not None]
+            tool = any(r.role in {"tool_call", "tool_result"} for r in records)
+            git = any(r.provider == "git" for r in records)
+            if item["status"] == "applied" and item["kind"] in CHANGE_KINDS and not (tool or git):
+                item["status"] = "reported_complete"
+                self.normalizations.append({"mode": "applied_without_patch_as_reported", "event": item["id"]})
+            if item["status"] in OBSERVED and item["kind"] == "outcome" and records and not any(
+                    r.role == "tool_result" and r.derivation == "original" for r in records):
+                item["status"] = "reported_complete"
+                self.normalizations.append({"mode": "observed_without_result_as_reported", "event": item["id"]})
+            if item["basis"] == "tool_record" and records and not tool:
+                item["basis"] = "git_artifact" if git else "explicit_statement"
+                self.normalizations.append({"mode": "tool_basis_without_tool_record", "event": item["id"]})
+
+    def drop_rule_breaking_relations(self, output: dict, broken: list[tuple[dict, str]]) -> None:
+        """Drop extracted relations whose endpoints break a relation rule (`check_relation`: a verifies that does not
+        lead from a change to an observed outcome or rests on inference, an answers that does not leave a question).
+
+        Repairing one resends the whole unit for a single link, and the link is a claim the rules already refuse; the
+        events stay, the relation is left out and named in limitations. Audited as `relation_dropped_by_rule`."""
+        if not broken:
+            return
+        gone = {edge["id"] for edge, _ in broken}
+        output["edge_candidates"] = [edge for edge in output["edge_candidates"] if edge["id"] not in gone]
+        for edge, reason in broken:
+            self.normalizations.append({"mode": "relation_dropped_by_rule", "relation": edge["relation"]})
+            output["limitations"].append(f"dropped relation {edge['id']} ({edge['relation']}): {reason.split(':', 1)[0]}.")
 
     def drop_unchecked_doc_verifies(self, output: dict, graph: dict) -> int:
         """Drop a verifies between a documentation-only change and a run that never names that file.

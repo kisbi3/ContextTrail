@@ -110,7 +110,11 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--trigger", choices=["hook"], help=argparse.SUPPRESS)
         sub.add_argument("--integrate-evidence", choices=["full", "reuse"], help=argparse.SUPPRESS)
         sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
-        sub.add_argument("--integrate-output", choices=["full", "patch", "draft"], help=argparse.SUPPRESS)
+        sub.add_argument("--integrate-output", choices=["full", "patch", "draft", "draft_only"], help=argparse.SUPPRESS)
+        sub.add_argument("--economy", action=argparse.BooleanOptionalAction, default=None,
+                         help=tr("이 프로젝트에 저장: 통합·재검토 호출 없이 추출만으로 그래프를 만듦(호출·토큰 약 절반, 단위 사이 연결은 추출이 제안한 것만)",
+                                 "Saved for this project: build the graph from extraction alone, with no integrate or review call "
+                                 "(about half the calls and tokens; links across units only where the extraction proposes them)"))
         sub.add_argument("--no-tui", action="store_true")
         sub.add_argument("--no-mouse", action="store_true", help=tr("터미널 화면에서 마우스를 쓰지 않음(터미널의 글자 선택 사용)",
                                                                    "No mouse on the terminal screen (use the terminal's own text selection)"))
@@ -169,7 +173,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--context-mode", choices=["full", "lean"], help=argparse.SUPPRESS)
     sub.add_argument("--integrate-evidence", choices=["full", "reuse"], help=argparse.SUPPRESS)
     sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
-    sub.add_argument("--integrate-output", choices=["full", "patch", "draft"], help=argparse.SUPPRESS)
+    sub.add_argument("--integrate-output", choices=["full", "patch", "draft", "draft_only"], help=argparse.SUPPRESS)
     # Fewer records per unit splits a fixture so later units integrate against an existing graph.
     sub.add_argument("--unit-records", type=int, help=argparse.SUPPRESS)
     langsmith_options(sub)
@@ -362,6 +366,8 @@ def _options(args, store: Store) -> AnalysisConfig:
             options[key] = str(value.expanduser().resolve()) if isinstance(value, Path) else value
     if getattr(args, "no_escalation", False):
         options.pop("escalation_model", None)
+    if getattr(args, "economy", None) is not None:
+        options["economy"] = args.economy
     if options.get("output_language") == "auto":
         # Detected again at the next plan from the person's messages.
         options.pop("output_language")
@@ -385,6 +391,10 @@ def _options(args, store: Store) -> AnalysisConfig:
     values["retry_failed"] = bool(getattr(args, "retry_failed", False))
     values["runner_name"], values["base_model"] = options.get("runner"), options.get("model")
     values["semantic_review"] = getattr(args, "semantic_review", True)
+    if options.get("economy"):
+        # Extraction alone: the code-built draft is published, and the review that would patch it is not called.
+        values["semantic_review"] = False
+        values.setdefault("integrate_output", "draft_only")
     values["langsmith_enabled"] = getattr(args, "langsmith_enabled", False)
     values["langsmith_include_content"] = getattr(args, "langsmith_include_content", False)
     values["langsmith_project"] = getattr(args, "langsmith_project", None)

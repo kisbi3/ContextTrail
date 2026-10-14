@@ -211,7 +211,7 @@ def test_a_long_tool_result_is_shown_as_head_and_tail_and_the_rest_is_readable(l
     assert "omitted" not in person
 
 
-def test_one_repair_round_hears_about_a_bad_quote_and_a_bad_relation_together():
+def test_one_repair_round_hears_about_a_bad_quote_while_a_bad_relation_is_left_out():
     edit = SourceRecord("edit", "codex", "s", "tool_call", "Tool: exec\n./install.sh", {}, tool_call_id="c")
     ran = SourceRecord("ran", "codex", "s", "tool_result", '{"wall_time_seconds":2.257741238,"exit_code":0}', {},
                        tool_call_id="c")
@@ -234,7 +234,9 @@ def test_one_repair_round_hears_about_a_bad_quote_and_a_bad_relation_together():
         EvidenceValidator(records, provided).check_extraction(output, "unit", "snap", {"events": []})
     message = str(caught.value)
     assert "quote not found uniquely in the cited lines: ran:1-1" in message
-    assert "verifies must link a change" in message and "tmp:e1" in message
+    # The relation the rules refuse is not a repair item: it is left out and named in limitations.
+    assert "verifies must link a change" not in message and output["edge_candidates"] == []
+    assert any("tmp:e1" in line and "verifies must link a change" in line for line in output["limitations"])
 
 
 def test_an_output_whose_end_cannot_be_shown_is_sent_whole():

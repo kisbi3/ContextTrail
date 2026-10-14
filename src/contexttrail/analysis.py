@@ -59,7 +59,9 @@ class AnalysisConfig:
     # `patch`: the review answers only what it changes instead of rewriting the whole GraphDelta.
     review_output: str = "patch"
     # `patch`: code adds every candidate as extracted and the integrator answers only its changes;
-    # `draft`: the same, with no integrate call while the graph is still empty.
+    # `draft`: the same, with no integrate call while the graph is still empty; `draft_only`: no integrate call
+    # whenever the code-built draft passes the checks (`--economy`), so links across units are only those the
+    # extraction itself proposes.
     integrate_output: str = "draft"
     extract_workers: int = 1
     max_calls: int = 30
@@ -137,9 +139,9 @@ class AnalysisConfig:
                                "integrate_evidence must be full or reuse."))
         if self.review_output not in {"full", "patch"}:
             raise FlowError(tr("review_output은 full 또는 patch이어야 합니다.", "review_output must be full or patch."))
-        if self.integrate_output not in {"full", "patch", "draft"}:
-            raise FlowError(tr("integrate_output은 full, patch 또는 draft이어야 합니다.",
-                               "integrate_output must be full, patch or draft."))
+        if self.integrate_output not in {"full", "patch", "draft", "draft_only"}:
+            raise FlowError(tr("integrate_output은 full, patch, draft 또는 draft_only이어야 합니다.",
+                               "integrate_output must be full, patch, draft or draft_only."))
         if self.audit and self.trigger == "hook":
             raise FlowError(tr("자동 갱신은 감사(--audit)를 하지 않습니다.", "Automatic updates never run an audit (--audit)."))
         if self.record_chars > self.unit_chars or self.unit_chars >= self.task_chars:
@@ -261,13 +263,13 @@ def _incomplete_input(issues: list[str]) -> bool:
 CONTEXT_POLICY_VERSION = "relevance_v2"
 # `lean`: earlier work reaches the model as graph (events, edges, quotes) and a few records, not as
 # whole records. Cut finely, a piece's neighbours are already in the graph.
-LEAN_CITED_LINES, LEAN_PREVIOUS_RECORDS, LEAN_CONTEXT_EVENTS = 3, 2, 12
+LEAN_CITED_LINES, LEAN_PREVIOUS_RECORDS, LEAN_CONTEXT_EVENTS = 3, 2, 6
 # An audit unit (`analyze --audit`) is stored under this prefix, so the ordinary plan leaves it alone, and
 # shows the model up to AUDIT_NOTES note events of the unit's records in full, past the context event limit.
 AUDIT_PREFIX, AUDIT_NOTES = "audit_", 40
 # Lean mode's budget for context-only text and its cap on nearby records of the other source type.
-LEAN_CONTEXT_CHARS, LEAN_CROSS_RECORDS = 24_000, 3
-LEAN_INDEX_RECORDS, LEAN_INDEX_EVENTS, LEAN_INDEX_FILES = 100, 60, 50  # the event index is by relevance; it must not grow with the graph
+LEAN_CONTEXT_CHARS, LEAN_CROSS_RECORDS = 8_000, 3
+LEAN_INDEX_RECORDS, LEAN_INDEX_EVENTS, LEAN_INDEX_FILES = 100, 30, 50  # the event index is by relevance; it must not grow with the graph
 # Repair hints: a few provided lines per failed quote, ranked by how close they are to it.
 NEAREST_LINES, NEAREST_POOL, NEAREST_LINE_CHARS = 3, 12, 400
 # What the extraction input carries besides the records: short IDs, a tool-step outline
@@ -613,6 +615,23 @@ def unit_cost(record: SourceRecord) -> int:
     if view is None:
         return sum(min(len(line), LINE_CHARS + 90) + 1 for line in lines)
     return sum(min(len(line), LINE_CHARS + 90) + 1 for line in lines[:view[0]] + lines[view[1] - 1:]) + 120
+
+
+# Record fields the model never needs: hashes and native IDs identify a record for the code (which reads them
+# off the cited record itself), and the folder and worktree are the project's. Event provenance is derived from
+# the citations (`event_provenance_from_evidence`). About 40% of a shown record on a Codex-heavy project.
+HIDDEN_RECORD_FIELDS = ("locator", "content_hash", "source_version", "native_record_id", "parent_record_id",
+                        "worktree_id", "cwd")
+
+
+def record_for_model(record: SourceRecord) -> dict:
+    """A record's metadata as the model sees it: what it can cite or reason with, without empty or default values."""
+    result = {key: value for key, value in record.metadata().items() if key not in HIDDEN_RECORD_FIELDS}
+    for key, default in (("derivation", "original"), ("git", {}), ("lineage", {}), ("tool_call_id", None),
+                         ("session_id", None), ("recorded_at", None)):
+        if result.get(key) == default:
+            result.pop(key)
+    return result
 
 
 def _shown(record: SourceRecord, harness: "Harness", *, read: bool = False, context: bool = False) -> dict:
@@ -1341,8 +1360,7 @@ class Harness:
             raise FlowError("requested text exceeds the limit. Request a smaller line range.")
         self.provided.setdefault(source_id, []).append((start, end))
         self.dependencies[source_id] = record.content_hash
-        result = record.metadata()
-        result.pop("locator")
+        result = record_for_model(record)
         result["lines"] = [{"line": n, "text": shown_line(lines[n - 1])} for n in range(start, end + 1)]
         return result
 
@@ -2384,8 +2402,8 @@ class Engine:
             mode = self.config.integrate_output
             draft = draft_delta(candidate_set, graph["version"], snapshot_id) if mode != "full" else None
             published = False
-            if mode == "draft" and not graph["events"]:
-                # Nothing to join yet: the draft is the delta, under the same checks.
+            if (mode == "draft" and not graph["events"]) or mode == "draft_only":
+                # Nothing to join yet (or `--economy`): the draft is the delta, under the same checks.
                 try:
                     check(copy.deepcopy(draft))
                     delta, published = draft, True

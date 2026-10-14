@@ -90,12 +90,14 @@ def test_verifies_joins_a_change_to_the_run_that_exercised_it(laboratory):
     assert (turned["edge_candidates"][0]["from_event_id"], turned["edge_candidates"][0]["to_event_id"]) == (
         "tmp:change", "tmp:run")
     assert [n["mode"] for n in checker.normalizations].count("relation_direction_corrected") == 1
-    with pytest.raises(FlowError, match="verifies must link a change.*tmp:e"):
-        check([edge("tmp:e", "tmp:change", "tmp:report", "verifies", pool["answer"])])
-    with pytest.raises(FlowError, match="verifies must link a change.*tmp:e"):
-        check([edge("tmp:e", "tmp:report", "tmp:change", "verifies", pool["answer"])])
-    with pytest.raises(FlowError, match="not inferred"):
-        check([edge("tmp:e", "tmp:change", "tmp:run", "verifies", pool["run"], basis="inferred")])
+    # A relation the rules refuse is left out (and named in limitations) instead of costing a repair round.
+    for broken, reason in (([edge("tmp:e", "tmp:change", "tmp:report", "verifies", pool["answer"])], "verifies must link a change"),
+                           ([edge("tmp:e", "tmp:report", "tmp:change", "verifies", pool["answer"])], "verifies must link a change"),
+                           ([edge("tmp:e", "tmp:change", "tmp:run", "verifies", pool["run"], basis="inferred")], "not inferred")):
+        output, checker = extraction(events, broken), validator(pool)
+        checker.check_extraction(output, "unit", "snap", store.graph())
+        assert output["edge_candidates"] == [] and [n["mode"] for n in checker.normalizations] == ["relation_dropped_by_rule"]
+        assert any(reason in line and "tmp:e" in line for line in output["limitations"]), output["limitations"]
 
 
 def test_answers_starts_at_the_question(laboratory):
@@ -108,8 +110,9 @@ def test_answers_starts_at_the_question(laboratory):
     turned = extraction(events, [edge("tmp:e", "tmp:a", "tmp:q", "answers", pool["answer"])])
     validator(pool).check_extraction(turned, "unit", "snap", store.graph())
     assert turned["edge_candidates"][0]["from_event_id"] == "tmp:q"
-    with pytest.raises(FlowError, match="answers must lead from a question event"):
-        check([edge("tmp:e", "tmp:a", "tmp:a", "answers", pool["answer"])])
+    output = extraction(events, [edge("tmp:e", "tmp:a", "tmp:a", "answers", pool["answer"])])
+    validator(pool).check_extraction(output, "unit", "snap", store.graph())
+    assert output["edge_candidates"] == [] and "answers must lead from a question event" in output["limitations"][-1]
 
 
 def test_later_update_cannot_leave_a_verification_pointing_at_an_unobserved_result(laboratory):
@@ -160,12 +163,15 @@ def test_every_claim_error_is_reported_in_one_round(laboratory):
               event("tmp:fix", pool["run"], "revision", "observed_success", "tool_record"),
               event("tmp:q", pool["question"], "goal", "asked")]
     edges = [edge("tmp:e", "tmp:q", "tmp:change", "answers", pool["question"])]
-    for check in (lambda: validator(pool).check_extraction(extraction(events, edges), "unit", "snap", store.graph()),
-                  lambda: validator(pool).apply_delta(delta(store.graph(), events, edges), store.graph(), "snap", "run")):
+    # An extraction leaves the rule-breaking relation out rather than reporting it; a delta still reports it.
+    for check, names in ((lambda: validator(pool).check_extraction(extraction(events, edges), "unit", "snap", store.graph()),
+                          ("tmp:change", "tmp:fix", "asked status is only")),
+                         (lambda: validator(pool).apply_delta(delta(store.graph(), events, edges), store.graph(), "snap", "run"),
+                          ("tmp:change", "tmp:fix", "asked status is only", "answers must lead"))):
         with pytest.raises(FlowError) as raised:
             check()
         message = str(raised.value)
-        assert all(name in message for name in ("tmp:change", "tmp:fix", "asked status is only", "answers must lead"))
+        assert all(name in message for name in names)
 
 
 def test_new_observed_result_without_a_relation_is_signalled_for_review():
@@ -266,3 +272,31 @@ def test_recording_time_and_sessions_come_from_the_citations(laboratory):
     assert result["session_ids"] == [pool["run"].session_id]
     assert checker.normalizations[-1] == {"mode": "event_provenance_from_evidence",
                                           "fields": ["recorded_at", "session_ids", "worktree_ids"]}
+
+
+def test_a_change_marked_applied_without_a_tool_record_is_a_reported_change(laboratory):
+    """Seen live (priceimpact, Codex gpt-6.1-sol): one such status cost a repair round with the whole unit resent."""
+    _, store, _, _, make = laboratory
+    pool = records(make)
+    said = event("tmp:said", pool["answer"], "action", "applied")
+    patched = event("tmp:patched", pool["patch"], "action", "applied", "tool_record")
+    output, checker = extraction([said, patched], []), validator(pool)
+    checker.check_extraction(output, "unit", "snap", store.graph())
+    assert [item["status"] for item in output["event_candidates"]] == ["reported_complete", "applied"]
+    assert [n for n in checker.normalizations if n["mode"] == "applied_without_patch_as_reported"] == [
+        {"mode": "applied_without_patch_as_reported", "event": "tmp:said"}]
+
+
+def test_an_observed_result_without_a_tool_result_and_a_tool_basis_without_a_tool_record_are_read_as_cited(laboratory):
+    """Seen live (repairfix eval, Codex gpt-6.1-sol): each cost a repair round with the whole unit resent."""
+    _, store, _, _, make = laboratory
+    pool = records(make)
+    said = event("tmp:said", pool["answer"], "outcome", "observed_success")
+    ran = event("tmp:ran", pool["run"], "outcome", "observed_success", "tool_record")
+    stated = event("tmp:stated", pool["answer"], "outcome", "reported_complete", "tool_record")
+    output, checker = extraction([said, ran, stated], []), validator(pool)
+    checker.check_extraction(output, "unit", "snap", store.graph())
+    assert [(item["status"], item["basis"]) for item in output["event_candidates"]] == [
+        ("reported_complete", said["basis"]), ("observed_success", "tool_record"), ("reported_complete", "explicit_statement")]
+    assert sorted(n["mode"] for n in checker.normalizations) == ["observed_without_result_as_reported",
+                                                                  "tool_basis_without_tool_record"]

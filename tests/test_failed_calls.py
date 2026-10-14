@@ -19,15 +19,14 @@ def test_a_persons_answered_goal_is_read_as_their_question(laboratory):
     checker.check_extraction(output, "unit", "snap", store.graph())
     assert (output["event_candidates"][0]["kind"], output["event_candidates"][0]["status"]) == ("question", "asked")
     assert "user_goal_as_answered_question" in [n["mode"] for n in checker.normalizations]
-    # Only a goal resting on the person's own words has one reading.
+    # Only a goal resting on the person's own words has one reading; otherwise the goal stays and the answers
+    # relation, which the rules refuse, is left out.
     said = {**event("tmp:q", pool["answer"], "goal", "proposed"), "actor": "user"}
-    with pytest.raises(FlowError, match="answers must lead from a question event"):
-        validator(pool).check_extraction(extraction(
-            [said, answer], [edge("tmp:e", "tmp:q", "tmp:a", "answers", pool["answer"])]), "unit", "snap", store.graph())
-    with pytest.raises(FlowError, match="answers must lead from a question event"):
-        validator(pool).check_extraction(extraction(
-            [event("tmp:q", pool["question"], "goal", "proposed"), answer],
-            [edge("tmp:e", "tmp:q", "tmp:a", "answers", pool["answer"])]), "unit", "snap", store.graph())
+    for kept in (said, event("tmp:q", pool["question"], "goal", "proposed")):
+        output = extraction([kept, answer], [edge("tmp:e", "tmp:q", "tmp:a", "answers", pool["answer"])])
+        validator(pool).check_extraction(output, "unit", "snap", store.graph())
+        assert output["event_candidates"][0]["kind"] == "goal" and output["edge_candidates"] == []
+        assert "answers must lead from a question event" in output["limitations"][-1]
 
 
 def test_a_short_fragment_counts_where_it_appears_once(laboratory):

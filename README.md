@@ -286,6 +286,8 @@ The chosen runner, settings, and consent are stored in the per-scope local DB. A
 
 **Change re-review.** If integration results contain unlinked execution results, unlinked fixes, or modifications to existing events/relationships, the same runner reviews the proposed changes one more time. This adds one call to that work unit. Use `--no-review` to skip for the current run only.
 
+**Economy mode.** `contexttrail analyze --economy` (saved for the project; `--no-economy` turns it off) builds the graph from the extraction call alone: no integrate call and no change re-review, so a unit takes one call (two when its answer needs a repair). Links across units are then only those the extraction proposes from the related existing events it is shown. On the repair-fix fixture with Codex `gpt-6.1-sol` it used about a third of the default's input tokens and scored 13·13·12 of 18 against the default's 13·14·13 ([record](docs/plans/PERFORMANCE_PLAN.md) §18).
+
 For non-interactive use, consent can be given with explicit `--yes`. The following command goes beyond a simple example and allows real transmission — confirm scope first:
 
 ```bash

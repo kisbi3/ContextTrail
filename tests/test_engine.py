@@ -360,12 +360,13 @@ def test_reported_completion_cannot_become_observed_success(laboratory):
     class UnsupportedSuccess(FixtureRunner):
         def run(self, task, schema, cancel):
             output = super().run(task, schema, cancel)
-            output["event_candidates"][0]["status"] = "observed_success"
+            if task["stage"] == "extract":
+                output["event_candidates"][0]["status"] = "observed_success"
             return output
+    # Without a tool result the claim is read as what its citation backs: a reported completion.
     result = engine.analyze(UnsupportedSuccess)
-    assert result["status"] == "failed"
-    assert "tool_result" in result["error"]
-    assert store.graph()["events"] == []
+    assert result["status"] == "complete", result
+    assert [event["status"] for event in store.graph()["events"]] == ["reported_complete"]
 
 
 def test_runner_change_does_not_reanalyse_integrated_units(laboratory):
@@ -915,6 +916,32 @@ def test_integrate_draft_needs_no_call_while_the_graph_is_empty(laboratory):
     graph = draft_store.graph()
     extracted = [task for task, _ in seen if task["stage"] == "extract"]
     assert graph["version"] == 1 and graph["events"] and extracted
+
+
+def test_draft_only_publishes_every_unit_without_an_integrate_call(laboratory):
+    """`--economy`: the second session's unit meets a graph that already has events, and still gets no integrate call."""
+    scope, store, engine, records, make = laboratory
+    records.extend([make(CASES[0][0]), make(CASES[1][0], key="s2", role="assistant"),
+                    make(CASES[0][0], key="t1", session="session-2"), make(CASES[1][0], key="t2", role="assistant", session="session-2")])
+    economy_engine, economy_store = _rerun(scope, records, replace(engine.config, integrate_output="draft_only", semantic_review=False))
+    result, seen = _capturing_analyze(economy_engine)
+    assert result["status"] == "complete", result
+    assert len([task for task, _ in seen if task["stage"] == "extract"]) == 2
+    assert not [task for task, _ in seen if task["stage"] != "extract"]
+    assert not _integrate_calls(economy_store)
+    assert economy_store.graph()["version"] == 2
+
+
+def test_economy_is_saved_for_the_project_and_turns_off_integrate_and_review(tmp_path):
+    from contexttrail import cli
+    store = Store(tmp_path / "state", "scope")
+    on = cli._options(cli.parser().parse_args(["analyze", str(tmp_path), "--economy"]), store)
+    assert (on.integrate_output, on.semantic_review) == ("draft_only", False)
+    later = cli._options(cli.parser().parse_args(["analyze", str(tmp_path)]), store)
+    assert (later.integrate_output, later.semantic_review) == ("draft_only", False)
+    off = cli._options(cli.parser().parse_args(["analyze", str(tmp_path), "--no-economy"]), store)
+    # Back to the default (the suite pins the integrate mode, `conftest.integrate_by_model`).
+    assert (off.integrate_output, off.semantic_review) == (AnalysisConfig().integrate_output, True)
 
 
 def test_draft_delta_follows_one_existing_match_and_drops_a_link_it_folds_onto_itself():
