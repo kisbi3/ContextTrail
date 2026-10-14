@@ -55,6 +55,8 @@ IGNORED_NO_ANALYSIS_VALUE = {
     # the context it added. With `contexttrail context --hook` that context is ContextTrail's own saved graph.
     "attachment:hook_success": "a hook ran successfully — its answer, not project work",
     "attachment:hook_additional_context": "context a session-start hook added (ContextTrail's own memory) — not project work",
+    # A Stop hook that sent the agent back; the same text is also a `Stop hook feedback: …` user record, which is read.
+    "attachment:hook_blocking_error": "a Stop hook's block — its text is read from the 'Stop hook feedback' user message",
 }
 
 # Record types that may hold decision-relevant context but are not parsed yet.
