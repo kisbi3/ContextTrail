@@ -51,6 +51,10 @@ IGNORED_NO_ANALYSIS_VALUE = {
     "pr-link": "PR link metadata",
     "progress": "progress indicator",
     "tag": "tag",
+    # A session-start hook's bookkeeping (Claude Code 2.1.29x): the hook ran (with its JSON answer as stdout), and
+    # the context it added. With `contexttrail context --hook` that context is ContextTrail's own saved graph.
+    "attachment:hook_success": "a hook ran successfully — its answer, not project work",
+    "attachment:hook_additional_context": "context a session-start hook added (ContextTrail's own memory) — not project work",
 }
 
 # Record types that may hold decision-relevant context but are not parsed yet.
