@@ -60,6 +60,10 @@ class SourceRecord:
         return result
 
 
+# The fixed first words of the project memory a session-start hook gives the agent (`session_context`). opencode
+# posts it as a user message, so the analyzer must not take it for a person's request.
+SESSION_CONTEXT_HEAD = "ContextTrail project memory for this session"
+
 # Text a harness puts in the user role. None of it is something the person typed.
 HARNESS_TEXT = ("<task-notification>", "<command-name>", "<command-message>", "<command-args>",
                 "<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>",
@@ -70,6 +74,8 @@ HARNESS_TEXT = ("<task-notification>", "<command-name>", "<command-message>", "<
                 # Claude Code and Codex (0.16x).
                 "ContextTrail notes are on for this project", "ContextTrail stored the notes queued",
                 "Stop hook feedback", "<hook_prompt",
+                # The project memory a session-start hook gives the agent (opencode posts it as a user message).
+                SESSION_CONTEXT_HEAD,
                 # A skill's body, which Claude Code puts in the user role when the agent invokes the skill.
                 "Base directory for this skill:")
 

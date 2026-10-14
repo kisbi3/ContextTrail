@@ -38,7 +38,7 @@ from .schema import SHORT_QUOTE_CHARS, STATUSES, EvidenceValidator, draft_delta,
 from .sources.local import jsonl_files, parse_claude, parse_codex, source_homes
 from .sources.opencode import opencode_databases, parse_opencode
 from .store import Store, in_journal
-from .util import FlowError, ident, now, private_dir
+from .util import FlowError, ident, now, private_dir, safe_text
 
 # A person's request is made into an event by code from the transcript (`link_request_turns`), so the
 # agent notes what it decided, proposed, changed and observed.
@@ -78,6 +78,10 @@ REMINDER = ("ContextTrail notes are on for this project, and this turn changed f
             "Before finishing, use the ContextTrail note skill (contexttrail-note, or contexttrail:note from the plugin): record the decisions, changes and observed results of "
             "this turn with `contexttrail note` (one call per event, quoting the tool output or message exactly). "
             "If nothing in this turn is worth recording, just finish.")
+# The reminder names what it is about: up to this many calls (kind and a short target, never the output), so the
+# agent sees which edits and checks have no note instead of searching its turn for them.
+REMINDER_CALLS = 5
+REMINDER_CHARS = 80
 
 
 def current_session(environ: dict[str, str] | None = None) -> str:
@@ -537,6 +541,27 @@ def unnoted_work(records: list[SourceRecord], since: float) -> list[SourceRecord
             and _seconds(record.recorded_at) > since and work(record)]
 
 
+def describe_work(record: SourceRecord) -> str:
+    """One call as the reminder names it: its kind (edit, test, commit, vcs, run) and a short target, the file
+    edited or the first `REMINDER_CHARS` characters of the command. The call's output is never part of it."""
+    _, target, hint = step_hint(record)
+    text = target.removeprefix("patch ") if hint == "edit" else _command_text(record.content.partition("\n")[2])
+    text = safe_text(text, multiline=False)
+    return f"{hint} {text[:REMINDER_CHARS]}" + ("…" if len(text) > REMINDER_CHARS else "")
+
+
+def reminder_text(work: list[SourceRecord]) -> str:
+    """`REMINDER`, followed by the most recent distinct calls without a note (at most `REMINDER_CALLS`, oldest
+    first) and how many more there were. The first sentence is unchanged: `model.HARNESS_TEXT` keeps the
+    reminder from being taken for a person's request by that wording."""
+    calls = list(dict.fromkeys(describe_work(record) for record in work))
+    shown = calls[-REMINDER_CALLS:]
+    lines = [REMINDER, "", "Calls in this turn without a note:", *(f"- {call}" for call in shown)]
+    if len(calls) > len(shown):
+        lines.append(f"- … and {len(calls) - len(shown)} more earlier")
+    return "\n".join(lines)
+
+
 def hook(stdin_text: str | None, **homes: Path | None) -> dict[str, Any] | None:
     """What the end-of-turn hook answers: a `block` with the reminder, or None to let the turn end.
 
@@ -598,7 +623,7 @@ def _remind(scope: Scope, store: Store, payload: dict, session_id: str, **homes:
     if not work:
         return None
     _mark(store, session_id, "reminded_at", max(record.recorded_at for record in work))
-    return {"decision": "block", "reason": REMINDER}
+    return {"decision": "block", "reason": reminder_text(work)}
 
 
 def refused(store: Store, session_id: str) -> list[str]:

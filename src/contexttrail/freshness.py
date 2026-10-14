@@ -63,18 +63,14 @@ def build_index(scope: Scope, snapshot: Snapshot, *, codex_home: Path | None, cl
             "homes": {"codex": str(codex_home), "claude": str(claude_home), "opencode": str(opencode_home)}}
 
 
-def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_home: Path | None = None,
-          opencode_home: Path | None = None, budget_bytes: int | None = None) -> dict[str, Any]:
-    """The lag between the graph and the transcripts, as counts.
-
-    `since_scan.parsed` says whether the changed files were parsed (then `sessions`, `records`,
-    `newest_at` and `by_source` are exact) or only counted against the budget.
-    """
-    started = time.perf_counter()
+def stored(store: Store) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, dict]]:
+    """What the store alone says: the graph, the records the last scan ingested that no analysis processed, the
+    skipped and unaudited units. No transcript file is touched. Returns (result without `since_scan`, the saved
+    source index, the stored records)."""
     graph = store.graph()
     index = store.get_meta(INDEX_KEY)
     sources = store.sources()
-    stored_units = store.units()
+    stored_units = store.units(results=False)
     failed = held_failures(store, sources, stored_units)
     held = {i for entry in failed.values() for i in entry["sources"]}
     # Records of a unit skipped for a failure of its own are counted with that unit, not as waiting.
@@ -89,6 +85,46 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
         "failed_units": len(failed),
         "unaudited": unaudited(store, sources, stored_units),
         "since_scan": None, "took_ms": 0}
+    return result, index, sources
+
+
+def lag(store: Store) -> dict[str, Any]:
+    """The part of `stored` a session start needs, without reading every stored record: when the last scan was,
+    how many records no analysis processed (counted in SQL, those of units skipped for a failure of their own
+    left out as in `stored`), and how many units were skipped. Same numbers as `stored`, a fraction of the time
+    (60,000 records: about 0.05 s against 1.5 s)."""
+    index = store.get_meta(INDEX_KEY)
+    units = store.units(results=False)
+    failures = store.unit_failures()
+    rows = store.sources_by_id({i for entry in failures.values() for i in entry.get("sources") or []})
+    failed = held_failures(store, rows, units)
+    held = {i for entry in failed.values() for i in entry["sources"]}
+    pending = store.pending_records() - sum(
+        1 for i in held if rows[i]["available"] and rows[i]["processed_hash"] != rows[i]["content_hash"])
+    return {"scanned_at": index.get("scanned_at") if index else None, "pending_records": pending,
+            "failed_units": len(failed)}
+
+
+def cached_since_scan(store: Store, scanned_at: str | None) -> dict[str, Any] | None:
+    """Records written since the last scan, as an earlier `find`/`status` counted them; None when no count was
+    kept for this scan. Nothing is parsed or measured here: the count is as old as the check that made it."""
+    cache = store.get_meta(CACHE_KEY) or {}
+    if not scanned_at or (cache.get("basis") or {}).get("scanned_at") != scanned_at:
+        return None
+    files = cache.get("files") or {}
+    return {"records": sum(entry.get("records", 0) for entry in files.values()),
+            "sessions": len({tuple(s) for entry in files.values() for s in entry.get("sessions", [])})}
+
+
+def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_home: Path | None = None,
+          opencode_home: Path | None = None, budget_bytes: int | None = None) -> dict[str, Any]:
+    """The lag between the graph and the transcripts, as counts.
+
+    `since_scan.parsed` says whether the changed files were parsed (then `sessions`, `records`,
+    `newest_at` and `by_source` are exact) or only counted against the budget.
+    """
+    started = time.perf_counter()
+    result, index, sources = stored(store)
     if not index:
         result["took_ms"] = int((time.perf_counter() - started) * 1000)
         return result

@@ -22,6 +22,18 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v contexttrail >/dev/null 2>&1 && contexttrail context --hook || true",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

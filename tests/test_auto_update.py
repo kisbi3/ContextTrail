@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from contexttrail import auto_update
+from contexttrail.auto_update import opencode_plugin
 from contexttrail.analysis import AnalysisConfig, Engine
 from contexttrail.auto_update import (analyze_argv, child_argv, decide, enable, failing, hook_folder, install_hooks,
                                       parse_duration, run_child, run_hook, spawn)
@@ -253,6 +254,45 @@ def test_hooks_are_merged_into_the_hosts_files_and_user_entries_survive(tmp_path
     with pytest.raises(FlowError, match="JSON"):
         install_hooks(home, python, claude=False, codex=True, opencode=False)
     assert (home / ".codex" / "hooks.json").read_text() == "{not json"
+
+
+def test_the_session_start_hook_is_merged_beside_the_stop_hooks_and_keeps_user_entries(tmp_path):
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    mine = {"matcher": "startup", "hooks": [{"type": "command", "command": "echo my-own-start-hook"}]}
+    (home / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"SessionStart": [mine]}}), encoding="utf-8")
+    python = Path("/venv/bin/python")
+    install_hooks(home, python, claude=True, codex=True, opencode=True)
+    settings = json.loads((home / ".claude" / "settings.json").read_text())
+    assert settings["hooks"]["SessionStart"][0] == mine
+    # The memory is context for the session: a synchronous command (an async hook cannot add context), short timeout.
+    ours = settings["hooks"]["SessionStart"][1]["hooks"][0]
+    assert ours == {"type": "command", "command": "/venv/bin/python -m contexttrail context --hook", "timeout": 10}
+    assert len(settings["hooks"]["Stop"]) == 2  # the Stop hooks are as they were
+    codex = json.loads((home / ".codex" / "hooks.json").read_text())
+    assert codex["hooks"]["SessionStart"] == [{"hooks": [{"type": "command", "command": "/venv/bin/python -m contexttrail context --hook",
+                                                           "timeout": 10}]}]
+    # Idempotent; another interpreter needs --force, which replaces ours and keeps the user's.
+    before = (home / ".claude" / "settings.json").read_text()
+    install_hooks(home, python, claude=True, codex=True, opencode=True)
+    assert (home / ".claude" / "settings.json").read_text() == before
+    with pytest.raises(FlowError, match="--force"):
+        install_hooks(home, Path("/other/python"), claude=True, codex=False, opencode=False)
+    install_hooks(home, Path("/other/python"), claude=True, codex=True, opencode=True, force=True)
+    settings = json.loads((home / ".claude" / "settings.json").read_text())
+    assert settings["hooks"]["SessionStart"][0] == mine and len(settings["hooks"]["SessionStart"]) == 2
+    assert "/other/python -m contexttrail context --hook" in settings["hooks"]["SessionStart"][1]["hooks"][0]["command"]
+    assert len(json.loads((home / ".codex" / "hooks.json").read_text())["hooks"]["SessionStart"]) == 1
+
+
+def test_the_opencode_plugin_posts_the_memory_when_a_session_is_created():
+    plugin = opencode_plugin(Path("/venv/bin/python"))
+    # session.created (type checked against @opencode-ai/plugin 1.19.0): the top-level sessions only, a message that asks
+    # for no reply, and the idle branch that was there before is unchanged.
+    assert 'event.type === "session.created"' in plugin and "info.parentID" in plugin
+    assert "context --hook < ${new Response(request)}" in plugin and "noReply: true" in plugin
+    assert "hookSpecificOutput" in plugin and "memory.additionalContext" in plugin
+    assert 'event.type !== "session.idle"' in plugin and "note --hook < ${new Response(request)}" in plugin
 
 
 def test_the_run_ledger_names_the_trigger(tmp_path):

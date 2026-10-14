@@ -314,6 +314,16 @@ def note_hook_command(python: Path | None = None) -> str:
     return f"{shlex.quote(str(python or sys.executable))} -m contexttrail note --hook"
 
 
+CONTEXT_MARKER = "contexttrail context --hook"
+# A session start waits for its hooks, and the command reads the saved state only: a few seconds is already a failure.
+CONTEXT_TIMEOUT = 10
+
+
+def context_hook_command(python: Path | None = None) -> str:
+    import shlex
+    return f"{shlex.quote(str(python or sys.executable))} -m contexttrail context --hook"
+
+
 def _merge_hooks(document: dict[str, Any], event: str, entry: dict[str, Any], *, force: bool, where: str,
                  marker: str = _MARKER) -> bool:
     """Put one managed command hook under `document[event]`, replacing an older managed one only with --force."""
@@ -371,6 +381,9 @@ def install_claude_hook(home: Path, python: Path | None = None, *, force: bool =
     # The note reminder must answer before the turn ends (its `block` sends the agent back), so it is not async.
     note = {"matcher": "", "hooks": [{"type": "command", "command": note_hook_command(python), "timeout": 30}]}
     changed = _merge_hooks(hooks, "Stop", note, force=force, where=str(path), marker=NOTE_MARKER) or changed
+    # The project memory goes into the session as context, so it is not async either.
+    memory = {"matcher": "", "hooks": [{"type": "command", "command": context_hook_command(python), "timeout": CONTEXT_TIMEOUT}]}
+    changed = _merge_hooks(hooks, "SessionStart", memory, force=force, where=str(path), marker=CONTEXT_MARKER) or changed
     if changed:
         _write_json(path, document)
     return path
@@ -391,6 +404,10 @@ def install_codex_hook(home: Path, python: Path | None = None, *, force: bool = 
     changed = _merge_hooks(hooks, "Stop", entry, force=force, where=str(path))
     note = {"hooks": [{"type": "command", "command": note_hook_command(python), "timeout": 30}]}
     changed = _merge_hooks(hooks, "Stop", note, force=force, where=str(path), marker=NOTE_MARKER) or changed
+    # Codex 0.162 takes `hookSpecificOutput.additionalContext` from a SessionStart command (checked against the
+    # schemas shipped in the binary); without a matcher it runs for startup, resume, clear, compact and fork.
+    memory = {"hooks": [{"type": "command", "command": context_hook_command(python), "timeout": CONTEXT_TIMEOUT}]}
+    changed = _merge_hooks(hooks, "SessionStart", memory, force=force, where=str(path), marker=CONTEXT_MARKER) or changed
     if changed:
         _write_json(path, document)
     return path
@@ -404,6 +421,8 @@ def opencode_plugin(python: Path | None = None) -> str:
 // Notes (`contexttrail note`): the session's ID is put into the tool shell so `--session current`
 // finds it, and when a session goes idle with edits or checks it did not note, in a project where
 // notes are on, the reminder `contexttrail note --hook` answers with is sent to it once.
+// Project memory (`contexttrail context --hook`): when a session is created, in a project where it is on,
+// the summary the command answers with is posted to the session as a message that asks for no reply.
 export const ContextTrailAutoUpdate = async ({{ client, directory, $ }}) => {{
   const python = {json.dumps(interpreter)}
   return {{
@@ -411,6 +430,21 @@ export const ContextTrailAutoUpdate = async ({{ client, directory, $ }}) => {{
       if (input && input.sessionID) output.env.OPENCODE_SESSION_ID = input.sessionID
     }},
     event: async ({{ event }}) => {{
+      if (event.type === "session.created") {{
+        const info = event.properties && event.properties.info
+        // A sub-agent session (it has a parent) works from what its parent gives it.
+        if (!info || !info.id || info.parentID) return
+        try {{
+          const request = JSON.stringify({{ session_id: info.id, cwd: info.directory || directory, source: "startup" }})
+          const result = await $`${{python}} -m contexttrail context --hook < ${{new Response(request)}}`.quiet().nothrow()
+          const text = result.stdout.toString().trim()
+          if (!text) return
+          const memory = JSON.parse(text).hookSpecificOutput
+          if (!memory || !memory.additionalContext) return
+          await client.session.prompt({{ path: {{ id: info.id }}, body: {{ noReply: true, parts: [{{ type: "text", text: memory.additionalContext }}] }} }})
+        }} catch {{}}
+        return
+      }}
       if (event.type !== "session.idle") return
       try {{
         await $`${{python}} -m contexttrail auto-update --folder ${{directory}}`.quiet().nothrow()

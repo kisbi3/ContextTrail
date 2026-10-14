@@ -198,6 +198,9 @@ def plugin_files(version: str) -> dict[Path, str]:
         files[PLUGIN_DIR / "skills" / role / "SKILL.md"] = _skill(role, None, "plugin")
     hooks = {"hooks": {"Stop": [
         {"matcher": "", "hooks": [{"type": "command", "command": _guarded("auto-update"), "async": True, "timeout": 30}]},
-        {"matcher": "", "hooks": [{"type": "command", "command": _guarded("note --hook"), "timeout": 30}]}]}}
+        {"matcher": "", "hooks": [{"type": "command", "command": _guarded("note --hook"), "timeout": 30}]}],
+        # The project memory is context for the session, so this hook is synchronous; it prints nothing where it is off.
+        "SessionStart": [
+        {"matcher": "", "hooks": [{"type": "command", "command": _guarded("context --hook"), "timeout": 10}]}]}}
     files[PLUGIN_DIR / "hooks" / "hooks.json"] = json.dumps(hooks, indent=2) + "\n"
     return files
