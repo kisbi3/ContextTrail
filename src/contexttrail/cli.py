@@ -115,6 +115,12 @@ def parser() -> argparse.ArgumentParser:
                          help=tr("이 프로젝트에 저장: 통합·재검토 호출 없이 추출만으로 그래프를 만듦(호출·토큰 약 절반, 단위 사이 연결은 추출이 제안한 것만)",
                                  "Saved for this project: build the graph from extraction alone, with no integrate or review call "
                                  "(about half the calls and tokens; links across units only where the extraction proposes them)"))
+        sub.add_argument("--light", action=argparse.BooleanOptionalAction, default=None,
+                         help=tr("이 프로젝트에 저장: 코드가 도구 기록으로 뼈대(편집·테스트·커밋)를 만들고, 모델은 단위당 한 번 제목·요약과 "
+                                 "결정·이유만 씀. 근거는 기록 ID로만 연결(인용 대조·수리·통합·재검토 없음)",
+                                 "Saved for this project: code builds the skeleton (edits, tests, commits) from the tool records and "
+                                 "one model call per unit writes titles, summaries, decisions and reasons, linked to records by ID "
+                                 "(no quote matching, repair, integrate or review)"))
         sub.add_argument("--no-tui", action="store_true")
         sub.add_argument("--no-mouse", action="store_true", help=tr("터미널 화면에서 마우스를 쓰지 않음(터미널의 글자 선택 사용)",
                                                                    "No mouse on the terminal screen (use the terminal's own text selection)"))
@@ -176,6 +182,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--integrate-output", choices=["full", "patch", "draft", "draft_only"], help=argparse.SUPPRESS)
     # Fewer records per unit splits a fixture so later units integrate against an existing graph.
     sub.add_argument("--unit-records", type=int, help=argparse.SUPPRESS)
+    sub.add_argument("--light", action="store_true", help=tr("경량 분석(analyze --light와 같음)", "Light analysis (as analyze --light)"))
     langsmith_options(sub)
     route_options(sub)
     sub = commands.add_parser("review", help=tr("저장된 eval의 모델 후보·인용·검증 결과를 HTML로 열람. AI 호출 없음",
@@ -368,6 +375,8 @@ def _options(args, store: Store) -> AnalysisConfig:
         options.pop("escalation_model", None)
     if getattr(args, "economy", None) is not None:
         options["economy"] = args.economy
+    if getattr(args, "light", None) is not None:
+        options["light"] = args.light
     if options.get("output_language") == "auto":
         # Detected again at the next plan from the person's messages.
         options.pop("output_language")
@@ -391,7 +400,9 @@ def _options(args, store: Store) -> AnalysisConfig:
     values["retry_failed"] = bool(getattr(args, "retry_failed", False))
     values["runner_name"], values["base_model"] = options.get("runner"), options.get("model")
     values["semantic_review"] = getattr(args, "semantic_review", True)
-    if options.get("economy"):
+    if options.get("light"):
+        values["analysis_mode"] = "light"
+    if options.get("economy") or options.get("light"):
         # Extraction alone: the code-built draft is published, and the review that would patch it is not called.
         values["semantic_review"] = False
         values.setdefault("integrate_output", "draft_only")
@@ -721,6 +732,8 @@ def main(argv: list[str] | None = None) -> int:
             keys = {field.name for field in dataclasses.fields(AnalysisConfig)}
             options = {key: value for key, value in vars(args).items() if key in keys and value is not None}
             options.setdefault("max_calls", 20)
+            if getattr(args, "light", False):
+                options.update(analysis_mode="light", semantic_review=False, integrate_output="draft_only")
             if options.get("output_language") == "auto":
                 options.pop("output_language")
             if args.preview:

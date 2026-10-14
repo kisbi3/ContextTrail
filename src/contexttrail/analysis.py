@@ -63,6 +63,9 @@ class AnalysisConfig:
     # whenever the code-built draft passes the checks (`--economy`), so links across units are only those the
     # extraction itself proposes.
     integrate_output: str = "draft"
+    # `light` (`--light`): code builds the skeleton from the tool steps and one model call writes titles, summaries
+    # and the events code cannot see, citing records by ID only (light.py); no integrate or review call.
+    analysis_mode: str = "full"
     extract_workers: int = 1
     max_calls: int = 30
     # Work units for this run (never saved). Unset, the call cap alone bounds a run.
@@ -139,6 +142,8 @@ class AnalysisConfig:
                                "integrate_evidence must be full or reuse."))
         if self.review_output not in {"full", "patch"}:
             raise FlowError(tr("review_output은 full 또는 patch이어야 합니다.", "review_output must be full or patch."))
+        if self.analysis_mode not in {"full", "light"}:
+            raise FlowError(tr("analysis_mode는 full 또는 light이어야 합니다.", "analysis_mode must be full or light."))
         if self.integrate_output not in {"full", "patch", "draft", "draft_only"}:
             raise FlowError(tr("integrate_output은 full, patch, draft 또는 draft_only이어야 합니다.",
                                "integrate_output must be full, patch, draft or draft_only."))
@@ -192,6 +197,11 @@ EVIDENCE_POLICY_REUSE = (
 
 def build_task(stage: str, data: dict, language: str | None = None) -> dict:
     """One source of truth for the Runner request and the local input preview."""
+    if stage == "light":
+        return {"system": prompt("light"), "stage": stage, "instructions": "", "data": data,
+                "output_language": language or DEFAULT_LANGUAGE,
+                "wire_contract": "Use IDs in the short form shown in the input (S12). Every field of the schema is "
+                                 "present; start_line and end_line are null when an event rests on whole records."}
     # An audit adds its own rules after the stage's; an ordinary request is the same bytes as before.
     instructions = prompt(stage) + ("\n\n" + prompt("audit") if data.get("journal_audit") else "")
     return {"system": prompt("common"), "stage": stage, "instructions": instructions, "data": data,
@@ -2181,7 +2191,12 @@ class Engine:
                        self.config.extract_model, self.config.escalation_model,
                        self.config.runner_name, self.config.base_model, self.config.extract_effort,
                        self.config.output_language, *([self.config.context_mode] if self.config.context_mode != "lean" else []),
-                       *(["audit-v1", prompt("audit")] if self.config.audit else [])])
+                       *(["audit-v1", prompt("audit")] if self.config.audit else []),
+                       *(["light-v1", prompt("light")] if self._light() else [])])
+
+    def _light(self) -> bool:
+        """Light analysis applies to ordinary units; an audit reads noted sessions with the full extraction."""
+        return self.config.analysis_mode == "light" and not self.config.audit
 
     def _prepare_extraction(self, unit: dict, pool: dict[str, SourceRecord], graph: dict,
                             snapshot_id: str, run_id: str, runners: RunnerPool,
@@ -2268,19 +2283,32 @@ class Engine:
         else:
             self.store.save_unit(unit["id"], unit["sources"], h.dependencies, "parsed")
             h.runner, h.routing_role = runners.get("extract"), "extract"
-            try:
-                output = h.task("extract", data,
-                    lambda o: validator.check_extraction(o, unit["id"], snapshot_id, graph), validator=validator)
+            if self._light():
+                from . import light
+                items, edges = light.skeleton([pool[i] for i in unit["sources"]])
+                answer = h.task("light", light.request_data(unit, snapshot_id, data, items), light.answer_check,
+                                validator=validator, schema=light.LIGHT_SCHEMA)
+                output = light.extraction(answer, items, edges, unit, snapshot_id, h.pool, h.provided, validator)
+                try:
+                    validator.check_extraction(output, unit["id"], snapshot_id, graph)
+                except FlowError:
+                    # Nothing is asked again: what the checks refuse is left out and named in limitations.
+                    output, waived, dropped = validator.salvage_extraction(output, unit["id"], snapshot_id, graph)
                 draft = output
-                # Semantics are reviewed against the proposed GraphDelta. Extraction
-                # calls route to a second model only after bounded contract failure.
-                reasons = []
-            except TaskValidationError as exc:
-                if not self.config.escalation_model:
-                    output, waived, dropped = self._salvage_extraction(exc, validator, unit["id"], snapshot_id, graph)
-                else:
-                    reasons = ["bounded_validation_failure"]
-                    data["previous_validation_error"] = str(exc)[:400]
+            else:
+                try:
+                    output = h.task("extract", data,
+                        lambda o: validator.check_extraction(o, unit["id"], snapshot_id, graph), validator=validator)
+                    draft = output
+                    # Semantics are reviewed against the proposed GraphDelta. Extraction
+                    # calls route to a second model only after bounded contract failure.
+                    reasons = []
+                except TaskValidationError as exc:
+                    if not self.config.escalation_model:
+                        output, waived, dropped = self._salvage_extraction(exc, validator, unit["id"], snapshot_id, graph)
+                    else:
+                        reasons = ["bounded_validation_failure"]
+                        data["previous_validation_error"] = str(exc)[:400]
         should_escalate = bool(self.config.escalation_model and reasons)
         if should_escalate:
             if draft is not None:
