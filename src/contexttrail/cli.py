@@ -14,6 +14,7 @@ from pathlib import Path
 from . import __version__
 from . import auto_update
 from . import journal
+from . import session_context
 from .agent_commands import OPENCODE_PERMISSION_HINT, install_agent_commands
 from .auto_update import install_hooks
 from .agent_view import find, find_text, show, show_text
@@ -202,11 +203,11 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--cooldown", default="15m", help=tr("자동 실행 사이 최소 간격; 기본 15m", "Minimum gap between hook-started runs; default 15m"))
     sub.add_argument("--max-runs-per-day", type=int, default=8)
     sub.add_argument("--run", action="store_true", help=argparse.SUPPRESS)  # the detached child the hook starts
-    sub = commands.add_parser("install-hooks", help=tr("세 도구의 훅에 auto-update 명령을 등록 (설정 파일은 병합, 사용자 항목 유지)",
-                                                       "Register the auto-update command in the three tools' hooks (settings are merged, user entries kept)"))
-    sub.add_argument("--claude", action="store_true", help="~/.claude/settings.json: Stop hook (async)")
-    sub.add_argument("--codex", action="store_true", help="~/.codex/hooks.json: Stop hook")
-    sub.add_argument("--opencode", action="store_true", help="~/.config/opencode/plugins/contexttrail.ts: session.idle")
+    sub = commands.add_parser("install-hooks", help=tr("세 도구의 훅에 auto-update·note 알림·세션 시작 기억 명령을 등록 (설정 파일은 병합, 사용자 항목 유지)",
+                                                       "Register the auto-update, note reminder and session-start memory commands in the three tools' hooks (settings are merged, user entries kept)"))
+    sub.add_argument("--claude", action="store_true", help="~/.claude/settings.json: Stop hooks (auto-update async, note reminder) and SessionStart (project memory)")
+    sub.add_argument("--codex", action="store_true", help="~/.codex/hooks.json: Stop hooks and SessionStart")
+    sub.add_argument("--opencode", action="store_true", help="~/.config/opencode/plugins/contexttrail.ts: session.idle and session.created")
     sub.add_argument("--force", action="store_true", help=tr("이미 설치된 ContextTrail 훅 갱신", "Refresh ContextTrail hooks already installed"))
     sub = commands.add_parser("find", help=tr("저장된 사건 검색(검색어 없으면 최근 사건과 열린 항목). AI 호출 없음",
                                               "Search saved events (recent events and open items without a query); no AI calls"))
@@ -241,6 +242,13 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--disable", action="store_true")
     sub.add_argument("--hook", action="store_true", help=argparse.SUPPRESS)  # the end-of-turn hook: stdin JSON, never fails
     sub.add_argument("--json", action="store_true")
+    sub = commands.add_parser("context", help=tr("세션 시작 때 에이전트에게 넣는 프로젝트 기억(저장된 그래프의 요약): 켜기·끄기·미리 보기. AI 호출 없음",
+                                                 "The project memory given to the agent when a session starts (a summary of the saved graph): turn on or off, preview; no AI calls"))
+    sub.add_argument("folder", nargs="?", default=".")
+    sub.add_argument("--enable", action="store_true", help=tr("이 프로젝트에서 켬: SessionStart 훅이 요약을 세션에 넣음",
+                                                             "Turn it on for this project: the session-start hook puts the summary into the session"))
+    sub.add_argument("--disable", action="store_true")
+    sub.add_argument("--hook", action="store_true", help=argparse.SUPPRESS)  # the session-start hook: stdin JSON, never fails
     sub = commands.add_parser("install-commands", help=tr("Codex·Claude Code에 ContextTrail 명령 설치",
                                                           "Install the ContextTrail commands into Codex and Claude Code"))
     sub.add_argument("--force", action="store_true", help=tr("이미 설치된 ContextTrail 명령 갱신", "Refresh ContextTrail commands already installed"))
@@ -539,6 +547,40 @@ def _note(args) -> int:
     return 0
 
 
+def _context(args) -> int:
+    if args.hook:
+        # The session-start hook: nothing on stdout unless the project turned it on; exit 0 whatever happens.
+        try:
+            answer = session_context.hook(None if sys.stdin.isatty() else sys.stdin.read(65_536))
+        except Exception:
+            answer = None
+        if answer:
+            print(dumps(answer))
+        return 0
+    scope = Scope.resolve(args.folder)
+    store = Store(scope.state_dir, scope.id)
+    _screen_language(None, store)
+    if args.enable or args.disable:
+        (session_context.enable if args.enable else session_context.disable)(store)
+        print(tr(f"세션 시작 기억을 {'켰' if args.enable else '껐'}습니다: {safe_text(scope.folder)}",
+                 f"Session-start memory {'on' if args.enable else 'off'} for {safe_text(scope.folder)}"))
+        if args.enable:
+            print(tr("세션이 시작될 때 최근 결정·변경, 열린 항목, 실패한 시도, 미분석 기록 수가 에이전트의 문맥에 들어갑니다(저장된 그래프만 읽음, 최대 "
+                     f"{session_context.MAX_CHARS}자). 제목은 과거 기록에서 온 글이라 지시가 아닌 자료로 표시합니다. "
+                     "세션 시작 훅: contexttrail install-hooks --claude|--codex|--opencode",
+                     "When a session starts, recent decisions and changes, open items, failed attempts and the number of unanalyzed records go into the "
+                     f"agent's context (saved graph only, at most {session_context.MAX_CHARS} characters). Titles come from past records, so they are "
+                     "marked as data, not instructions. Session-start hook: contexttrail install-hooks --claude|--codex|--opencode"))
+        return 0
+    # Without a switch: the text a session would get now, so the person can read what their agent will be given.
+    text = session_context.build(store)
+    print(safe_text(text) if text else tr("아직 저장된 그래프가 없어 넣을 내용이 없습니다.", "There is no saved graph yet, so there is nothing to give."))
+    if not session_context.enabled(store):
+        print(tr("(이 프로젝트에서는 꺼져 있어 세션에 넣지 않습니다: contexttrail context --enable)",
+                 "(Off for this project, so no session gets it: contexttrail context --enable)"))
+    return 0
+
+
 def _status(args) -> int:
     scope = Scope.resolve(args.folder)
     store = Store(scope.state_dir, scope.id)
@@ -725,11 +767,15 @@ def main(argv: list[str] | None = None) -> int:
                      "contexttrail auto-update --enable --runner codex|claude --units N"))
             print(tr("note 알림 훅(Claude Code·Codex·opencode)은 note를 켠 프로젝트에서만 동작합니다: contexttrail note --enable",
                      "The note reminder hook (Claude Code, Codex, opencode) acts only in projects with notes on: contexttrail note --enable"))
+            print(tr("세션 시작 훅(Claude Code·Codex·opencode)은 켠 프로젝트에서만 프로젝트 기억을 세션에 넣습니다: contexttrail context --enable",
+                     "The session-start hook (Claude Code, Codex, opencode) gives the project memory only in projects where it is on: contexttrail context --enable"))
             return 0
         if args.command == "show":
             return _show(args)
         if args.command == "note":
             return _note(args)
+        if args.command == "context":
+            return _context(args)
         if args.command == "demo":
             folder, codex, claude = create_demo(args.path)
             scope = Scope.resolve(folder)

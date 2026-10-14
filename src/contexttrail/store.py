@@ -141,6 +141,23 @@ class Store:
             return {row["id"]: {**dict(row), "metadata": json.loads(row["metadata"])}
                     for row in db.execute("SELECT * FROM source_records")}
 
+    def sources_by_id(self, ids: set[str] | list[str]) -> dict[str, dict]:
+        """`sources()` for the named records only (a few rows instead of the whole table)."""
+        wanted, found = list(ids), {}
+        with self.connection() as db:
+            for start in range(0, len(wanted), _SQL_VARIABLES):
+                chunk = wanted[start:start + _SQL_VARIABLES]
+                marks = ",".join("?" * len(chunk))
+                for row in db.execute(f"SELECT * FROM source_records WHERE id IN ({marks})", chunk):
+                    found[row["id"]] = {**dict(row), "metadata": json.loads(row["metadata"])}
+        return found
+
+    def pending_records(self) -> int:
+        """How many available records no analysis has processed at their current content (counted in SQL)."""
+        with self.connection() as db:
+            return db.execute("SELECT COUNT(*) FROM source_records WHERE available=1 "
+                              "AND (processed_hash IS NULL OR processed_hash != content_hash)").fetchone()[0]
+
     def ingest(self, records: list[SourceRecord], *, partial: bool = False) -> tuple[set[str], set[str]]:
         """Store the records a scan read. A full scan marks every stored record it did not see as unavailable;
         a `partial` one (`contexttrail note`, which reads only its own session) leaves the others alone."""
@@ -288,12 +305,15 @@ class Store:
                                          "dependencies": json.loads(row["dependencies"]),
                                          "result": json.loads(row["result"]) if row["result"] is not None else None}
 
-    def units(self) -> list[dict]:
+    def units(self, *, results: bool = True) -> list[dict]:
+        """Every work unit. A caller that counts units by status passes `results=False`: the stored extraction
+        results are the bulk of the table and are then not read (`result` is None)."""
+        columns = "*" if results else "id,sources,dependencies,status,updated_at"
         with self.connection() as db:
-            rows = list(db.execute("SELECT * FROM work_units ORDER BY updated_at,id"))
+            rows = list(db.execute(f"SELECT {columns} FROM work_units ORDER BY updated_at,id"))
         return [{**dict(row), "sources": json.loads(row["sources"]),
                  "dependencies": json.loads(row["dependencies"]),
-                 "result": json.loads(row["result"]) if row["result"] is not None else None} for row in rows]
+                 "result": json.loads(row["result"]) if results and row["result"] is not None else None} for row in rows]
 
     # The `cache_key` column is vestigial and nothing reads it. Extraction reuse
     # is decided in Engine._extract_unit from `routing_signature` and
@@ -427,3 +447,34 @@ class Store:
         with self.connection() as db, db:
             db.execute("UPDATE llm_calls SET status='cancelled',finished_at=? WHERE finished_at IS NULL", (now(),))
             db.execute("UPDATE analysis_runs SET status='cancelled',finished_at=? WHERE finished_at IS NULL", (now(),))
+
+
+class ReadOnlyStore(Store):
+    """The saved state opened for reading only: nothing is created, migrated or written, and no file is left behind.
+
+    For a hook that must not leave anything in a project (`contexttrail context --hook`). The connection is
+    read-only with a short busy timeout, so an analysis writing at the same time (the database is in WAL
+    mode) neither blocks it nor is blocked by it. Even a read-only connection to a WAL database creates its
+    `-wal` and `-shm` files and cannot remove them, so when neither exists (no connection is open, and the
+    last one checkpointed everything into the main file) it opens the file `immutable`, which creates
+    nothing; when they exist it reads through them as an ordinary reader. Every read method of `Store` works;
+    a write raises `sqlite3.OperationalError`.
+    """
+
+    def __init__(self, directory: Path, scope_id: str = ""):
+        self.directory, self.scope_id = directory, scope_id
+        self.path = directory / "state.sqlite"
+        if self.path.is_symlink() or not self.path.is_file():
+            raise FlowError(tr("저장된 상태가 없습니다.", "There is no saved state."))
+
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        side_files = [self.path.with_name(self.path.name + suffix) for suffix in ("-wal", "-shm")]
+        mode = "mode=ro" if any(path.exists() for path in side_files) else "mode=ro&immutable=1"
+        db = sqlite3.connect(f"{self.path.as_uri()}?{mode}", uri=True, timeout=1)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA query_only=ON")
+        try:
+            yield db
+        finally:
+            db.close()

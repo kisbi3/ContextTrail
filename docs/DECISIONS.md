@@ -334,3 +334,16 @@
 - **"모델은 항상 이름으로 지정한다"는 지킨다:** CLI에 넘기는 것은 버전이 붙은 이름이고, 호출 기록의 요청 모델에도 그 이름이 남는다. 찾지 못하면 다른 모델로 넘어가지 않고 멈춘다.
 - **내장 목록을 쓰는 이유:** 서버에서 새로 받는 목록은 격리 안의 임시 HOME에 캐시가 없어 네트워크와 인증이 더 필요하다. 내장 목록은 설치된 Codex 버전과 함께 바뀌므로, 새 Sol은 Codex를 업데이트하면 쓰인다.
 - **이미 끝난 단위는 다시 보내지 않는다.** 라우팅 서명에는 설정값(`--model`을 주지 않으면 비어 있음)만 들어가므로 기본값이나 해석 결과가 바뀌어도 서명은 같다.
+
+## 2026-10-14: 세션 시작에 프로젝트 기억을 넣는다 (`contexttrail context --hook`), note 알림은 호출을 이름으로 댄다
+
+소유자 요청. 설계·검증 기록은 `docs/plans/SESSION_START_CONTEXT.md`.
+
+- **스킬이 아니라 훅.** `contexttrail-context` 스킬은 에이전트가 스스로 골라야 해서 거의 쓰이지 않을 것으로 본다. 세션 시작에 모델 호출 없이 2,000자 이하의 요약(최근 결정·변경, 열린 항목, 실패한 시도, 미분석 기록 수, `find`/`show` 안내)을 넣는다. 프로젝트별 opt-in(`context --enable`), 기본 꺼짐.
+- **이름은 요청대로 `context`.** 이미 스킬 이름이 `contexttrail-context`이고, `note --hook`·`auto-update`와 같은 모양(같은 명령이 켜기·끄기·훅 진입점·미리 보기)이다. `session-start`는 호스트마다 이벤트 이름이 다르다.
+- **모델이 쓴 글은 데이터다.** 제목은 한 줄 JSON 문자열로만 싣고 블록은 울타리와 "지시가 아님" 안내로 감싼다. 요약·인용은 싣지 않는다. (`SECURITY.md`)
+- **빨라야 하므로 전체 재파싱도, 전체 기록 읽기도 하지 않는다.** `freshness.lag`가 SQL 집계로 센다(6만 건에서 1.2초 → 0.05초). 값은 `freshness.stored`와 같다는 것을 테스트로 고정.
+- **opencode는 `session.created` + `noReply` 메시지.** 시스템 프롬프트 훅(`experimental.chat.system.transform`)은 실험 기능이고 모델이 쓴 글을 더 높은 신뢰 수준에 넣게 되어 쓰지 않는다. 형식은 `@opencode-ai/plugin` 1.19.0 타입 정의로 확인했고 실제 opencode에서 돌린 것은 아니다. Codex는 0.162.1 바이너리의 내장 스키마로, Claude Code는 공식 문서로 확인했다. 공식 문서 사이트가 이 환경에서 닫혀 있어 Codex·opencode는 문서가 아닌 설치본으로 확인했다고 적어 둔다.
+- **`source`(startup/resume/clear/compact/fork)로 건너뛰지 않는다.** `resume`에서 이전 기억이 문맥에 이미 있는지 확인하지 못했고, 약 500토큰을 한 번 더 넣는 비용이 기억 없는 세션보다 작다. 로컬 확인 뒤 다시 정한다. 다만 `install-hooks`와 플러그인이 같이 돌아 두 번 들어가는 것은 120초 안의 같은 `(session, source)`를 막는 표시로 방지한다.
+- **모델 입력 변경:** `model.HARNESS_TEXT`에 머리 문구(`ContextTrail project memory for this session`)가 늘어 이 문구로 시작하는 user 메시지는 `user_requests`/요청 사건에서 빠진다. 이전에 이런 메시지는 없었으므로(opencode가 이 훅의 텍스트를 user 메시지로 게시할 때만 생긴다) 기존 세션의 요청은 바이트 단위로 그대로다. 프롬프트·limitation·검증 메시지·라우팅 서명은 바뀌지 않았고 `Store.units(results=False)`, `freshness.stored/lag`는 분석 경로가 아니다.
+- **note 알림이 호출을 이름으로 댄다.** 10월 10일 감사에서 note 28개 옆에 note가 빠뜨린 사건 125개(대부분 중간 테스트 실패·수정, 문서 갱신)가 나왔다. 알림이 "note 없이 일했다"만 말하면 에이전트는 자기 턴에서 그것을 찾아야 한다. 이제 알림은 `unnoted_work`가 찾은 호출을 최대 5개(최근 것, 같은 항목은 한 번) 종류(edit/test/commit/vcs/run)와 짧은 대상(편집한 파일 경로, 명령의 앞 80자)으로 적고, 더 있으면 개수를 적는다. 출력은 넣지 않는다. 첫 문장(`ContextTrail notes are on for this project`)은 그대로다(`HARNESS_TEXT` 판별). opencode 플러그인은 `note --hook`의 `reason`을 그대로 게시하므로 같이 반영된다. **모델 입력:** 프롬프트·스키마·라우팅 서명은 바뀌지 않는다. 다만 알림은 전사본에 user 메시지로 남고(Claude Code `Stop hook feedback`, Codex `<hook_prompt>`, opencode 메시지) 분석기는 그것을 기록으로 읽을 수 있으므로, 이후 생기는 알림이 든 기록은 목록만큼 길다. 알림이 가는 것은 note를 켠 프로젝트의 세션이고 그 세션은 일반 분석에서 빠지므로 영향은 `analyze --audit`가 읽는 기록에 한정된다. 이미 끝난 단위는 기록 해시가 같아 다시 보내지 않는다.

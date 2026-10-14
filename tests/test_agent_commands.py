@@ -71,3 +71,17 @@ def test_the_plugin_bundle_in_the_repository_matches_the_generated_skills():
     note = (root / "plugins/contexttrail/skills/note/SKILL.md").read_text()
     assert note.startswith("---\nname: note\n") and "`contexttrail note --kind <kind>" in note
     assert "disable-model-invocation" in (root / "plugins/contexttrail/skills/update/SKILL.md").read_text()
+
+
+def test_the_plugin_bundle_starts_sessions_with_the_memory_hook_guarded_by_the_command_being_installed():
+    import json
+    from contexttrail import __version__
+    from contexttrail.agent_commands import plugin_files
+    root = Path(__file__).resolve().parent.parent
+    hooks = json.loads((root / "plugins/contexttrail/hooks/hooks.json").read_text())["hooks"]
+    start = hooks["SessionStart"][0]["hooks"][0]
+    # Synchronous (its output is the session's context), and silent where the `contexttrail` command is missing.
+    assert start["command"] == "command -v contexttrail >/dev/null 2>&1 && contexttrail context --hook || true"
+    assert "async" not in start and start["timeout"] == 10
+    assert [group["hooks"][0]["command"].split("&& ")[1].split(" ||")[0] for group in hooks["Stop"]] == ["contexttrail auto-update", "contexttrail note --hook"]
+    assert json.loads(plugin_files(__version__)[Path("plugins/contexttrail/hooks/hooks.json")]) == {"hooks": hooks}

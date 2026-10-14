@@ -228,6 +228,38 @@ def test_the_end_of_turn_hook_sends_the_agent_back_once_for_unnoted_work(project
     assert journal.hook("not json", **homes) is None
 
 
+def test_the_reminder_names_the_calls_without_a_note_and_never_their_output(project, tmp_path):
+    folder, scope, store = project
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    store.set_meta(journal.SETTINGS_KEY, {"enabled_at": "2026-10-07T09:00:00+00:00"})
+    reason = journal.hook(hook_input(folder), **homes)["reason"]
+    # The first sentence is what `HARNESS_TEXT` recognizes; the calls follow it.
+    assert reason.startswith(journal.REMINDER)
+    listed = reason[len(journal.REMINDER):].splitlines()
+    assert [line for line in listed if line.startswith("- ")] == ["- edit store.py", "- test pytest -q tests/test_store.py"]
+    assert "JSONDecodeError" not in reason and "has been updated" not in reason
+
+
+def test_the_reminder_lists_at_most_five_distinct_calls_with_short_targets():
+    from contexttrail.model import SourceRecord, is_user_prompt
+    def call(n, command=None, path=None):
+        body = {"command": command} if command else {"file_path": path, "old_string": "a", "new_string": "b"}
+        return SourceRecord(f"c{n}", "claude", SESSION, "tool_call", ("Tool: Bash\n" if command else "Tool: Edit\n") + json.dumps(body), {},
+                            recorded_at=f"2026-10-07T10:{n:02d}:00Z", cwd="/app")
+    long_command = "pytest -q " + "tests/test_something_quite_long.py " * 6
+    work = [call(1, path="/app/a.py"), call(2, path="/app/a.py"), call(3, path="/app/b.py"), call(4, path="/app/c.py"),
+            call(5, command=long_command), call(6, command="git commit -m 'Fix the store'"), call(7, path="/app/d.py"),
+            call(8, command="printf x >> out.txt")]
+    text = journal.reminder_text(work)
+    items = [line for line in text.splitlines() if line.startswith("- ")]
+    # Five most recent distinct calls, oldest first (a.py was edited twice and counts once), then the count left out.
+    assert items == ["- edit c.py", "- test " + long_command.strip()[:80] + "…", "- commit git commit -m 'Fix the store'",
+                     "- edit d.py", "- run printf x >> out.txt", "- … and 2 more earlier"]
+    assert text.startswith(journal.REMINDER) and not is_user_prompt(SourceRecord("r", "opencode", SESSION, "user", text, {}))
+    # Few calls: no "more" line.
+    assert "more earlier" not in journal.reminder_text(work[:3])
+
+
 def test_two_hooks_at_one_turns_end_remind_once(project, tmp_path):
     # `install-hooks --claude` and the plugin each add the hook, and the host runs both at once.
     from concurrent.futures import ThreadPoolExecutor
@@ -308,6 +340,8 @@ def test_the_opencode_plugin_passes_the_session_and_sends_the_reminder():
     plugin = opencode_plugin(Path("/venv/bin/python"))
     assert '"shell.env"' in plugin and "OPENCODE_SESSION_ID = input.sessionID" in plugin
     assert "note --hook < ${new Response(request)}" in plugin and "client.session.prompt" in plugin
+    # What the hook answers with, the calls included, is what is posted to the session.
+    assert 'text: decision.reason' in plugin
 
 
 def test_only_a_call_that_runs_note_is_kept_out_of_the_quotes():
