@@ -11,6 +11,9 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 - **The note reminder names the calls it is about.** When a turn ends with edits, commits, tests, Git changes or file-writing commands after the last note, the message sent back to the agent now lists up to five of them (the newest distinct ones, each a kind — edit, test, commit, vcs or run — and a short target: the file edited or the first 80 characters of the command; never their output) and how many more there were. The 2026-10-10 audit of this repository found 125 events next to 28 notes, mostly intermediate test failures, fixes and doc updates the note had skipped. The first sentence (`ContextTrail notes are on for this project`) is unchanged because `HARNESS_TEXT` matches it; the opencode plugin posts the hook's message as it is, so it carries the list too. The reminder is stored in transcripts as a user message, so a record holding a new one is longer; those sessions are read only by `analyze --audit`.
 - `Store.units(results=False)` skips the stored extraction results, and `freshness.stored` (the store-only part of `freshness.check`, now its own function) uses it: `find`, `status` and the hooks no longer read tens of megabytes of results to count units.
 
+### Fixed
+- **Claude Code's records of a session-start hook no longer warn as unsupported.** `attachment:hook_success` (the hook ran, its JSON answer as stdout) and `attachment:hook_additional_context` (the context it added) are in `IGNORED_NO_ANALYSIS_VALUE`; seen when `contexttrail context --hook` was checked live in Claude Code, Codex and opencode (`docs/plans/SESSION_START_CONTEXT.md` §8).
+
 ## 0.1.0a7 – 2026-10-11
 
 ### Added

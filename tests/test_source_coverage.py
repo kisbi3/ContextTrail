@@ -389,3 +389,21 @@ def test_a_file_history_delta_is_dropped_like_a_file_history_snapshot(tmp_path):
     snapshot = parse_claude(path, Scope.resolve(folder))
     assert not any("file-history-delta" in w for w in snapshot.limitations), snapshot.limitations
     assert "file-history-delta" in IGNORED_NO_ANALYSIS_VALUE and "file-history-delta" not in KNOWN_UNPARSED
+
+
+def test_the_session_start_hook_records_are_dropped_without_a_warning(tmp_path):
+    """Seen live with `contexttrail context --hook`: Claude Code keeps the hook's run and the context it added."""
+    from contexttrail.sources.local import parse_claude
+    folder = tmp_path / "app"
+    folder.mkdir()
+    path = tmp_path / "session.jsonl"
+    write(path, [{"type": "attachment", "cwd": str(folder), "uuid": "a1",
+                  "attachment": {"type": "hook_success", "hookEvent": "SessionStart", "stdout": "{}", "exitCode": 0}},
+                 {"type": "attachment", "cwd": str(folder), "uuid": "a2",
+                  "attachment": {"type": "hook_additional_context", "hookEvent": "SessionStart",
+                                 "content": ["ContextTrail project memory for this session"]}},
+                 {"type": "user", "cwd": str(folder), "uuid": "u1",
+                  "message": {"role": "user", "content": "설치 스크립트를 고쳐줘."}}])
+    snapshot = parse_claude(path, Scope.resolve(folder))
+    assert not any("hook_" in w for w in snapshot.limitations), snapshot.limitations
+    assert [r.content for r in snapshot.records if r.role == "user"] == ["설치 스크립트를 고쳐줘."]
