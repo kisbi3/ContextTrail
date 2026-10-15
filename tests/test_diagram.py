@@ -205,3 +205,26 @@ def test_selected_box_lights_its_links_and_dims_unrelated_boxes():
     assert all(attr & curses.A_DIM for text, attr in panels._cell_runs(plan) if "제안" in text)
     panels.current = "plan"
     assert not any(attr & curses.A_DIM for text, attr in panels._cell_runs(plan) if "제안" in text)
+
+
+def test_story_boxes_with_no_link_between_them_are_joined_in_order_by_an_unlabelled_dotted_line():
+    graph = story()
+    diagram = flow_diagram(graph, 110)
+    rows = diagram.lines()
+    column = diagram.boxes["q"][1] + 3
+    def between(upper, lower):
+        top = diagram.boxes[upper][0] + diagram.boxes[upper][2]
+        return [rows[row][column:column + 1] for row in range(top, diagram.boxes[lower][0])]
+    # fix → docs → answer have no relation between neighbours: dotted, ending on an open arrowhead.
+    assert set(between("fix", "docs")) <= {"┊", "▽"} and between("fix", "docs")[-1] == "▽"
+    assert set(between("docs", "answer")) <= {"┊", "▽"}
+    # A related pair keeps its labelled solid line, and the dotted line carries no link (nothing lights it).
+    assert "│" in between("q", "plan") and "┊" not in between("q", "plan")
+    top = diagram.boxes["fix"][0] + diagram.boxes["fix"][2]
+    assert not diagram.links(top, column)
+    # Separate flows are not joined to each other.
+    graph["events"].append(node("other", "action", "applied", "별도 기능 추가", session="s2"))
+    split = flow_diagram(graph, 110)
+    above = split.boxes["answer"][0] + split.boxes["answer"][2]
+    assert "┊" not in "".join(row[column:column + 1] for row in split.lines()[above:split.boxes["other"][0]])
+    assert ":" in "\n".join(flow_diagram(story(), 110, ascii_only=True).lines())

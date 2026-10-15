@@ -4,7 +4,8 @@ The left column is the story in recorded order. An observed result that checks a
 and leads nowhere else sits to the right of that change, joined by a labelled arrow, so
 "what checked this change" reads straight across; a result that leads on (a failure that
 motivated a fix) stays in the story column. Links between neighbouring boxes in the column
-are drawn down it; longer ones run on rails in the left margin and arrive under the number of
+are drawn down it, and neighbours with no link between them are joined by a dotted line with no
+label: what happened next, in recorded order, never a cause. Longer links run on rails in the left margin and arrive under the number of
 the box they left ("[02] 동기 ▶"), so a rail need not be traced back. A link that cannot be
 drawn is written inside both boxes ("→ [06] 동기", "← [05] 동기"), so every active relation is
 visible from each end and a box with no relation at all says so.
@@ -32,10 +33,10 @@ OBSERVED = {"observed_success", "observed_failure"}
 ANCHOR_ORDER = {"verifies": 0, "produces": 1}
 LIGHT = {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "│", "lt": "├", "rt": "┤",
          "down": "┬", "cross": "┼", "right": "▶", "arrow_down": "▼", "up": "↑", "back": "←", "forward": "→",
-         "flow": "═"}
+         "flow": "═", "then": "┊", "then_down": "▽"}
 PLAIN = {"tl": "+", "tr": "+", "bl": "+", "br": "+", "h": "-", "v": "|", "lt": "+", "rt": "+",
          "down": "+", "cross": "+", "right": ">", "arrow_down": "v", "up": "^", "back": "<-", "forward": "->",
-         "flow": "="}
+         "flow": "=", "then": ":", "then_down": "v"}
 # The selected box is redrawn with heavy lines.
 HEAVY = str.maketrans("┌┐└┘─│├┤┬┼", "┏┓┗┛━┃┣┫┳╋")
 MAX_RAILS = 4
@@ -387,11 +388,18 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
         previous: str | None = None
         for key in column:
             joined = previous is not None and (previous, key) in spine
-            if joined:
+            if previous is not None:
                 # Room below the previous box for "│ 라벨" and the arrowhead.
                 y = max(y, diagram.boxes[previous][0] + diagram.boxes[previous][2] + 2)
             top = y
             box(top, x_left, key)
+            if previous is not None and not joined:
+                # What happened next: a dotted, unlabelled line, so order is never read as a cause.
+                above = diagram.boxes[previous]
+                column_x = x_left + 3
+                for row in range(above[0] + above[2], top - 1):
+                    diagram.put(row, column_x, g["then"], "dim")
+                diagram.put(top - 1, column_x, g["then_down"], "dim")
             if joined:
                 above = diagram.boxes[previous]
                 column_x = x_left + 3
