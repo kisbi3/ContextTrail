@@ -30,6 +30,13 @@ def no_real_opencode_data(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def no_host_process(monkeypatch):
+    """The suite runs under whatever agent started it; a note's session comes from the test's environment."""
+    from contexttrail import journal
+    monkeypatch.setattr(journal, "host_tool", lambda pid=None: None)
+
+
+@pytest.fixture(autouse=True)
 def integrate_by_model(monkeypatch):
     """Most tests are about the integrate call itself; a test of draft publishing asks for it."""
     original = AnalysisConfig.__init__

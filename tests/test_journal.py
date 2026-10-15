@@ -500,3 +500,47 @@ def test_records_an_earlier_version_marked_for_a_noted_session_are_given_back(pr
     engine.preview_plan(engine.scan())
     pending = [row["metadata"]["recorded_at"][11:16] for row in store.sources().values() if not row["processed_hash"]]
     assert pending == ["10:00"]  # before notes were on and before anything a note cites (10:01)
+
+
+def test_a_run_with_no_person_at_the_terminal_is_not_sent_back(project, tmp_path):
+    folder, scope, store = project
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    store.set_meta(journal.SETTINGS_KEY, {"enabled_at": "2026-10-07T09:00:00+00:00"})
+    # `claude -p` records its entry point; the same work in an interactive session is reminded.
+    path = tmp_path / "claude" / "projects" / "app" / f"{SESSION}.jsonl"
+    path.write_text("\n".join(dumps({**r, "entrypoint": "sdk-cli"}) for r in transcript(folder)) + "\n", encoding="utf-8")
+    assert journal.hook(hook_input(folder), **homes) is None
+    path.write_text("\n".join(dumps({**r, "entrypoint": "cli"}) for r in transcript(folder)) + "\n", encoding="utf-8")
+    assert journal.hook(hook_input(folder), **homes)["decision"] == "block"
+    # `codex exec` says so in its session_meta, found by the transcript path the hook is given.
+    rollout = tmp_path / "rollout-exec.jsonl"
+    rollout.write_text(dumps({"type": "session_meta", "payload": {"id": "x", "originator": "codex_exec", "source": "exec"}}) + "\n")
+    assert journal.unattended({"transcript_path": str(rollout)}, "x", **homes)
+    rollout.write_text(dumps({"type": "session_meta", "payload": {"id": "x", "originator": "codex-tui", "source": "cli"}}) + "\n")
+    assert not journal.unattended({"transcript_path": str(rollout)}, "x", **homes)
+
+
+def test_a_note_from_codex_run_by_claude_code_in_the_same_project_finds_its_own_session(project, tmp_path):
+    folder, scope, store = project
+    # The outer Claude Code session works in the same project; its variables reach the Codex shell.
+    outer = tmp_path / "claude" / "projects" / "app" / "outer-claude.jsonl"
+    outer.write_text("\n".join(dumps({**r, "sessionId": "outer-claude"}) for r in [
+        row(folder, 0, "user", [{"type": "text", "text": "Ask Codex to review the store change."}]),
+        row(folder, 1, "assistant", [{"type": "tool_use", "id": "o1", "name": "Bash", "input": {"command": "pytest -q"}}]),
+        row(folder, 2, "user", [{"type": "tool_result", "tool_use_id": "o1", "content": "272 passed, 2 xfailed"}]),
+    ]) + "\n", encoding="utf-8")
+    environ = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "outer-claude", "CODEX_THREAD_ID": SESSION}
+    assert journal.current_in_project(scope, store, environ) == "outer-claude"
+    # The quotes say which session wrote the note; the nearest host process says it without them.
+    assert journal.current_in_project(scope, store, environ, quotes=["1 failed, 12 passed"]) == SESSION
+    assert journal.current_in_project(scope, store, environ, tool="codex") == SESSION
+    assert journal.current_in_project(scope, store, environ, tool="claude") == "outer-claude"
+
+
+def test_the_host_tool_is_read_from_a_process_command_line():
+    assert journal._tool_of("/opt/codex/vendor/x86_64-apple-darwin/bin/codex exec --json") == "codex"
+    assert journal._tool_of("node /usr/lib/node_modules/@openai/codex/bin/codex.js app-server") == "codex"
+    assert journal._tool_of("claude -rc") == "claude"
+    assert journal._tool_of("node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js") == "claude"
+    assert journal._tool_of("/Users/me/.opencode/bin/opencode") == "opencode"
+    assert journal._tool_of("/bin/zsh -c contexttrail note --kind outcome") is None

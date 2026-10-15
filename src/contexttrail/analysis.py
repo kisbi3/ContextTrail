@@ -1781,11 +1781,15 @@ class Harness:
         read_count, repair_count, attempt = 0, 0, 0
         broken_retried = False  # an unreadable answer is asked for once more, as a call of its own
         prompt_hash = digest([task["system"], task["instructions"], task["wire_contract"]])
-        schema_hash = digest(schema)
         aliases = IdAliases()
         while True:
             if self.cancel.is_set():
                 raise Cancelled(tr("분석 중단", "Analysis stopped"))
+            if read_count >= self.config.read_rounds and "needs_evidence" in schema.get("properties", {}).get("status", {}).get("enum", []):
+                # The evidence rounds are used up: this call and any repair must answer from what was given, so a
+                # unit that keeps asking ends with an answer instead of a failure that throws every call away.
+                schema = final_schema(schema)
+                task["evidence_requests"] = READS_USED_UP
             # The Runner sees short IDs; everything the host checks or stores uses the full ones.
             sent = aliases.wire(task)
             trimmed: list[str] = []
@@ -1814,7 +1818,7 @@ class Harness:
                 "routing_reasons": self.routing_reasons,
                 "worker_id": str(threading.get_ident()),
                 "prompt_hash": prompt_hash,
-                "schema_hash": schema_hash,
+                "schema_hash": digest(schema),
                 "input_digest": digest(sent),
                 "input_chars": len(dumps(sent)),
                 "input_trimmed": trimmed,
@@ -1990,6 +1994,17 @@ class Harness:
                                  {"validation_error": str(exc)[:400], "previous_output": submitted},
                                  prepare_repair)
                 repair_count += 1
+
+
+READS_USED_UP = ("None left: answer with status complete from the records and evidence you have, and name what "
+                 "you could not check in limitations.")
+
+
+def final_schema(schema: dict) -> dict:
+    """`schema` with `complete` as the only status: the answer after the last evidence round."""
+    final = copy.deepcopy(schema)
+    final["properties"]["status"] = {**final["properties"]["status"], "enum": ["complete"]}
+    return final
 
 
 def output_quote_chars(output: object) -> dict[str, int]:

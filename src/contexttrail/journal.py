@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import tempfile
 import time
 import uuid
@@ -101,27 +102,80 @@ def current_session(environ: dict[str, str] | None = None) -> str:
                     + tr(". --session에 세션 ID를 지정하세요.", ". Give --session a session ID."))
 
 
-def session_candidates(environ: dict[str, str] | None = None) -> list[str]:
-    """Every session the environment names, the most specific first (see SESSION_VARIABLES)."""
+# The variable each host sets for its own shell commands. One started from another's shell inherits the outer
+# one's too (a `codex exec` run by Claude Code sees CLAUDECODE and CLAUDE_CODE_SESSION_ID), so the environment
+# alone cannot tell which is running this command; the nearest host process can.
+TOOL_VARIABLES = {"opencode": "OPENCODE_SESSION_ID", "claude": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_THREAD_ID"}
+PACKAGE_TOOLS = {"@anthropic-ai/claude-code": "claude", "@openai/codex": "codex", "opencode-ai": "opencode"}
+ANCESTORS = 16
+
+
+def _tool_of(command: str) -> str | None:
+    for word in command.split()[:2]:
+        if Path(word).name in TOOL_VARIABLES:
+            return Path(word).name
+        found = next((tool for package, tool in PACKAGE_TOOLS.items() if package in word), None)
+        if found:
+            return found
+    return None
+
+
+def host_tool(pid: int | None = None) -> str | None:
+    """The nearest ancestor process that is Codex, Claude Code or opencode; None when it cannot be told (a
+    sandbox that hides other processes)."""
+    pid = os.getppid() if pid is None else pid
+    for _ in range(ANCESTORS):
+        if pid <= 1:
+            return None
+        try:
+            line = subprocess.run(["ps", "-o", "ppid=,args=", "-p", str(pid)], capture_output=True, text=True,
+                                  timeout=2, check=False).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return None
+        parent, _, command = line.partition(" ")
+        if not parent.isdigit():
+            return None
+        tool = _tool_of(command.strip())
+        if tool:
+            return tool
+        pid = int(parent)
+    return None
+
+
+def session_candidates(environ: dict[str, str] | None = None, tool: str | None = None) -> list[str]:
+    """Every session the environment names, the most specific first: the nearest host's own, then the order
+    of SESSION_VARIABLES."""
     environ = os.environ if environ is None else environ
+    own = [environ[TOOL_VARIABLES[tool]]] if tool and environ.get(TOOL_VARIABLES[tool]) else []
     try:
         first = [current_session(environ)]
     except FlowError:
         first = []
-    return list(dict.fromkeys(first + [environ[name] for name, _ in SESSION_VARIABLES if environ.get(name)]))
+    return list(dict.fromkeys(own + first + [environ[name] for name, _ in SESSION_VARIABLES if environ.get(name)]))
 
 
-def current_in_project(scope: Scope, store: Store | None, environ: dict[str, str] | None = None) -> str:
-    """The session running this command, among those the environment names: the first with records in this
-    project. An inherited variable (an opencode or Codex started from a Claude Code shell) names a session
-    elsewhere, so it is passed over; with none in the project, the most specific one is returned."""
-    candidates = session_candidates(environ)
+def current_in_project(scope: Scope, store: Store | None, environ: dict[str, str] | None = None,
+                       quotes: list[str] | None = None, tool: str | None = None) -> str:
+    """The session running this command, among those the environment names. The nearest host process names
+    it when it can be found; otherwise, of the sessions with records in this project, the first whose records
+    hold every quote, else the first with records. An inherited variable names an outer session, which may
+    be in this project too (Claude Code running `codex exec` here); with none in the project, the most
+    specific one is returned."""
+    tool = host_tool() if tool is None and environ is None else tool
+    candidates = session_candidates(environ, tool)
     if not candidates:
         return current_session(environ)  # raises the usual message
-    for candidate in candidates:
-        if session_records(scope, store, candidate):
-            return candidate
-    return candidates[0]
+    if tool and (environ if environ is not None else os.environ).get(TOOL_VARIABLES[tool]):
+        return candidates[0]
+    found = [(candidate, records) for candidate in candidates if (records := session_records(scope, store, candidate))]
+    for candidate, records in found:
+        try:
+            for quote in quotes or []:
+                locate(quotable(records), quote)
+        except FlowError:
+            continue
+        return candidate
+    return found[0][0] if found else candidates[0]
 
 
 class ReadOnlyMeta:
@@ -606,16 +660,17 @@ def _hook_lock(scope: Scope) -> Iterator[None]:
 def _remind(scope: Scope, store: Store, payload: dict, session_id: str, **homes: Path | None) -> dict[str, Any] | None:
     """The hook's answer for one turn, run under `_hook_lock`."""
     _, refused = flush(scope, store, **homes)
+    away = unattended(payload, session_id, **homes)
     if refused:
         # A host may not send the agent back twice in a turn; `note --list` shows these too.
         activity = store.get_meta(ACTIVITY_KEY, {}) or {}
         entry = activity.setdefault(session_id, {})
         entry["refused"] = (entry.get("refused", []) + refused)[-10:]
         store.set_meta(ACTIVITY_KEY, activity)
-    if refused and not payload.get("stop_hook_active"):
+    if refused and not payload.get("stop_hook_active") and not away:
         return {"decision": "block", "reason": REFUSED_REASON + " " + " | ".join(refused)[:3000]}
-    if payload.get("stop_hook_active"):
-        return None  # this turn was already sent back once
+    if payload.get("stop_hook_active") or away:
+        return None  # this turn was already sent back once, or no one is there to answer
     activity = (store.get_meta(ACTIVITY_KEY, {}) or {}).get(session_id, {})
     since = max(_seconds(activity.get("noted_at")), _seconds(activity.get("reminded_at")),
                 _seconds((store.get_meta(SETTINGS_KEY) or {}).get("enabled_at")))
@@ -624,6 +679,42 @@ def _remind(scope: Scope, store: Store, payload: dict, session_id: str, **homes:
         return None
     _mark(store, session_id, "reminded_at", max(record.recorded_at for record in work))
     return {"decision": "block", "reason": reminder_text(work)}
+
+
+# How a transcript says no person is at the terminal: Codex `exec` (session_meta `originator`/`source`) and Claude
+# Code's print mode or an SDK (`entrypoint` `sdk-cli`, `sdk-ts`, `sdk-py`).
+UNATTENDED_LINES = 20
+
+
+def unattended(payload: dict, session_id: str, *, codex_home: Path | None = None, claude_home: Path | None = None,
+               opencode_home: Path | None = None) -> bool:
+    """Whether the session runs without a person (`codex exec`, `claude -p`): its turn end is the run's end, and
+    sending the agent back would replace the answer the caller waits for (`-o`) with a note attempt."""
+    path = payload.get("transcript_path")
+    path = Path(path) if isinstance(path, str) and path else None
+    if path is None or not path.is_file():
+        codex, claude, _ = source_homes(codex_home, claude_home, opencode_home)
+        path = next((p for p, _ in jsonl_files(codex, claude) if session_id in p.name and "subagents" not in p.parts), None)
+    if path is None:
+        return False
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for _, line in zip(range(UNATTENDED_LINES), handle):
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                meta = row.get("payload") if row.get("type") == "session_meta" else None
+                if isinstance(meta, dict):
+                    return meta.get("originator") == "codex_exec" or meta.get("source") == "exec"
+                entry = row.get("entrypoint")
+                if isinstance(entry, str):
+                    return entry.startswith("sdk-")
+    except OSError:
+        return False
+    return False
 
 
 def refused(store: Store, session_id: str) -> list[str]:

@@ -406,6 +406,8 @@ def _options(args, store: Store) -> AnalysisConfig:
         # Extraction alone: the code-built draft is published, and the review that would patch it is not called.
         values["semantic_review"] = False
         values.setdefault("integrate_output", "draft_only")
+        # One evidence round: every round resends the whole request, and a new Codex session caches none of it.
+        values.setdefault("read_rounds", 1)
     values["langsmith_enabled"] = getattr(args, "langsmith_enabled", False)
     values["langsmith_include_content"] = getattr(args, "langsmith_include_content", False)
     values["langsmith_project"] = getattr(args, "langsmith_project", None)
@@ -527,7 +529,7 @@ def _note(args) -> int:
                      "Agents write decisions, changes and results with the contexttrail-note skill, and a session with notes "
                      "leaves analysis (analyze and automatic analysis). End-of-turn reminder hook: contexttrail install-hooks --claude|--codex|--opencode"))
         return 0
-    session = journal.current_in_project(scope, store) if args.session == "current" else args.session
+    session = journal.current_in_project(scope, store, quotes=args.quote) if args.session == "current" else args.session
     if args.list:
         events = journal.noted(store.graph(), session) if store else []
         version = store.graph()["version"] if store else None

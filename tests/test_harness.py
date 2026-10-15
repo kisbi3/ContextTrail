@@ -490,9 +490,27 @@ def test_needs_evidence_round_trip_then_complete(laboratory):
     assert runner.tasks[1]['evidence_rounds'][0][0]['results'][0]['source_id']=='s1'
 
 
+def test_after_the_last_evidence_round_the_answer_must_be_complete(laboratory):
+    _,store,engine,records,make=laboratory;records.append(make(CASES[0][0]))
+    class Asking(FixtureRunner):
+        """Asks for evidence whenever the schema it is given still allows it."""
+        def run(self,task,schema,cancel):
+            output=super().run(task,schema,cancel)
+            if task['stage']=='extract' and 'needs_evidence' in schema['properties']['status']['enum']:
+                output.update(status='needs_evidence',event_candidates=[],read_requests=[{'kind':'read_records','ids':['s1'],'start_line':1,'end_line':1,'query':None,'unit_id':None}])
+            return output
+    runner=Asking();result=engine.analyze(lambda:runner)
+    assert result['status']=='complete' and runner.calls==4   # two rounds, the forced answer, the integration
+    assert len(runner.tasks[2]['evidence_rounds'])==2
+    assert runner.tasks[2]['evidence_requests'].startswith('None left')
+    assert 'evidence_requests' not in runner.tasks[1]
+    assert store.graph()['version']==1
+
+
 def test_read_rounds_are_bounded(laboratory):
     _,store,engine,records,make=laboratory;records.append(make(CASES[0][0]))
     class Endless(FixtureRunner):
+        """Ignores the schema and keeps asking."""
         def run(self,task,schema,cancel):
             output=super().run(task,schema,cancel)
             output.update(status='needs_evidence',event_candidates=[],read_requests=[{'kind':'read_records','ids':['s1'],'start_line':1,'end_line':1,'query':None,'unit_id':None}])
