@@ -51,6 +51,26 @@ def test_the_skeleton_follows_the_tool_steps(laboratory):
     assert edges == [{"from": "K1", "to": "K2"}, {"from": "K3", "to": "K4"}]
 
 
+def test_the_same_check_run_again_with_nothing_changed_between_is_one_result(laboratory):
+    _, _, _, _, make = laboratory
+    recs = records(make)
+    def tool(key, role, text, call_id):
+        return replace(make(text, key=key, role=role), tool_call_id=call_id)
+    rerun = [tool("test1b", "tool_call", "Tool: Bash\n" + json.dumps({"command": "python -m pytest -q"}), "c2b"),
+             tool("test1b-out", "tool_result", "1 failed, 2 passed\nExit code: 1", "c2b")]
+    other = [tool("lint", "tool_call", "Tool: Bash\n" + json.dumps({"command": "ruff check ."}), "c5"),
+             tool("lint-out", "tool_result", "All checks passed!", "c5")]
+    items, edges = skeleton(recs[:5] + rerun + recs[5:9] + other + recs[9:])
+    # The repeated failing run folds into one failed result that keeps both runs' records; a different check
+    # after the passing run is its own result, and the edit → test links are unchanged.
+    assert [(i["kind"], i["status"]) for i in items] == [
+        ("action", "applied"), ("outcome", "observed_failure"), ("action", "applied"), ("outcome", "observed_success"),
+        ("outcome", "observed_success")]
+    assert items[1]["sources"] == ["test1b-out", "test1b", "test1-out", "test1"]
+    assert items[4]["title"] == "Check passed: ruff check ."
+    assert edges == [{"from": "K1", "to": "K2"}, {"from": "K3", "to": "K4"}, {"from": "K3", "to": "K5"}]
+
+
 def test_a_light_run_is_one_call_per_unit_and_cites_records_by_code(laboratory):
     scope, store, engine, recs, make = laboratory
     recs.extend(records(make))

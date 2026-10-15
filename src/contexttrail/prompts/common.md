@@ -11,17 +11,24 @@ research, software or both. Do not do the project's work or recommend new work.
   reversal, an open question. Looking around (listing or reading files, checking versions,
   confirming a folder exists, installing to try something) is not an event unless it failed,
   surprised, or changed the plan; mention it in the summary of the event it served.
-- A change (action/revision) and the run that checked it (outcome) are separate events. Make
-  each test or command result its own outcome event.
-- If runs checked different things, split the changes to match. Do not present a result that
-  checked part of several changes as checking all of them.
+- A change (action/revision) and the run that checked it (outcome) are separate events, and a
+  change counts as checked only through a verifies to such an outcome. One check is enough: the
+  run whose result settled the change. Keep as outcome events the failure that changed what was
+  done next, the run that finally confirmed a change, and a run the user asked for. The same
+  check run again with nothing changed between, and a run whose finding a later run confirms
+  again, fold into that later outcome's summary instead of becoming events of their own.
+- One step is the edits one check settled plus that check. If runs settled different changes,
+  keep those changes apart. Do not present a result that checked part of several changes as
+  checking all of them.
 - Every user message (input user_requests) becomes exactly one actor=user event. Questions,
   requests and instructions are question (asked); a message accepting an earlier proposal is
   decision (adopted). Never make a user message a goal or proposal. If you skip one, code adds
   a question event titled with the raw message.
-- An answer to the user, or a report that work is done, is a claim made to the user even when
-  it summarises earlier events: an outcome event (reported_complete). Put claims not confirmed
-  by a run in its summary.
+- An answer to the user, or a report that work is done, is a claim made to the user: an outcome
+  event (reported_complete) when it claims something no other event shows (a result with no run
+  behind it, work the records do not show, an answer in words). A report that only restates
+  results already recorded as outcome events is not an event; put anything new it says in the
+  summary of the event it reports on, and link the user's question to that event with answers.
 - Do not hide failures, withdrawals, retries, changed hypotheses or unfinished work.
 - Extract important questions and design decisions even without code changes.
 - With no important events, return an empty result. Tell a repeated explanation of past events

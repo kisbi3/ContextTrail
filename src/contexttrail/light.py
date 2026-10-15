@@ -5,7 +5,8 @@ again when one is off, then integrates and reviews. Here the evidence is a recor
 the code cuts the quoted lines itself, so a citation is always real source text and can never fail to match:
 
 - Code makes the skeleton from the tool steps (`tool_steps`): a change event per run of edits in a turn, an
-  observed result per test run (failed or passed by its result), a change per commit, and a `verifies` from the
+  observed result per test run (failed or passed by its result; the same check run again with no edit between
+  is one result, settled by the later run), a change per commit, and a `verifies` from the
   turn's last code edit to a test run after it in the same turn (never for a documentation-only edit). The
   person's requests and the dialog-turn links are made by code as in the full pipeline.
 - The model gets the unit's records (the same view as an extraction) and the skeleton, and answers with a title
@@ -94,8 +95,14 @@ def skeleton(assigned: list[SourceRecord]) -> tuple[list[dict], list[dict]]:
         if step["hint"] == "test" and step["result"]:
             failed = check_failed(content.get(step["result"], ""), step["failed"])
             item = {"id": f"K{len(items) + 1}", "kind": "outcome", "turn": turn, "sources": [step["result"], step["call"]],
-                    "status": "observed_failure" if failed else "observed_success",
+                    "status": "observed_failure" if failed else "observed_success", "check": step["target"],
                     "title": ("Check failed: " if failed else "Check passed: ") + step["target"][:60]}
+            if (previous is not None and previous["kind"] == "outcome" and previous["turn"] == turn
+                    and previous.get("check") == step["target"]):
+                # The same check run again with nothing changed between: one step, settled by the later run,
+                # which keeps the earlier run's records as evidence of the repeat.
+                previous.update(status=item["status"], title=item["title"], sources=item["sources"] + previous["sources"])
+                continue
             items.append(item)
             if turn in last_edit:
                 edges.append({"from": last_edit[turn]["id"], "to": item["id"]})

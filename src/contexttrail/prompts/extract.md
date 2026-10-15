@@ -18,10 +18,13 @@ evidence is always a quote from the records.
   - doc: true marks an edit that changed only documentation (Markdown, text, reStructuredText).
     Keep such edits in their own change event, apart from code changes.
   - Every edit call must appear in some event's evidence (a quote from its call or result);
-    code checks this. Several edits may form one change event, but split them when different
-    runs checked them.
-  - A run's result, including a test result, is the evidence for a result (outcome) event. Do not
-    miss test, install or script results. A commit result may back the change event it records.
+    code checks this. The edits one check settled form one change event; split them when
+    different runs settled them.
+  - A run's result, including a test result, is the evidence for a result (outcome) event: the
+    run that settled a change, a failure that turned the work, or a run the user asked for. Do
+    not miss those. A repeated run of the same check, or one a later run confirms again, goes
+    into that later outcome's summary, not an event of its own. A commit result may back the
+    change event it records.
   - A read is normally not an event. Its result is sent as a short head only; read the rest with
     read_records if a claim needs it.
 - Long tool results, injected instructions and summary records arrive as head and tail only. The
@@ -30,12 +33,15 @@ evidence is always a quote from the records.
   you have not seen.
 
 1. Read the assigned new records and work out what this stretch was trying to solve.
-2. Group continuous work toward one goal, but keep failures, changes of method and withdrawals as
-   separate events. Split a change from the run that checked it, and changes checked by different runs.
+2. Group continuous work toward one goal into steps: the edits one check settled as one change
+   event, that check as the outcome that verifies it, and each failure, change of method or
+   withdrawal that turned the work as its own event. A change and the run that checked it are
+   separate events; changes settled by different runs are separate changes.
 3. Extract goal/question/proposal/decision/action/outcome/revision events as needed, following
    the event rules: leave out looking around that did not matter.
 4. For claims of implementation, runs or success, check the related diff or tool result.
-   Make each run result an outcome event and link it from the change it checked with verifies.
+   Make the run that settled a change an outcome event and link it from the change with
+   verifies; a repeated or superseded run of the same check goes into that outcome's summary.
    Without evidence leave the status reported/unknown.
    If an event answered a question, link it from the question with answers.
 5. If the records refer to a past decision, read the related existing event and the source lines
