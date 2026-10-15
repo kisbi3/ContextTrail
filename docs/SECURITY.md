@@ -28,7 +28,7 @@ npm Codex 설치의 실행 패키지와 같은 `@openai` 폴더에 있는 현재
 
 모델 통신을 위해 네트워크는 허용한다(`--share-net`). **네트워크 egress allowlist나 CLI 바이너리 자체의 무결성 감사는 제공하지 않는다.** 환경변수는 최소화하고 사용자 프록시·커스텀 provider·API key 환경변수를 자동 전달하지 않는다.
 
-Codex는 ephemeral structured exec, read-only sandbox, approval never, web_search disabled와 확인된 위험 기능 토글 비활성화를 조합한다. 도구 실행 event가 감지되면 결과를 게시하지 않는다. 이 후속 탐지 자체가 실행 전 권한 통제를 대신하는 것은 아니다.
+Codex는 structured exec, read-only sandbox, approval never, web_search disabled와 확인된 위험 기능 토글 비활성화를 조합한다. 한 작업의 후속 호출(근거·수리·최종 답)은 첫 호출의 세션을 `codex exec resume`으로 이어 받는다. 그 세션은 실행마다 만드는 임시 HOME 안에만 저장되고 작업이 끝나면 임시 디렉터리와 함께 지워진다(사용자의 `~/.codex`에는 남지 않는다). 이어 받는 호출도 같은 기능 비활성화와 설정을 받으며, `exec resume`에는 `--sandbox`가 없어 read-only는 `-c sandbox_mode="read-only"`로 준다. 이어 받을 세션이 없거나 요청이 근거·수리 외에 바뀌면 새 세션으로 보낸다. 도구 실행 event가 감지되면 결과를 게시하지 않는다. 이 후속 탐지 자체가 실행 전 권한 통제를 대신하는 것은 아니다.
 
 Claude는 restricted/safe mode, tools 빈 목록, MCP wildcard disallow, strict empty MCP config, 빈 setting sources, 명시적 빈 hooks/plugins 설정과 세션 비저장을 조합한다. 조직의 managed policy나 CLI 버전에 따른 상호작용은 실제 smoke/권한 부정 시험으로 확인해야 한다.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import dataclasses
 import difflib
 import os
@@ -1778,6 +1779,17 @@ class Harness:
         task = _trace_operation(self.detailed_trace, f"build_{stage}_request",
                                 {"stage": stage, "data": data},
                                 lambda: build_task(stage, data, self.config.output_language))
+        # One conversation for this task's calls where the runner keeps one (Codex): a follow-up resumes it with
+        # only the new evidence or repair, so the earlier turns hit the prompt cache instead of being resent cold.
+        thread = self.runner.thread() if callable(getattr(self.runner, "thread", None)) else None
+        try:
+            return self._task(stage, data, checker, task, schema, validator, merge, thread)
+        finally:
+            if thread is not None:
+                thread.close()
+
+    def _task(self, stage, data, checker, task, schema, validator, merge, thread) -> dict:
+        run = self.runner.run if thread is None else functools.partial(self.runner.run, thread=thread)
         read_count, repair_count, attempt = 0, 0, 0
         broken_retried = False  # an unreadable answer is asked for once more, as a call of its own
         prompt_hash = digest([task["system"], task["instructions"], task["wire_contract"]])
@@ -1865,11 +1877,11 @@ class Harness:
 
                     @traceable(name=name, run_type="chain" if is_mock else "llm")
                     def model_call(request: dict, response_schema: dict) -> dict:
-                        return self.runner.run(request, response_schema, self.cancel)
+                        return run(request, response_schema, self.cancel)
 
                     output = model_call(sent, schema)
                 else:
-                    output = self.runner.run(sent, schema, self.cancel)
+                    output = run(sent, schema, self.cancel)
                 output = aliases.expand(output)
                 if self.review_capture:
                     raw_output = copy.deepcopy(output)
@@ -1887,6 +1899,8 @@ class Harness:
             output_chars = len(dumps(submitted))
             quote_chars = output_quote_chars(submitted)
             usage = getattr(self.runner, "last_usage", None)
+            if thread is not None and usage is not None:
+                usage = {**usage, "continued_session": bool(getattr(self.runner, "last_continued", False))}
             # Requested IDs/aliases are not evidence of the provider's actual model.
             actual_model = getattr(self.runner, "last_model", None)
             response_finalized = False

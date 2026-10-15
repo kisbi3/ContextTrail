@@ -17,7 +17,7 @@ from typing import Any
 from ..i18n import tr
 from ..util import BrokenOutput, Cancelled, FlowError, dumps, safe_text
 
-ADAPTER_VERSION = "cli-platform-sandbox-v3-output-checks"
+ADAPTER_VERSION = "cli-platform-sandbox-v4-codex-resume"
 MAX_OUTPUT = 8 * 1024 * 1024
 # A run always names its model: the sandbox hides the user's CLI config, so without this
 # the CLI's own default (which can change between releases) would silently decide.
@@ -107,6 +107,70 @@ def cli_error(name: str, text: str) -> str | None:
             messages.append(item.get("result"))
     message = next((m for m in reversed(messages) if isinstance(m, str) and m.strip()), None)
     return " ".join(safe_text(message).split())[:200] if message else None
+
+
+def codex_thread_id(text: str) -> str | None:
+    """The session ID `codex exec --json` announces (`thread.started`)."""
+    for line in text.splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict) and item.get("type") == "thread.started" and isinstance(item.get("thread_id"), str):
+            return item["thread_id"]
+    return None
+
+
+# What a follow-up call sends instead of the whole request: only the parts that grew. Anything else changed
+# (the records were trimmed, the instructions differ) starts a new session.
+FOLLOW_UP_KEYS = ("evidence_rounds", "evidence_requests", "repair")
+FOLLOW_UP = ("Follow-up to your previous answer in this conversation. The request above still holds; only what is "
+             "new is below. Answer again with the complete JSON the schema asks for.")
+
+
+class Thread:
+    """The Codex session of one task's calls, kept in one temporary home until `close`."""
+
+    def __init__(self, directory):
+        self.directory = directory
+        self.session: str | None = None
+        self.sent: dict | None = None
+        self.usage: dict | None = None
+
+    def follow_up(self, message: dict) -> dict | None:
+        """The part of `message` the session has not seen, or None when it must start again."""
+        if self.session is None or self.sent is None:
+            return None
+        changed = {key for key in message.keys() | self.sent.keys() if message.get(key) != self.sent.get(key)}
+        if not changed or not changed <= set(FOLLOW_UP_KEYS):
+            return None
+        before = self.sent.get("evidence_rounds") or []
+        rounds = message.get("evidence_rounds") or []
+        if rounds[:len(before)] != before:
+            return None
+        delta: dict = {"follow_up": FOLLOW_UP}
+        if len(rounds) > len(before):
+            delta["new_evidence_rounds"] = rounds[len(before):]
+        for key in ("evidence_requests", "repair"):
+            if key in changed and message.get(key) is not None:
+                delta[key] = message[key]
+        return delta
+
+    def answered(self, message: dict, session: str | None, usage: dict | None) -> dict | None:
+        """Record the call; returns its own usage. A resumed session reports the session's running total, so a
+        follow-up's usage is the difference from the previous call's."""
+        previous = self.usage if self.session and session == self.session else None
+        self.session, self.sent, self.usage = session, message if session else None, usage
+        if previous is None or usage is None:
+            return usage
+        return {key: value - previous.get(key, 0) if isinstance(value, int) and isinstance(previous.get(key, 0), int)
+                else value for key, value in usage.items()}
+
+    def reset(self) -> None:
+        self.session = self.sent = self.usage = None
+
+    def close(self) -> None:
+        self.directory.cleanup()
 
 
 def parse_codex_output(text: str, result_file: Path | None = None) -> tuple[dict, dict | None]:
@@ -212,6 +276,7 @@ class CLIRunner:
         self.name, self.model, self.effort, self.timeout = name, model or DEFAULT_MODELS[name], effort, timeout
         self.adapter_version = ADAPTER_VERSION
         self.calls, self.version, self.last_usage, self.last_model = 0, "not_checked", None, None
+        self.last_continued = False
         self.executable: str | None = None
         self.ready = False
         self.features: set[str] = set()
@@ -352,6 +417,11 @@ class CLIRunner:
         args += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
                  "--dir", "/pf-home", "--dir", "/pf-home/.codex", "--dir", "/pf-home/.claude",
                  "--ro-bind", str(work), "/work", "--bind", str(output), "/out"]
+        if self.name == "codex":
+            # Sessions outlive one process only here, so a follow-up call of the same task can resume one.
+            sessions = work.parent / "sessions"
+            sessions.mkdir(mode=0o700, exist_ok=True)
+            args += ["--bind", str(sessions), "/pf-home/.codex/sessions"]
         credential, destination = self._credential()
         if credential.is_file() and not credential.is_symlink():
             # Bind a path, do not read/copy authentication bytes. Refresh writes may fail;
@@ -466,7 +536,10 @@ class CLIRunner:
                                f"Name it with a version, such as --model gpt-<version>-{family[1]}."))
         return resolved
 
-    def build_cli(self, schema: dict, *, work: str = "/work", output: str = "/out") -> list[str]:
+    def build_cli(self, schema: dict, *, work: str = "/work", output: str = "/out", persist: bool = False,
+                  resume: str | None = None) -> list[str]:
+        """The CLI's argument list. Codex only: `persist` keeps the session in the run's temporary home so a
+        follow-up call can `resume` it (same prompt cache key, so the earlier turns are cached)."""
         executable = self._require_executable()
         if self.name == "claude":
             command = [executable, "--restricted", "--safe-mode", "--print", "--output-format", "json",
@@ -483,48 +556,77 @@ class CLIRunner:
                 command += ["--disable", feature]
             for config in ['approval_policy="never"', 'web_search="disabled"', 'notify=[]',
                            'history.persistence="none"', 'project_doc_max_bytes=0', 'hide_agent_reasoning=true',
-                           f'model_instructions_file={json.dumps(f"{work}/system.md")}', 'mcp_servers={}', 'shell_environment_policy.inherit="none"']:
+                           f'model_instructions_file={json.dumps(f"{work}/system.md")}', 'mcp_servers={}', 'shell_environment_policy.inherit="none"',
+                           'sandbox_mode="read-only"']:
                 command += ["-c", config]
-            command += ["exec", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral", "--json",
-                        "--output-schema", f"{work}/schema.json", "--output-last-message", f"{output}/result.json"]
+            if resume:
+                # `exec resume` has no --sandbox flag; the read-only mode comes from the config above.
+                command += ["exec", "resume", "--skip-git-repo-check", "--json"]
+            else:
+                command += ["exec", "--skip-git-repo-check", "--sandbox", "read-only", "--json"]
+                if not persist:
+                    command += ["--ephemeral"]
+            command += ["--output-schema", f"{work}/schema.json", "--output-last-message", f"{output}/result.json"]
         if self.model:
             command += ["--model", self.model]
         if self.effort:
             command += (["--effort", self.effort] if self.name == "claude" else
                         ["-c", f"model_reasoning_effort={json.dumps(self.effort)}"])
         if self.name == "codex":
-            command += ["-"]
+            command += [resume, "-"] if resume else ["-"]
         return command
 
-    def run(self, task: dict, schema: dict, cancel: threading.Event) -> dict:
+    def thread(self) -> "Thread | None":
+        """A conversation for the calls of one task (Codex only): the first call keeps its session, and a
+        follow-up (evidence, a repair, the final answer) resumes it with only what is new."""
+        return Thread(self._temporary()) if self.name == "codex" else None
+
+    def run(self, task: dict, schema: dict, cancel: threading.Event, thread: "Thread | None" = None) -> dict:
         if not self.ready:
             self.preflight()
         if cancel.is_set():
             raise Cancelled(tr("분석 중단", "Analysis stopped"))
-        with self._temporary() as temp:
-            work, output = Path(temp) / "work", Path(temp) / "out"
-            work.mkdir(mode=0o700)
-            output.mkdir(mode=0o700)
-            (work / "schema.json").write_text(dumps(schema), encoding="utf-8")
-            (work / "system.md").write_text(task["system"], encoding="utf-8")
-            (work / "mcp.json").write_text('{"mcpServers":{}}', encoding="utf-8")
-            (work / "settings.json").write_text('{"disableAllHooks":true,"enabledPlugins":{},"autoMemoryEnabled":false}', encoding="utf-8")
-            command = self.build_cli(schema, work=str(work.resolve()), output=str(output.resolve())) if sys.platform == "darwin" else self.build_cli(schema)
-            self.calls += 1
-            code, text, _ = execute(self.sandbox_command(work, output, command),
-                input_text=dumps({k: v for k, v in task.items() if k != "system"}), timeout=self.timeout, cancel=cancel,
-                env=self._sandbox_env(work, output), cwd=work if sys.platform == "darwin" else None)
-            if code:
-                reason = cli_error(self.name, text)
-                raise FlowError(tr(f"{self.name} 실행 실패(exit {code})", f"{self.name} run failed (exit {code})") + (
-                    f": {reason}" if reason else tr(". CLI 인증·계정 한도·옵션 호환성을 확인하세요.",
-                                                    ". Check the CLI's login, account limits and option compatibility.")))
-            if self.name == "codex":
-                # Codex exec events do not name the model; the requested one is recorded instead.
-                value, usage = parse_codex_output(text, output / "result.json")
-                self.last_model = None
-            else:
-                value, usage = parse_claude_output(text)
-                self.last_model = claude_reported_model(text)
-            self.last_usage = usage  # None stays unknown, not zero or an estimated bill.
-            return value
+        if thread is None:
+            with self._temporary() as temp:
+                return self._run(Path(temp), task, schema, cancel)
+        try:
+            return self._run(Path(thread.directory.name), task, schema, cancel, thread)
+        except BaseException:
+            thread.reset()  # the session may hold a half turn: the next call starts a new one
+            raise
+
+    def _run(self, temp: Path, task: dict, schema: dict, cancel: threading.Event, thread: "Thread | None" = None) -> dict:
+        work, output = temp / "work", temp / "out"
+        for directory in (work, output):
+            directory.mkdir(mode=0o700, exist_ok=True)
+        (output / "result.json").unlink(missing_ok=True)
+        (work / "schema.json").write_text(dumps(schema), encoding="utf-8")
+        (work / "system.md").write_text(task["system"], encoding="utf-8")
+        (work / "mcp.json").write_text('{"mcpServers":{}}', encoding="utf-8")
+        (work / "settings.json").write_text('{"disableAllHooks":true,"enabledPlugins":{},"autoMemoryEnabled":false}', encoding="utf-8")
+        message = {k: v for k, v in task.items() if k != "system"}
+        follow_up = thread.follow_up(message) if thread is not None else None
+        resume = thread.session if follow_up is not None else None
+        paths = dict(work=str(work.resolve()), output=str(output.resolve())) if sys.platform == "darwin" else {}
+        command = self.build_cli(schema, persist=thread is not None, resume=resume, **paths)
+        self.calls += 1
+        self.last_continued = resume is not None
+        code, text, _ = execute(self.sandbox_command(work, output, command),
+            input_text=dumps(follow_up if follow_up is not None else message), timeout=self.timeout, cancel=cancel,
+            env=self._sandbox_env(work, output), cwd=work if sys.platform == "darwin" else None)
+        if code:
+            reason = cli_error(self.name, text)
+            raise FlowError(tr(f"{self.name} 실행 실패(exit {code})", f"{self.name} run failed (exit {code})") + (
+                f": {reason}" if reason else tr(". CLI 인증·계정 한도·옵션 호환성을 확인하세요.",
+                                                ". Check the CLI's login, account limits and option compatibility.")))
+        if self.name == "codex":
+            # Codex exec events do not name the model; the requested one is recorded instead.
+            value, usage = parse_codex_output(text, output / "result.json")
+            self.last_model = None
+            if thread is not None:
+                usage = thread.answered(message, resume or codex_thread_id(text), usage)
+        else:
+            value, usage = parse_claude_output(text)
+            self.last_model = claude_reported_model(text)
+        self.last_usage = usage  # None stays unknown, not zero or an estimated bill.
+        return value

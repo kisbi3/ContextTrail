@@ -239,3 +239,34 @@ def test_failed_call_reports_the_providers_reason():
     assert cli_error("claude", '{"type":"result","is_error":true,"result":"Credit balance is too low"}') == \
         "Credit balance is too low"
     assert cli_error("codex", "not json\n") is None
+
+
+def test_a_codex_follow_up_resumes_the_session_with_only_what_is_new():
+    from contexttrail.runners.cli_runner import Thread, codex_thread_id
+    runner=CLIRunner('codex'); runner.executable='/usr/bin/codex'; runner.features={'shell_tool','hooks'}
+    first=runner.build_cli({},persist=True)
+    assert '--ephemeral' not in first and first[first.index('--sandbox')+1]=='read-only'
+    resumed=runner.build_cli({},resume='thread-1')
+    assert resumed[-2:]==['thread-1','-'] and resumed[resumed.index('exec')+1]=='resume'
+    assert any(resumed[i:i+2]==['-c','sandbox_mode="read-only"'] for i in range(len(resumed)))
+    assert any(resumed[i:i+2]==['--disable','hooks'] for i in range(len(resumed)))
+    assert codex_thread_id('{"type":"thread.started","thread_id":"abc"}\n{"type":"turn.started"}')=='abc'
+
+    class Directory:
+        name='/nowhere'
+        def cleanup(self): pass
+    thread=Thread(Directory())
+    base={'stage':'extract','data':{'records':[1,2]}}
+    assert thread.follow_up(base) is None                       # nothing to resume yet
+    assert thread.answered(base,'abc',{'input_tokens':100,'cached_input_tokens':0}) == {'input_tokens':100,'cached_input_tokens':0}
+    asked={**base,'evidence_rounds':[['round one']]}
+    assert thread.follow_up(asked)=={'follow_up':thread.follow_up(asked)['follow_up'],'new_evidence_rounds':[['round one']]}
+    # A resumed session reports its running total; the call's own usage is the difference.
+    assert thread.answered(asked,'abc',{'input_tokens':230,'cached_input_tokens':98}) == {'input_tokens':130,'cached_input_tokens':98}
+    final={**asked,'evidence_rounds':[['round one'],['round two']],'evidence_requests':'None left'}
+    delta=thread.follow_up(final)
+    assert delta['new_evidence_rounds']==[['round two']] and delta['evidence_requests']=='None left'
+    # Changed records (a trimmed request) cannot continue: a new session.
+    assert thread.follow_up({**asked,'data':{'records':[1]}}) is None
+    thread.reset()
+    assert thread.follow_up(asked) is None

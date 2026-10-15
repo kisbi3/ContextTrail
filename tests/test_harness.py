@@ -507,6 +507,29 @@ def test_after_the_last_evidence_round_the_answer_must_be_complete(laboratory):
     assert store.graph()['version']==1
 
 
+def test_the_calls_of_one_task_share_the_runners_conversation(laboratory):
+    _,store,engine,records,make=laboratory;records.append(make(CASES[0][0]))
+    class Conversation:
+        def __init__(self): self.closed=0
+        def close(self): self.closed+=1
+    class Threaded(FixtureRunner):
+        def __init__(self,*a,**k):
+            super().__init__(*a,**k); self.threads=[]; self.used=[]
+        def thread(self):
+            self.threads.append(Conversation()); return self.threads[-1]
+        def run(self,task,schema,cancel,thread=None):
+            self.used.append((task['stage'],thread))
+            output=super().run(task,schema,cancel)
+            if task['stage']=='extract' and 'evidence_rounds' not in task:
+                output.update(status='needs_evidence',event_candidates=[],read_requests=[{'kind':'read_records','ids':['s1'],'start_line':1,'end_line':1,'query':None,'unit_id':None}])
+            return output
+    runner=Threaded();result=engine.analyze(lambda:runner)
+    assert result['status']=='complete'
+    extract=[thread for stage,thread in runner.used if stage=='extract']
+    assert len(extract)==2 and extract[0] is extract[1]          # the evidence round continued the conversation
+    assert all(t.closed==1 for t in runner.threads)              # and every conversation was closed after its task
+
+
 def test_read_rounds_are_bounded(laboratory):
     _,store,engine,records,make=laboratory;records.append(make(CASES[0][0]))
     class Endless(FixtureRunner):
