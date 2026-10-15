@@ -133,3 +133,18 @@ def test_detour_lane_count_drives_the_canvas_width():
 def test_under_the_budget_draws_every_connection():
     out = svg(_chain_with_back_edges(5))
     assert '생략했습니다' not in out
+
+
+def test_event_detail_names_the_agent_that_did_the_work_and_the_model_that_analysed_it():
+    from contexttrail.render import agents_label, event_detail
+    agent = {"tool": "claude", "model": "claude-opus-5-5", "effort": "xhigh"}
+    event = {"id": "a", "kind": "action", "status": "applied", "title": "t", "summary": "s", "actor": "assistant",
+             "evidence_ids": [], "session_ids": ["s1"], "authoring": [agent],
+             "analysis": {"runner": "codex", "model": "gpt-6.1-sol", "effort": "medium"}}
+    texts = [text for text, _ in event_detail({"events": [event], "edges": []}, "a", lambda _id: None)]
+    assert "에이전트: claude · claude-opus-5-5 · xhigh" in texts
+    assert "분석: codex gpt-6.1-sol medium" in texts
+    assert agents_label({**event, "actor": "user"}) == "claude"
+    assert agents_label({**event, "authoring": [agent, {"tool": "codex", "model": "gpt-6-luna"}]}) == \
+        "claude · claude-opus-5-5 · xhigh, codex · gpt-6-luna"
+    assert agents_label({**event, "authoring": []}) == ""

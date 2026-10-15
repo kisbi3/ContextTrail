@@ -126,6 +126,12 @@ def _binary_marker(url: Any, mime: str) -> str | None:
     return None
 
 
+def _authoring(data: dict) -> dict[str, str]:
+    """Provider, model and variant (opencode's effort setting) as a message names them; nothing is guessed."""
+    return {key: value for key, value in (("model", data.get("modelID")), ("effort", data.get("variant")),
+                                          ("provider", data.get("providerID"))) if isinstance(value, str) and value}
+
+
 class _SessionParser:
     """Records of one in-scope session, in message then part order (the order opencode replays them)."""
 
@@ -178,7 +184,11 @@ class _SessionParser:
         path = data.get("path") if isinstance(data.get("path"), dict) else {}
         cwd = _absolute(path.get("cwd")) or self.directory
         parent = data.get("parentID") if role == "assistant" else None
-        common = {"native_record_id": message_id, "parent_record_id": parent if isinstance(parent, str) else None}
+        # An assistant message names its provider, model and variant at the top; the person's message
+        # carries the setting chosen for it under `model`. Every part of the message is written under it.
+        chosen = data.get("model") if role == "user" else data
+        common = {"native_record_id": message_id, "parent_record_id": parent if isinstance(parent, str) else None,
+                  "authoring": _authoring(chosen if isinstance(chosen, dict) else {})}
         summary = role == "assistant" and data.get("summary") is True
         for part in parts:
             self.sequence += 1

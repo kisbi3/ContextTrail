@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from wcwidth import wcswidth, wcwidth
 
 from .i18n import tr
-from .render import ASCII_MARK, KIND, MARK, RELATION, _when, status_labels, status_tones
+from .render import ASCII_MARK, KIND, MARK, RELATION, _when, agents_label, status_labels, status_tones
 from .util import cell_slice, safe_text
 
 OBSERVED = {"observed_success", "observed_failure"}
@@ -330,6 +330,10 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
             status = _segments(safe_text(labels[key], multiline=False), inner - 2)
             lines += [(f"{marks[tones[key]] if n == 0 else ' '} {part}", tones[key], none)
                       for n, part in enumerate(status)]
+            # Who did this step: the tool, and for the agent's own work its model and effort.
+            agents = agents_label(by_id[key])
+            if agents:
+                lines += [(part, "dim", none) for part in _wrap(agents, inner)]
             for text, edge_id in notes.get(key, []):
                 lines += [(part, "dim", frozenset({edge_id})) for part in _wrap(text, inner)]
             if key not in linked:

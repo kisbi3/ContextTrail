@@ -111,3 +111,28 @@ def test_a_cancelled_run_stops_waiting_for_the_screens_answer(tmp_path):
     app = ui.TerminalApp(Store(tmp_path / "state", "scope"), lambda *_: None, title="proj")
     app.cancel.set()
     assert app.confirm({"units": 3}) is False
+
+
+def test_publishing_reads_who_wrote_the_cited_records_from_the_store(tmp_path):
+    from contexttrail.model import empty_graph
+    store = Store(tmp_path / "state", "scope")
+    codex, git = records(1)[0], SourceRecord("src_git", "git", None, "git", "commit", {"kind": "git"})
+    codex.authoring = {"model": "gpt-6.1-sol", "effort": "high"}
+    store.ingest([codex, git])
+    def event(key, basis, evidence_id):
+        return {"id": key, "kind": "action", "status": "applied", "title": key, "summary": "", "actor": "assistant",
+                "basis": basis, "session_ids": [], "worktree_ids": [], "recorded_at": None, "occurred_at": None,
+                "evidence_ids": [evidence_id]}
+    graph = empty_graph("scope")
+    graph["events"] = [event("a", "tool_record", "e1"), event("b", "git_artifact", "e2")]
+    # The evidence item keeps the record as it was read before the field existed; the store has it now.
+    old = {k: v for k, v in codex.metadata().items() if k != "authoring"}
+    evidence = {"e1": {"id": "e1", "source_id": codex.source_id, "start_line": 1, "end_line": 1, "quote": "body 0", "source": old},
+                "e2": {"id": "e2", "source_id": "src_git", "start_line": 1, "end_line": 1, "quote": "commit", "source": git.metadata()}}
+    published = store.publish(graph, [], {}, evidence, expected_version=0)
+    assert published["events"][0]["authoring"] == [{"tool": "codex", "model": "gpt-6.1-sol", "effort": "high"}]
+    assert "authoring" not in published["events"][1]  # a Git record has no agent behind it
+    # A later publish (a note, another unit) passes no evidence for them: the stored items and records are read.
+    again = store.publish(published, [], {}, {}, expected_version=1)
+    assert again["events"][0]["authoring"] == [{"tool": "codex", "model": "gpt-6.1-sol", "effort": "high"}]
+    assert store.graph()["events"][0]["authoring"] == again["events"][0]["authoring"]

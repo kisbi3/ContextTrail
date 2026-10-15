@@ -211,6 +211,21 @@ def _record(provider: str, session: str, key: str, role: str, content: str, path
         cwd=cwd, worktree_id=scope.worktree_for(cwd), **kwargs)
 
 
+def _authoring(model: Any, effort: Any, provider: Any = None) -> dict[str, str]:
+    """Model, effort and provider as the log names them; a missing or non-text value is left out, never guessed."""
+    return {key: value for key, value in (("model", model), ("effort", effort), ("provider", provider))
+            if isinstance(value, str) and value}
+
+
+def _codex_authoring(records: list[SourceRecord], turns: list[tuple[int, dict]]) -> None:
+    """Each record gets the model and effort of its turn: the latest `turn_context` before it. Codex writes
+    that context before the person's prompt of the turn and the agent's work (checked on real sessions), so
+    only what comes before the first context, the injected instructions, stays empty."""
+    for record in records:
+        line = record.locator.get("line", 0)
+        record.authoring = dict(next((authoring for at, authoring in reversed(turns) if at < line), {}))
+
+
 def _segment(record: SourceRecord, max_chars: int = SEGMENT_CHARS) -> list[SourceRecord]:
     """Stable, evidence-citable fragments for long textual records.
 
@@ -293,6 +308,7 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
         return finish([], [])
     result, call_cwd, unknown, relevant = [], {}, set(), scope.includes(cwd)
     context_git = metadata.get("git", {}) if isinstance(metadata.get("git"), dict) else {}
+    turns: list[tuple[int, dict]] = []  # (line, model and effort) of each turn_context, for _codex_authoring
     for line, data, raw_hash in rows:
         record_type, payload = data.get("type"), data.get("payload", {})
         if not isinstance(payload, dict):
@@ -302,6 +318,7 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
             skipped += 1  # rollout items are numbered from 0; file lines from 1
             continue
         if record_type == "turn_context":
+            turns.append((line, _authoring(payload.get("model"), payload.get("effort"), metadata.get("model_provider"))))
             if "cwd" in payload:
                 value = payload["cwd"]
                 cwd = value if isinstance(value, str) and Path(value).is_absolute() else None
@@ -430,6 +447,7 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
     if not any(r.role in {"user", "assistant"} for r in result) and any(            d.get("type") == "event_msg" and d.get("payload", {}).get("type") in {"user_message", "agent_message"}
             for _, d, _ in rows):
         warnings.append(f"Codex UI message format without response_item is not supported yet: {path.name}")
+    _codex_authoring(result, turns)
     return finish(_segments(result), warnings)
 
 
@@ -549,6 +567,7 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
     result, unknown, relevant = [], set(), False
     deferred: dict[str, int] = {}
     call_cwd: dict[str, str | None] = {}
+    call_authoring: dict[str, dict] = {}  # a tool result is written by the tool, for the model turn that called it
     is_subagent_file = "subagents" in path.parts or any(bool(d.get("isSidechain")) for _, d, _ in rows)
     if is_subagent_file and not subagent_link:
         for _, data, _ in rows:
@@ -621,12 +640,17 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
             blocks = [{"type": "text", "text": blocks}]
         native_id = data.get("uuid")
         base = str(native_id or f"line:{line}")
+        # An assistant row names its model and the effort in force (`perTurnEffort`, else the session's
+        # `effort`); `<synthetic>` is a message Claude Code wrote itself, with no model behind it.
+        authoring = _authoring(message.get("model"), data.get("perTurnEffort") or data.get("effort")) if typ == "assistant" else {}
+        if authoring.get("model", "").startswith("<"):
+            authoring = {}
         for part, block in enumerate(blocks):
             if not isinstance(block, dict):
                 continue
             btype = block.get("type")
             role, call_id, item_cwd = typ, None, cwd
-            record_lineage = lineage
+            record_lineage, record_authoring = lineage, authoring
             if btype in {"thinking", "redacted_thinking"}:
                 continue
             if btype == "text":
@@ -643,12 +667,14 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
                     if isinstance(other, str) and Path(other).is_absolute():
                         item_cwd = other
                 call_cwd[call_id] = item_cwd
+                call_authoring[call_id] = authoring
                 # Every argument, so a Write keeps its file path next to the content.
                 body = json.dumps(params, ensure_ascii=False, sort_keys=True) if isinstance(params, dict) else _text(params)
                 text = f"Tool: {block.get('name', 'unknown')}\n{body}"
             elif btype == "tool_result":
                 role, call_id = "tool_result", block.get("tool_use_id")
                 item_cwd = call_cwd.get(call_id, item_cwd)
+                record_authoring = call_authoring.get(call_id, {})
                 text = _text(block.get("content"))
             else:
                 unknown.add("content:" + str(btype))
@@ -658,7 +684,8 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
             rec = _record("claude", session, f"{base}:{part}", role, text, path, line, raw_hash, item_cwd, scope,
                           native_record_id=native_id, parent_record_id=data.get("parentUuid"),
                           recorded_at=data.get("timestamp"), tool_call_id=call_id,
-                          git={"branch": data["gitBranch"]} if data.get("gitBranch") else {}, lineage=record_lineage)
+                          git={"branch": data["gitBranch"]} if data.get("gitBranch") else {}, lineage=record_lineage,
+                          authoring=record_authoring)
             result.append(rec)
             if role == "tool_result":
                 matches = re.findall(r"Full output saved to:\s*([^\n<]+)", text)
@@ -684,7 +711,8 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
                         "tool_result", content, {"kind": "sidecar", "path": str(sidecar), "raw_hash": digest(content),
                         "referenced_from": rec.source_id}, native_record_id=native_id, recorded_at=data.get("timestamp"),
                         cwd=item_cwd, worktree_id=scope.worktree_for(item_cwd), tool_call_id=call_id,
-                        lineage={**lineage, "kind": "tool_sidecar", "parent_source_id": rec.source_id}))
+                        lineage={**lineage, "kind": "tool_sidecar", "parent_source_id": rec.source_id},
+                        authoring=record_authoring))
     if not relevant:
         return Snapshot([])
     if unknown:

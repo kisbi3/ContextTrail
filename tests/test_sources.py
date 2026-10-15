@@ -356,3 +356,55 @@ def test_long_text_record_is_split_with_shared_lineage(tmp_path):
     records = parse_claude(path, Scope.resolve(folder)).records
     assert len(records) > 1 and max(len(r.content) for r in records) <= 32_000
     assert len({r.lineage["fragment_of"] for r in records}) == 1
+
+
+def test_codex_records_carry_the_model_and_effort_of_their_turn(tmp_path):
+    from dataclasses import replace
+    from contexttrail.analysis import record_for_model
+    folder = tmp_path / "app"
+    folder.mkdir()
+    path = tmp_path / "codex.jsonl"
+    text = lambda role, words: {"type": "response_item", "payload": {"type": "message", "role": role,
+                                "content": [{"type": "input_text" if role == "user" else "output_text", "text": words}]}}
+    write(path, [
+        {"type": "session_meta", "payload": {"id": "native-session", "cwd": str(folder), "model_provider": "openai"}},
+        text("user", "Words before any turn."),  # what Codex injects before the first turn names no model
+        {"type": "turn_context", "payload": {"cwd": str(folder), "model": "gpt-6.1-sol", "effort": "high", "summary": "none"}},
+        text("user", "Fix the tests."),  # the turn's context comes first, then the person's prompt and the work
+        {"type": "response_item", "payload": {"type": "function_call", "name": "shell", "call_id": "c1", "arguments": '{"cmd":"pytest"}'}},
+        {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1", "output": "1 passed"}},
+        text("assistant", "Done."),
+        {"type": "turn_context", "payload": {"cwd": str(folder), "model": "gpt-6-luna", "effort": "medium"}},
+        text("user", "Now with Luna."),
+        text("assistant", "Sure.")])
+    records = parse_codex(path, Scope.resolve(folder)).records
+    assert [r.role for r in records] == ["user", "user", "tool_call", "tool_result", "assistant", "user", "assistant"]
+    sol = {"model": "gpt-6.1-sol", "effort": "high", "provider": "openai"}
+    assert records[0].authoring == {}
+    assert [r.authoring for r in records[1:5]] == [sol] * 4
+    assert [r.authoring for r in records[5:]] == [{"model": "gpt-6-luna", "effort": "medium", "provider": "openai"}] * 2
+    # Outside the content hash (a stored record filled in later is not re-analysed) and hidden from the model.
+    assert replace(records[1], authoring={}).content_hash == records[1].content_hash
+    assert "authoring" not in record_for_model(records[1])
+
+
+def test_claude_records_carry_the_assistant_model_and_a_tool_result_follows_its_call(tmp_path):
+    folder = tmp_path / "app"
+    folder.mkdir()
+    path = tmp_path / "claude.jsonl"
+    write(path, [
+        {"type": "user", "uuid": "u0", "sessionId": "session", "cwd": str(folder),
+         "message": {"role": "user", "content": "Fix it."}},
+        {"type": "assistant", "uuid": "u1", "parentUuid": "u0", "sessionId": "session", "cwd": str(folder),
+         "effort": "high", "perTurnEffort": "xhigh",
+         "message": {"model": "claude-opus-5-5", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "echo hi"}}]}},
+        {"type": "user", "uuid": "u2", "parentUuid": "u1", "sessionId": "session", "cwd": str(folder),
+         "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "hi"}]}},
+        {"type": "assistant", "uuid": "u3", "parentUuid": "u2", "sessionId": "session", "cwd": str(folder), "effort": "high",
+         "message": {"model": "<synthetic>", "content": [{"type": "text", "text": "API error"}]}}])
+    records = parse_claude(path, Scope.resolve(folder)).records
+    assert [r.role for r in records] == ["user", "tool_call", "tool_result", "assistant"]
+    assert records[0].authoring == {}  # the person's message names no model
+    assert records[1].authoring == {"model": "claude-opus-5-5", "effort": "xhigh"}  # the turn's effort over the session's
+    assert records[2].authoring == records[1].authoring  # the tool answered the call that model made
+    assert records[3].authoring == {}  # a message Claude Code wrote itself has no model behind it

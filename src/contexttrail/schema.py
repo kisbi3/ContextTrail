@@ -3,7 +3,7 @@ from __future__ import annotations
 import bisect
 import copy
 import re
-from typing import Any
+from typing import Any, Callable
 
 from jsonschema import Draft202012Validator
 
@@ -1502,3 +1502,34 @@ class EvidenceValidator:
                                      "evidence": None} for item in attributions]})
         result["candidate_resolution_history"] = history
         return result
+
+
+# The tools whose records an agent wrote; a Git record has no agent behind it.
+AGENT_TOOLS = ("claude", "codex", "opencode")
+
+
+def authoring_of(sources: list[dict]) -> list[dict]:
+    """The agents behind the cited records: each one's tool, with the model, effort and provider its log named
+    (`SourceRecord.authoring`); unique and sorted. Read off the records by code, never written by the model."""
+    found: dict[tuple, dict] = {}
+    for source in sources:
+        tool = source.get("provider")
+        if tool not in AGENT_TOOLS:
+            continue
+        named = {key: value for key, value in (source.get("authoring") or {}).items() if isinstance(value, str) and value}
+        entry = {"tool": tool, **named}
+        found.setdefault(tuple(sorted(entry.items())), entry)
+    return [found[key] for key in sorted(found)]
+
+
+def fill_authoring(graph: dict, source_of: Callable[[str], dict | None]) -> None:
+    """Set every event's `authoring` from the records its evidence cites (`source_of(evidence_id)` gives the
+    record's metadata, or None). Run when a graph is published, so it reads the records as stored then: an
+    event of an older graph gets it once its records are read again with the field."""
+    for event in graph["events"]:
+        sources = [source for source in (source_of(i) for i in event.get("evidence_ids", [])) if source]
+        agents = authoring_of(sources)
+        if agents:
+            event["authoring"] = agents
+        else:
+            event.pop("authoring", None)

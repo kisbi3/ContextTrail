@@ -162,6 +162,27 @@ def _when(value: str | None) -> str:
     return moment.astimezone().strftime("%m-%d %H:%M")
 
 
+def agents_label(event: dict) -> str:
+    """Who did the work an event rests on, from its `authoring` (read off the cited records at publish): the
+    tool, then the model and effort its log named, as `claude · claude-opus-5-5 · xhigh`; a person's message
+    names only the tool. Several agents are separated by commas; empty when no agent record is cited."""
+    parts: list[str] = []
+    for agent in event.get("authoring") or []:
+        pieces = [agent.get("tool", "")]
+        if event.get("actor") != "user":
+            pieces += [agent.get("model", ""), agent.get("effort", "")]
+        label = " · ".join(piece for piece in pieces if piece)
+        if label and label not in parts:
+            parts.append(label)
+    return ", ".join(parts)
+
+
+def analysis_label(event: dict) -> str:
+    """The analysis model that wrote an event (`analysis`, stamped when its unit was published): `codex gpt-6.1-sol medium`."""
+    analysis = event.get("analysis") or {}
+    return " ".join(str(analysis[key]) for key in ("runner", "model", "effort") if analysis.get(key))
+
+
 def linked_events(graph: dict, event_id: str) -> list[str]:
     """Events linked to one event, in the order its detail lists them: checks first, then the rest."""
     events = {event["id"] for event in graph["events"]}
@@ -193,8 +214,12 @@ def event_detail(graph: dict, event_id: str, evidence: Callable[[str], dict | No
         (f"{marks[tones[event_id]]} {clean(labels[event_id])}", tones[event_id]),
         (" · ".join(part for part in (KIND.get(event["kind"], event["kind"]),
                                       ACTOR.get(event.get("actor"), clean(event.get("actor") or "")),
-                                      _when(event.get("occurred_at") or event.get("recorded_at"))) if part), "dim"),
-        ("", ""), (tr("무슨 일이 있었나", "What happened"), "heading")]
+                                      _when(event.get("occurred_at") or event.get("recorded_at"))) if part), "dim")]
+    if agents_label(event):
+        lines.append((tr("에이전트: ", "agent: ") + agents_label(event), "dim"))
+    if analysis_label(event):
+        lines.append((tr("분석: ", "analysed by: ") + analysis_label(event), "dim"))
+    lines += [("", ""), (tr("무슨 일이 있었나", "What happened"), "heading")]
     lines += [("  " + clean(part), "") for part in safe_text(event["summary"]).splitlines() if part.strip()]
     active = [edge for edge in graph["edges"] if edge["active"] and
               event_id in (edge["from_event_id"], edge["to_event_id"])]

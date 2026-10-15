@@ -23,6 +23,11 @@ class SourceRecord:
     derivation: str = "original"
     git: dict[str, Any] = field(default_factory=dict)
     lineage: dict[str, Any] = field(default_factory=dict)
+    # Which agent wrote the record, as its log names it: `model`, `effort` (Codex `effort`, Claude Code
+    # `effort`, opencode `variant`) and `provider` when given; empty when the log says nothing. Code reads
+    # it, the analysis model never sees it, and it is outside the content hash, so filling it in for a
+    # stored record does not send its unit again.
+    authoring: dict[str, Any] = field(default_factory=dict)
 
     pinned_hash: str | None = None  # host-only reconstruction of preserved excerpt ranges
 

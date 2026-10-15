@@ -632,7 +632,7 @@ def unit_cost(record: SourceRecord) -> int:
 # off the cited record itself), and the folder and worktree are the project's. Event provenance is derived from
 # the citations (`event_provenance_from_evidence`). About 40% of a shown record on a Codex-heavy project.
 HIDDEN_RECORD_FIELDS = ("locator", "content_hash", "source_version", "native_record_id", "parent_record_id",
-                        "worktree_id", "cwd")
+                        "worktree_id", "cwd", "authoring")
 
 
 def record_for_model(record: SourceRecord) -> dict:
@@ -1248,7 +1248,8 @@ def _rehydrate(pool: dict[str, SourceRecord], provided: dict[str, list[tuple[int
             native_record_id=source.get("native_record_id"), parent_record_id=source.get("parent_record_id"),
             recorded_at=source.get("recorded_at"), cwd=source.get("cwd"), worktree_id=source.get("worktree_id"),
             tool_call_id=source.get("tool_call_id"), derivation=source.get("derivation", "original"),
-            git=source.get("git", {}), lineage=source.get("lineage", {}), pinned_hash=items[0]["content_hash"])
+            git=source.get("git", {}), lineage=source.get("lineage", {}), authoring=source.get("authoring", {}),
+            pinned_hash=items[0]["content_hash"])
         provided[source_id] = [(i["start_line"], i["end_line"]) for i in items]
 
 
@@ -1734,7 +1735,7 @@ class Harness:
                                 "original_source_id": sid, "original_hash": item["content_hash"]},
                                 recorded_at=source.get("recorded_at"), cwd=source.get("cwd"),
                                 worktree_id=source.get("worktree_id"), derivation=source.get("derivation", "original"),
-                                lineage=source.get("lineage", {}))
+                                lineage=source.get("lineage", {}), authoring=source.get("authoring", {}))
                             snippets.append({**self.provide(alias), "context_only": True})
                     outputs.append({"event": event, "evidence_records": snippets})
                 elif request["kind"] == "read_file_at_revision":

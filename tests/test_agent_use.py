@@ -257,3 +257,23 @@ def test_a_brief_run_report_counts_limitations_instead_of_listing_them(capsys):
     assert "상태 partial · 처리한 작업 단위 2 · AI 호출 9 · 그래프 v7" in out
     assert "51,234개" in out and "범위·한계 500건" in out and "s499" not in out
     assert len(out.splitlines()) == 4
+
+
+def test_an_analysed_event_names_the_tool_of_its_records_and_the_model_that_analysed_it(laboratory):
+    _, store, engine, records, make = laboratory
+    for n, case in enumerate(CASES[:6]):
+        records.append(replace(make(case[0], key=f"s{n}", role=ROLE[case[4]]), recorded_at=f"2026-09-22T10:0{n}:00Z"))
+
+    class NamedRunner(FixtureRunner):
+        model = "fixture-model"
+
+    engine.analyze(NamedRunner)
+    graph = store.graph()
+    assert all(event["authoring"] == [{"tool": "claude"}] for event in graph["events"])
+    # The ledger's runner and model; the effort only when the run set one (this configuration sets none).
+    assert all(event["analysis"] == {"runner": "synthetic-fixture", "model": "fixture-model"} for event in graph["events"])
+    result = show(reference(graph, graph["events"][0]["id"]), graph, store.evidence, store.graph)
+    assert result["event"]["authoring"] == [{"tool": "claude"}]
+    assert "  에이전트: claude" in show_text(result)
+    assert "  분석: synthetic-fixture fixture-model" in show_text(result)
+    assert find(graph, "", store.evidence_many)["events"][0]["authoring"] == [{"tool": "claude"}]

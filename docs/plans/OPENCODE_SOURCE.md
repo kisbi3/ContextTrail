@@ -1,6 +1,6 @@
 # opencode 기록 지원과 모델·effort 기록
 
-**상태: 수집(3절) 구현됨, 2026-10-06, `sources/opencode.py` + `tests/test_opencode_source.py`. 모델·effort 기록(2절)은 미구현.** 확인한 것은 4절 아래에 적었다.
+**상태: 수집(3절) 구현됨, 2026-10-06, `sources/opencode.py` + `tests/test_opencode_source.py`. 모델·effort 기록(2절) 구현됨, 2026-10-15 — 2.4절에 실제 구현을 적었다.** 확인한 것은 4절 아래에 적었다.
 
 ContextTrail은 지금 Codex와 Claude Code 기록을 읽는다. 여기에 opencode를 세 번째 수집 대상으로 넣는다. 결정된 것은 두 가지다.
 
@@ -75,6 +75,14 @@ DB 테이블: `session`, `message`, `part`, `project`, `project_directory`, `tod
 - 새 필드는 **내용 해시에 들어가지 않아야 한다.** 들어가면 이미 통합된 단위의 소스 해시가 달라져 전부 다시 분석 대상이 된다("이미 끝난 것은 다시 보내지 않는다" 불변식 위반).
 - 이미 저장된 기록에는 소급 적용하지 않는다. 다시 수집(`ingest`)할 때 새 필드만 채워지는지 확인한다.
 
+### 2.4 구현 (2026-10-15)
+
+- **레코드:** `SourceRecord.authoring = {model, effort, provider}`(있는 값만, 추측 없음). 내용 해시 밖이고(`replace(record, authoring={})`와 해시가 같다, 테스트), `ingest`는 메타데이터를 비교해 쓰므로 다음 scan에서 기존 행에도 채워진다. `HIDDEN_RECORD_FIELDS`에 넣어 모델 입력은 바뀌지 않는다.
+- **읽는 곳 (실제 로그 구조로 확인):** Codex `turn_context.model`·`effort`(예: `gpt-6.1-sol`/`high`)와 `session_meta.model_provider`. Codex는 `turn_context`를 그 턴의 사람 프롬프트보다 먼저 쓰므로(실제 세션: 83행 turn_context → 84행 프롬프트, 206 → 207, …) 모든 레코드가 바로 앞 context를 받고, 첫 context 앞에 주입된 지시문만 빈다(`_codex_authoring`). `codex exec` 세션도 같은 순서였다. Claude Code 어시스턴트 행의 `message.model`과 행의 `perTurnEffort`(없으면 `effort`; 이 저장소 로그: `claude-opus-5-5`, `xhigh`/`high`); `<synthetic>`은 Claude Code가 스스로 쓴 메시지라 비운다; 도구 결과는 그 호출을 낸 턴의 값을 따른다; 사람 메시지에는 없다. opencode 어시스턴트 메시지의 `providerID`/`modelID`/`variant`, 사람 메시지의 `model` 객체; 메시지의 모든 파트가 같은 값을 받는다.
+- **사건:** `schema.fill_authoring`이 `Store.publish`에서 모든 사건의 `authoring`을 근거가 인용한 레코드에서 다시 읽는다(도구, 모델, effort, 제공자의 집합; Git 레코드는 제외). 저장된 레코드의 현재 메타데이터를 먼저 보고, 없으면 근거 항목이 보관한 사본을 본다. 그래서 옛 사건도 그 레코드가 다시 읽힌 뒤 발행(분석·note)이 한 번 있으면 채워진다.
+- **표시:** 흐름 상자의 상태 줄 아래 한 줄(`codex · gpt-6.1-sol · high`; 사람 메시지 상자는 도구만), 사건 상세와 `show`의 `에이전트:`, 브라우저 상세, `find`/`show --json`의 `authoring`.
+- **분석 모델은 따로:** 단위가 추가한 사건마다 `analysis = {runner, model, effort}`(원장의 첫 호출)를 `publish_result`에서 찍는다. 상세·`--json`에만 `분석:`으로 보이고 흐름 상자에는 넣지 않는다(소유자: 요약 보기에는 UI가 어렵다).
+
 ### 2.4 왜 중요한가 (소유자 요구)
 
 같은 결정이라도 어떤 모델이 어떤 추론 수준으로 내렸는지에 따라 근거의 무게가 다르다. 또 이번 평가들이 보였듯 추론 수준이 결과를 좌우할 수 있다. 나중에 "이 판단은 어떤 설정에서 나왔나"를 그래프에서 되짚을 수 있어야 한다.
@@ -117,5 +125,5 @@ DB 테이블: `session`, `message`, `part`, `project`, `project_directory`, `tod
 2. ~~`sources/opencode.py`와 합성 DB 테스트.~~ 끝.
 3. ~~범위 귀속·하위 에이전트·압축 경계 테스트, 읽기 전용 테스트(파일 변경 없음).~~ 끝.
 4. ~~`scan`으로 opencode 세션을 계획에 포함.~~ 끝(이 저장소: 11개 중 4개 세션, 1,936 레코드, 0.4초). `analyze --session current`는 opencode가 셸에 세션 ID 환경 변수를 주는지 확인하지 못해 아직 Codex·Claude만 된다.
-5. 화면·브라우저·`find`/`show`에 모델·effort 표시 — 미구현(2절과 함께).
+5. ~~화면·브라우저·`find`/`show`에 모델·effort 표시.~~ 끝(2026-10-15, 2.4절).
 6. ~~README, `docs/SECURITY.md`, CLAUDE.md 갱신.~~ 끝.

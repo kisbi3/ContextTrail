@@ -10,8 +10,8 @@ import re
 from datetime import datetime
 from typing import Callable
 
-from .render import (ACTOR, KIND, PROVIDER, RELATION, ROLE, evidence_excerpt, readable_quote,
-                     status_labels)
+from .render import (ACTOR, KIND, PROVIDER, RELATION, ROLE, agents_label, analysis_label, evidence_excerpt,
+                     readable_quote, status_labels)
 from .i18n import tr
 from .util import FlowError, safe_text
 
@@ -142,6 +142,7 @@ def event_record(graph: dict, event_id: str, evidence: Callable[[str], dict | No
             "title": event["title"], "kind": event["kind"], "status": event["status"],
             "status_label": labels[event_id], "actor": event.get("actor"),
             "occurred_at": event.get("occurred_at") or event.get("recorded_at"),
+            "authoring": event.get("authoring", []), "analysis": event.get("analysis"),
             "summary": event["summary"], "out_of_order": event_id in graph.get("out_of_order_events", []),
             "links": links, "open_items": open_items, "evidence": quotes}
 
@@ -188,6 +189,10 @@ def show_text(result: dict) -> list[str]:
                                                   ACTOR.get(event["actor"], _clean(event["actor"])),
                                                   _when(event["occurred_at"])) if part),
               tr(f"  참조: {event['reference']}", f"  reference: {event['reference']}")]
+    if agents_label(event):
+        lines.append("  " + tr("에이전트: ", "agent: ") + agents_label(event))
+    if analysis_label(event):
+        lines.append("  " + tr("분석: ", "analysed by: ") + analysis_label(event))
     if event["out_of_order"]:
         lines.append("  " + out_of_order_note())
     lines += ["", tr("무슨 일이 있었나", "What happened")]
@@ -232,7 +237,7 @@ def event_row(graph: dict, event: dict, labels: dict[str, str]) -> dict:
     """One line of a listing: the event's reference, time, kind, status label and title."""
     return {"event": short_id(graph, event["id"]), "reference": reference(graph, event["id"]),
             "when": event.get("occurred_at") or event.get("recorded_at"), "kind": event["kind"],
-            "status_label": labels[event["id"]], "title": event["title"],
+            "status_label": labels[event["id"]], "title": event["title"], "authoring": event.get("authoring", []),
             "out_of_order": event["id"] in graph.get("out_of_order_events", [])}
 
 

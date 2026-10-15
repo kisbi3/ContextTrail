@@ -228,3 +228,18 @@ def test_story_boxes_with_no_link_between_them_are_joined_in_order_by_an_unlabel
     above = split.boxes["answer"][0] + split.boxes["answer"][2]
     assert "┊" not in "".join(row[column:column + 1] for row in split.lines()[above:split.boxes["other"][0]])
     assert ":" in "\n".join(flow_diagram(story(), 110, ascii_only=True).lines())
+
+
+def test_a_box_names_the_agent_that_did_the_step_and_a_persons_box_only_the_tool():
+    graph = story()
+    for event in graph["events"]:
+        event["authoring"] = [{"tool": "codex", "model": "gpt-6.1-sol", "effort": "high"}]
+    graph["events"][0]["actor"] = "user"
+    diagram = flow_diagram(graph, 110)
+    rows = diagram.lines()
+    assert "codex · gpt-6.1-sol · high" in "\n".join(rows)
+    top, _, height, _ = diagram.boxes["q"]
+    question = rows[top:top + height]
+    assert any("codex" in row for row in question) and not any("gpt-6.1-sol" in row for row in question)
+    plain = "\n".join(flow_diagram(story(), 110).lines())
+    assert "codex" not in plain  # an older graph without the field draws as before

@@ -8,10 +8,11 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from .i18n import tr
 from .model import SourceRecord, empty_graph
+from .schema import fill_authoring
 from .util import FlowError, dumps, merge_focus, now, private_dir
 
 # Conservative floor for SQLite's per-statement bound variable limit (999).
@@ -389,6 +390,7 @@ class Store:
                         if focus != stored.get("focus"):
                             db.execute("UPDATE evidence_items SET data=? WHERE id=?",
                                        (dumps({**stored, "focus": focus}), item_id))
+                fill_authoring(graph, self._source_of(db, graph, evidence))
                 db.execute("INSERT INTO graph_versions VALUES (?,?,?)", (graph["version"], dumps(graph), now()))
                 for unit_id in unit_ids:
                     db.execute("UPDATE work_units SET status='integrated',updated_at=? WHERE id=?", (now(), unit_id))
@@ -400,6 +402,30 @@ class Store:
                 db.rollback()
                 raise
         return graph
+
+    @staticmethod
+    def _source_of(db: sqlite3.Connection, graph: dict, evidence: dict[str, dict]) -> Callable[[str], dict | None]:
+        """A lookup from an evidence ID to the cited record's metadata as stored now (so `authoring` read by a
+        later scan counts), else the copy the evidence item keeps; what `fill_authoring` reads at publish."""
+        items = dict(evidence)
+        wanted = sorted({i for event in graph["events"] for i in event.get("evidence_ids", [])} - set(items))
+        for start in range(0, len(wanted), 500):
+            chunk = wanted[start:start + 500]
+            for row in db.execute(f"SELECT id, data FROM evidence_items WHERE id IN ({','.join('?' * len(chunk))})", chunk):
+                items[row["id"]] = json.loads(row["data"])
+        source_ids = sorted({item["source_id"] for item in items.values() if item.get("source_id")})
+        metadata: dict[str, dict] = {}
+        for start in range(0, len(source_ids), 500):
+            chunk = source_ids[start:start + 500]
+            for row in db.execute(f"SELECT id, metadata FROM source_records WHERE id IN ({','.join('?' * len(chunk))})", chunk):
+                metadata[row["id"]] = json.loads(row["metadata"])
+
+        def source_of(evidence_id: str) -> dict | None:
+            item = items.get(evidence_id)
+            if not item:
+                return None
+            return metadata.get(item.get("source_id")) or item.get("source")
+        return source_of
 
 
     def start_llm_call(self, call_id: str, run_id: str, unit_id: str, stage: str, attempt: int, metadata: dict) -> None:

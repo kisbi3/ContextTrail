@@ -458,6 +458,17 @@ def prepare_extract_input(state: StudioState) -> StudioState:
                         if reused else None}}
 
 
+def _analysis_of(store: Store, state: StudioState) -> dict | None:
+    """The runner, model and effort of this unit's first model call in this run (the extraction, or the light
+    call), from the ledger; None when no call named a model (a mock, or a unit published from a saved extraction)."""
+    for call in store.llm_calls(state["run_id"]):
+        meta = call["metadata"]
+        if call["unit_id"] == state["unit_id"] and meta.get("model"):
+            return {key: value for key, value in (("runner", meta.get("runner")), ("model", meta.get("model")),
+                                                  ("effort", meta.get("reasoning_effort"))) if value}
+    return None
+
+
 def _current_calls(store: Store, state: StudioState) -> list[dict]:
     return [{"stage": call["stage"], "status": call["status"],
              "attempt": call["attempt"],
@@ -832,6 +843,13 @@ def publish_result(state: StudioState) -> StudioState:
     store.save_unit(state["unit_id"], state["source_ids"], state["dependencies"],
                     "extracted", cached)
     pool = {r.source_id: r for r in snapshot.records}
+    analysis = _analysis_of(store, state)
+    if analysis:
+        # Which analysis model wrote the events this unit adds (shown in an event's detail, never in the flow).
+        known = {item["id"] for item in base["events"]}
+        for event in graph["events"]:
+            if event["id"] not in known:
+                event["analysis"] = analysis
     published = store.publish(graph, [state["unit_id"]],
                               {i: pool[i].content_hash for i in state["source_ids"]},
                               state["evidence"], expected_version=base["version"])

@@ -399,3 +399,17 @@ def test_scan_counts_opencode_records_and_the_screen_names_the_tool(tmp_path, ca
     assert output["records"]["opencode"] == 7 and output["records"]["codex"] == 0
     assert output["runner_calls"] == 0
     assert Store(scope.state_dir, scope.id).get_meta("options")["opencode_home"] == str(tmp_path.resolve())
+
+
+def test_opencode_records_name_the_provider_model_and_variant_that_wrote_them(tmp_path):
+    folder, scope = project(tmp_path)
+    builder = Builder(tmp_path / "opencode.db")
+    session = builder.session(folder)
+    conversation(builder, session, folder)
+    bare = builder.message(session, "user", model=None)  # a message that names no model setting
+    builder.part(session, bare, type="text", text="And the docs?")
+    records = parse_opencode(builder.done(), scope).records
+    named = {"model": "stealth/space-bunny-alpha", "effort": "max", "provider": "openrouter"}
+    assert [r.role for r in records] == ["user", "tool_call", "tool_result", "tool_call", "tool_result", "metadata", "assistant", "user"]
+    assert [r.authoring for r in records[:7]] == [named] * 7  # the person's chosen setting, then every part of the answer
+    assert records[7].authoring == {}
