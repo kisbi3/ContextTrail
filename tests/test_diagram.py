@@ -287,3 +287,11 @@ def test_a_sub_agents_boxes_stand_beside_the_parents_next_step_joined_by_one_lin
     assert "후속" not in "".join(diagram.lines())
     # A dialog-turn-only sub-agent box is not in the story column, so the column reads q → plan → script → fix.
     assert [k for k in diagram.order() if diagram.boxes[k][1] == fix_left] == ["q", "plan", "script", "fix", "answer"]
+
+
+def test_the_line_from_a_forked_sessions_first_request_is_called_forked():
+    graph = story()
+    graph["events"].append(node("again", "question", "asked", "이어서 테스트도", session="s2"))
+    graph["edges"].append({**link("q", "again", "follows"), "basis": "structural", "origin": "fork"})
+    text = "\n".join(flow_diagram(graph, 110).lines())
+    assert "갈라짐" in text and "후속" not in text

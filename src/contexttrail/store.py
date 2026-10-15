@@ -12,7 +12,7 @@ from typing import Any, Callable, Iterator
 
 from .i18n import tr
 from .model import SourceRecord, empty_graph
-from .schema import fill_authoring
+from .schema import fill_authoring, link_forks
 from .util import FlowError, dumps, merge_focus, now, private_dir
 
 # Conservative floor for SQLite's per-statement bound variable limit (999).
@@ -390,7 +390,9 @@ class Store:
                         if focus != stored.get("focus"):
                             db.execute("UPDATE evidence_items SET data=? WHERE id=?",
                                        (dumps({**stored, "focus": focus}), item_id))
-                fill_authoring(graph, self._source_of(db, graph, evidence))
+                source_of = self._source_of(db, graph, evidence)
+                fill_authoring(graph, source_of)
+                link_forks(graph, source_of)
                 db.execute("INSERT INTO graph_versions VALUES (?,?,?)", (graph["version"], dumps(graph), now()))
                 for unit_id in unit_ids:
                     db.execute("UPDATE work_units SET status='integrated',updated_at=? WHERE id=?", (now(), unit_id))

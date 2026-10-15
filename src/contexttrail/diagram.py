@@ -46,6 +46,14 @@ def _sub_agent(event: dict) -> bool:
     return any(agent.get("role") == "subagent" for agent in event.get("authoring") or [])
 
 
+def _edge_label(edge: dict) -> str:
+    """What a line is called: its relation, or `갈라짐` for the follows that joins a forked session's first
+    request to the parent's conversation (`schema.link_forks`)."""
+    if edge.get("origin") == "fork":
+        return tr("갈라짐", "forked")
+    return RELATION.get(edge["relation"], edge["relation"])
+
+
 def _sub_label(event: dict) -> str:
     """The sub-agent's name for the line joining its box: `Explore`, `codex exec`."""
     return next((agent.get("agent") or agent.get("tool", "") for agent in event.get("authoring") or []
@@ -280,7 +288,7 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
     lanes = 0
 
     def note(edge: dict) -> None:
-        relation = RELATION.get(edge["relation"], edge["relation"])
+        relation = _edge_label(edge)
         source, target = edge["from_event_id"], edge["to_event_id"]
         if source in ids:
             notes.setdefault(source, []).append((f"{g['forward']} {number[target]} {relation}", edge["id"]))
@@ -339,13 +347,13 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
 
     def arrival(edge: dict) -> str:
         """What a rail says as it reaches its target: where it came from and why."""
-        return f" {number[edge['from_event_id']]} {RELATION.get(edge['relation'], edge['relation'])} {g['right']}"
+        return f" {number[edge['from_event_id']]} {_edge_label(edge)} {g['right']}"
 
     # Rails at columns 1, 3, …; then at least one line cell and the widest arrival label.
     label_room = max((wcswidth(arrival(edge)) for group, _ in rails for edge in group), default=0)
     margin = 2 * lanes + 1 + label_room if lanes else 0
     # The gap between the columns holds "──┬─" + the widest label drawn across it + "──▶".
-    across = max([wcswidth(RELATION.get(edge["relation"], edge["relation"])) for edge in edges
+    across = max([wcswidth(_edge_label(edge)) for edge in edges
                   if edge["to_event_id"] in anchor] + [wcswidth(_sub_label(by_id[key])) for key in delegated],
                  default=0)
     arrow_gap = max(ARROW_GAP, across + 7)
@@ -454,7 +462,7 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
                 links = frozenset(edge["id"] for edge in between)
                 for row in range(first, last):
                     diagram.put(row, column_x, g["v"], "dim", edges=links)
-                diagram.put(first, column_x + 2, "·".join(RELATION.get(edge["relation"], edge["relation"])
+                diagram.put(first, column_x + 2, "·".join(_edge_label(edge)
                                                           for edge in between), "dim", edges=links)
                 diagram.put(last, column_x, g["arrow_down"], "dim", edges=links)
             previous = key
@@ -467,7 +475,7 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
                     row += height(item) + 1
                     continue
                 edge = item
-                relation = RELATION.get(edge["relation"], edge["relation"])
+                relation = _edge_label(edge)
                 target = edge["to_event_id"]
                 if kind == "box":
                     box(row, x_right, target)

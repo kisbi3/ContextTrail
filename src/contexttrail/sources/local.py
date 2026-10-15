@@ -752,6 +752,43 @@ def jsonl_files(codex_home: Path, claude_home: Path) -> list[tuple[Path, str]]:
     return found
 
 
+def _drop_forked_copies(records: dict[str, SourceRecord]) -> None:
+    """Claude Code's `--fork-session` and resume write a new session file that begins with a copy of the parent's
+    recent rows (same `uuid`, the new session ID written over them) before the session's own rows. Those copies
+    are the parent's history: when the parent's row is here too, the copy is dropped, and the fork's own records
+    keep where they came from (`fork`: the parent session and the time of the last copied row). The parent is
+    the session whose own (unshared) rows start first; a session with none is the parent of its forks. A fork
+    whose parent is not here keeps its copies, the only text of that history. Codex forks copy nothing."""
+    by_uuid: dict[str, list[SourceRecord]] = {}
+    for record in records.values():
+        if record.provider == "claude" and record.native_record_id and record.session_id:
+            by_uuid.setdefault(record.native_record_id, []).append(record)
+    shared = {uuid: members for uuid, members in by_uuid.items() if len({m.session_id for m in members}) > 1}
+    if not shared:
+        return
+    first_own: dict[str, str] = {}
+    for uuid, members in by_uuid.items():
+        if uuid in shared:
+            continue
+        for member in members:
+            if member.recorded_at and member.recorded_at < first_own.get(member.session_id, "~"):
+                first_own[member.session_id] = member.recorded_at
+    forks: dict[str, tuple[str, str]] = {}  # fork session → (parent session, time of the last copied row)
+    for members in shared.values():
+        parent = min({m.session_id for m in members}, key=lambda s: (first_own.get(s, ""), s))
+        for member in members:
+            if member.session_id == parent:
+                continue
+            records.pop(member.source_id, None)
+            at = member.recorded_at or ""
+            if at >= forks.get(member.session_id, ("", ""))[1]:
+                forks[member.session_id] = (parent, at)
+    for record in records.values():
+        if record.session_id in forks:
+            parent, at = forks[record.session_id]
+            record.fork = {"from_session_id": parent, "point_at": at}
+
+
 def _link_called_tools(records: dict[str, SourceRecord]) -> None:
     """A session run with no person (`codex exec`, `claude -p`) whose session ID appears in another session's
     tool call or result was started by that call: it becomes that session's sub-agent, `agent_type` naming the
@@ -795,6 +832,7 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
             merge(parse_codex(path, scope))
     for path in opencode_databases(opencode_home):
         merge(parse_opencode(path, scope))
+    _drop_forked_copies(result)
     _link_called_tools(result)
     ordered = sorted(result.values(), key=lambda r: (r.recorded_at or "", r.provider, r.session_id or "",
                                                     r.locator.get("line", 0), r.locator.get("fragment_index", 0), r.source_id))

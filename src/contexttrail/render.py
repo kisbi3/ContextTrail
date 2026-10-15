@@ -277,7 +277,8 @@ def event_detail(graph: dict, event_id: str, evidence: Callable[[str], dict | No
                 arrow = ("->" if ascii_only else "→") if edge["from_event_id"] == event_id else (
                     "<-" if ascii_only else "←")
                 # A turn link is the dialog's order, not a claim the model made.
-                turn = tr(" (대화 순서)", " (dialog order)") if edge.get("origin") == "dialog_turn" else ""
+                turn = (tr(" (대화 순서)", " (dialog order)") if edge.get("origin") == "dialog_turn" else
+                        tr(" (갈라진 세션)", " (forked session)") if edge.get("origin") == "fork" else "")
                 lines.append((f"  {key(item)}{arrow} {RELATION.get(edge['relation'], edge['relation'])}{turn}  "
                               f"{numbers[item['id']]} {clean(item['title'])}", "dim" if turn else ""))
     if event["evidence_ids"]:

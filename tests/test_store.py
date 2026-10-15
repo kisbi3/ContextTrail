@@ -136,3 +136,37 @@ def test_publishing_reads_who_wrote_the_cited_records_from_the_store(tmp_path):
     again = store.publish(published, [], {}, {}, expected_version=1)
     assert again["events"][0]["authoring"] == [{"tool": "codex", "model": "gpt-6.1-sol", "effort": "high"}]
     assert store.graph()["events"][0]["authoring"] == again["events"][0]["authoring"]
+
+
+def test_publishing_hangs_a_forked_sessions_first_request_under_the_parents_last_request_before_the_fork(tmp_path):
+    from contexttrail.model import empty_graph
+    store = Store(tmp_path / "state", "scope")
+    parent1 = SourceRecord("src_p1", "claude", "parent", "user", "Start the work.", {"kind": "jsonl", "path": "/l", "line": 1},
+                           native_record_id="u1", recorded_at="2026-09-25T08:40:00Z")
+    parent2 = SourceRecord("src_p3", "claude", "parent", "user", "Now the docs.", {"kind": "jsonl", "path": "/l", "line": 3},
+                           native_record_id="u3", recorded_at="2026-09-26T15:00:00Z")
+    parent3 = SourceRecord("src_p5", "claude", "parent", "user", "And the parent goes on.", {"kind": "jsonl", "path": "/l", "line": 5},
+                           native_record_id="u5", recorded_at="2026-09-26T15:40:00Z")
+    own = SourceRecord("src_f1", "claude", "fork", "user", "Continue with the tests.", {"kind": "jsonl", "path": "/f", "line": 3},
+                       native_record_id="fork-1", recorded_at="2026-09-26T15:50:00Z",
+                       fork={"from_session_id": "parent", "point_at": "2026-09-26T15:01:00Z"})
+    store.ingest([parent1, parent2, parent3, own])
+
+    def question(key, record):
+        return {"id": key, "kind": "question", "status": "asked", "title": record.content, "summary": "", "actor": "user",
+                "basis": "explicit_statement", "session_ids": [record.session_id], "worktree_ids": [],
+                "recorded_at": record.recorded_at, "occurred_at": None, "evidence_ids": [f"e_{key}"]}
+    graph = empty_graph("scope")
+    # An event an earlier analysis made from a copied row (the copy is gone now) is not the fork's first request.
+    stale = SourceRecord("src_copy", "claude", "fork", "user", "Now the docs.", {"kind": "jsonl", "path": "/f", "line": 1},
+                         native_record_id="u3", recorded_at="2026-09-26T15:00:00Z")
+    graph["events"] = [question("p1", parent1), question("p3", parent2), question("p5", parent3),
+                       question("c3", stale), question("f1", own)]
+    evidence = {f"e_{k}": {"id": f"e_{k}", "source_id": r.source_id, "start_line": 1, "end_line": 1, "quote": r.content,
+                           "source": r.metadata()} for k, r in (("p1", parent1), ("p3", parent2), ("p5", parent3),
+                                                                  ("c3", stale), ("f1", own))}
+    published = store.publish(graph, [], {}, evidence, expected_version=0)
+    forks = [edge for edge in published["edges"] if edge.get("origin") == "fork"]
+    # The parent's last request before the fork point (not the one it went on with afterwards), structural, not a cause.
+    assert [(e["from_event_id"], e["to_event_id"], e["relation"], e["basis"]) for e in forks] == [("p3", "f1", "follows", "structural")]
+    assert store.publish(published, [], {}, {}, expected_version=1)["edges"].count(forks[0]) == 1  # not added twice

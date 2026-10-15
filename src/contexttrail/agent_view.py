@@ -117,7 +117,7 @@ def event_record(graph: dict, event_id: str, evidence: Callable[[str], dict | No
         if other:
             links.append({"direction": "out" if outgoing else "in", "relation": edge["relation"],
                           "relation_label": RELATION.get(edge["relation"], edge["relation"]),
-                          "dialog_turn": edge.get("origin") == "dialog_turn",
+                          "dialog_turn": edge.get("origin") == "dialog_turn", "fork": edge.get("origin") == "fork",
                           "event": short_id(graph, other["id"]), "title": other["title"],
                           "status_label": labels[other["id"]]})
     quotes = []
@@ -201,7 +201,8 @@ def show_text(result: dict) -> list[str]:
         lines += ["", tr("연결된 사건", "Linked events")]
         for link in event["links"]:
             arrow = "→" if link["direction"] == "out" else "←"
-            turn = tr(" (대화 순서, 인과 아님)", " (dialog order, not causation)") if link["dialog_turn"] else ""
+            turn = (tr(" (대화 순서, 인과 아님)", " (dialog order, not causation)") if link["dialog_turn"] else
+                    tr(" (갈라진 세션, 인과 아님)", " (forked session, not causation)") if link.get("fork") else "")
             lines.append(f"  {arrow} {link['relation_label']}{turn}  {link['event']}  "
                          f"{_clean(link['title'])} [{_clean(link['status_label'])}]")
     if event["open_items"]:

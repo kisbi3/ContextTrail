@@ -1529,6 +1529,49 @@ def authoring_of(sources: list[dict]) -> list[dict]:
     return [found[key] for key in sorted(found)]
 
 
+FORK_ORIGIN = "fork"
+
+
+def link_forks(graph: dict, source_of: Callable[[str], dict | None]) -> int:
+    """A session forked from another (`SourceRecord.fork`) continues that conversation: its first request hangs
+    under the parent's last request before the fork point, as a structural `follows` of origin `fork`, like a
+    dialog turn. Run when a graph is published, once per forked session, when the parent's request is in the
+    graph; returns how many links were added."""
+    users = [event for event in graph["events"] if event.get("actor") == "user" and event.get("kind") == "question"]
+    by_session: dict[str, list[dict]] = {}
+    for event in users:
+        for session in event.get("session_ids") or []:
+            by_session.setdefault(session, []).append(event)
+    linked = {edge["to_event_id"] for edge in graph["edges"] if edge.get("origin") == FORK_ORIGIN}
+    added = 0
+    def fork_of(event: dict) -> dict | None:
+        return next((source["fork"] for source in (source_of(i) for i in event["evidence_ids"])
+                     if source and source.get("fork")), None)
+
+    for session, events in by_session.items():
+        # The fork's own requests carry the fork; an event made earlier from a copied row (before the copies were
+        # dropped) does not, and is not the fork's first request.
+        own = [(event, info) for event in events for info in [fork_of(event)] if info]
+        if not own:
+            continue
+        first, info = min(own, key=lambda pair: pair[0].get("recorded_at") or "~")
+        if first["id"] in linked:
+            continue
+        before = [event for event in by_session.get(info.get("from_session_id"), [])
+                  if (event.get("recorded_at") or "") <= info.get("point_at", "")]
+        if not before:
+            continue
+        source = max(before, key=lambda event: event.get("recorded_at") or "")
+        graph["edges"].append({"id": ident("edge_", FORK_ORIGIN, source["id"], first["id"]),
+                               "from_event_id": source["id"], "to_event_id": first["id"], "relation": "follows",
+                               "basis": "structural", "evidence_ids": list(first["evidence_ids"][:1]),
+                               "rationale": "the first request of a session forked from this conversation after "
+                                            "this user message (dialog structure, not a causal claim)",
+                               "active": True, "origin": FORK_ORIGIN})
+        added += 1
+    return added
+
+
 def fill_authoring(graph: dict, source_of: Callable[[str], dict | None]) -> None:
     """Set every event's `authoring` from the records its evidence cites (`source_of(evidence_id)` gives the
     record's metadata, or None). Run when a graph is published, so it reads the records as stored then: an

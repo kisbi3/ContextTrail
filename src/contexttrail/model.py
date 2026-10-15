@@ -28,6 +28,10 @@ class SourceRecord:
     # it, the analysis model never sees it, and it is outside the content hash, so filling it in for a
     # stored record does not send its unit again.
     authoring: dict[str, Any] = field(default_factory=dict)
+    # For a session forked from another (Claude Code `--fork-session`/resume copies the parent's recent rows into
+    # the new file): `from_session_id` and `point_at`, the time of the last copied row. Set on the fork's own
+    # records by `_drop_forked_copies`; outside the content hash and hidden from the model, like `authoring`.
+    fork: dict[str, Any] = field(default_factory=dict)
 
     pinned_hash: str | None = None  # host-only reconstruction of preserved excerpt ranges
 

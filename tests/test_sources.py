@@ -470,3 +470,41 @@ def test_a_transcript_over_the_size_limit_is_named_with_the_limit_in_the_limitat
     snapshot = parse_codex(path, Scope.resolve(folder))
     assert not snapshot.records
     assert snapshot.limitations[0] == f"log file not read: big.jsonl (over the size limit of 10 bytes: {path.stat().st_size} bytes)"
+
+
+def test_a_forked_claude_session_drops_the_copied_rows_and_keeps_where_it_came_from(tmp_path):
+    from dataclasses import replace
+    from contexttrail.analysis import record_for_model
+    folder = tmp_path / "app"; folder.mkdir()
+    home = tmp_path / "claude"; project = home / "projects" / "project"
+
+    def row(uuid, parent, session, at, text, role="user"):
+        return {"type": role, "uuid": uuid, "parentUuid": parent, "sessionId": session, "cwd": str(folder),
+                "timestamp": at, "message": {"role": role, "content": text}}
+    parent = [row("u1", None, "parent", "2026-09-25T08:40:00Z", "Start the work."),
+              row("u2", "u1", "parent", "2026-09-25T08:41:00Z", "Started.", "assistant"),
+              row("u3", "u2", "parent", "2026-09-26T15:00:00Z", "Now the docs."),
+              row("u4", "u3", "parent", "2026-09-26T15:01:00Z", "Docs done.", "assistant"),
+              row("u5", "u4", "parent", "2026-09-26T15:40:00Z", "And the parent goes on.")]
+    write(project / "parent.jsonl", parent)
+    # Two forks of the same point: each file copies the recent rows under its own session ID, then its own rows.
+    for name, at in (("fork-a", "2026-09-26T15:50:00Z"), ("fork-b", "2026-09-27T02:38:00Z")):
+        copies = [{**r, "sessionId": name} for r in parent[2:4]]
+        write(project / f"{name}.jsonl", copies + [row(f"{name}-1", "u4", name, at, "Continue with the tests.")])
+    # A fork whose parent is gone keeps its copies: they are the only text of that history.
+    write(project / "orphan.jsonl", [row("x1", None, "orphan", "2026-09-20T10:00:00Z", "Old words."),
+                                     row("orphan-1", "x1", "orphan", "2026-09-28T10:00:00Z", "New words.")])
+    records = collect_logs(Scope.resolve(folder), codex_home=tmp_path / "none", claude_home=home).records
+    by_session = {}
+    for r in records:
+        by_session.setdefault(r.session_id, []).append(r)
+    assert [r.native_record_id for r in by_session["parent"]] == ["u1", "u2", "u3", "u4", "u5"]
+    assert [r.native_record_id for r in by_session["fork-a"]] == ["fork-a-1"]
+    assert [r.native_record_id for r in by_session["fork-b"]] == ["fork-b-1"]
+    assert by_session["fork-a"][0].fork == {"from_session_id": "parent", "point_at": "2026-09-26T15:01:00Z"}
+    assert by_session["fork-b"][0].fork == by_session["fork-a"][0].fork
+    assert all(r.fork == {} for r in by_session["parent"])
+    assert [r.native_record_id for r in by_session["orphan"]] == ["x1", "orphan-1"]
+    own = by_session["fork-a"][0]
+    assert replace(own, fork={}).content_hash == own.content_hash  # outside the hash: no unit is sent again
+    assert "fork" not in record_for_model(own)
