@@ -1775,20 +1775,23 @@ class Harness:
 
     def task(self, stage: str, data: dict, checker: Callable[[dict], Any],
              *, validator: EvidenceValidator | None = None, schema: dict | None = None,
-             merge: Callable[[dict], dict] | None = None) -> dict:
+             merge: Callable[[dict], dict] | None = None, thread: Any = None) -> dict:
         """`merge` folds the model's answer (a review patch) into what `checker` sees; the call
-        record and the repair round keep the answer the model actually wrote."""
+        record and the repair round keep the answer the model actually wrote. `thread` is the unit's
+        conversation when its stages share one (`Engine.unit_thread`); it is left open for the next stage."""
         schema = schema or (EXTRACT_SCHEMA if stage == "extract" else delta_schema(self.config.integrate_evidence == "reuse"))
         task = _trace_operation(self.detailed_trace, f"build_{stage}_request",
                                 {"stage": stage, "data": data},
                                 lambda: build_task(stage, data, self.config.output_language))
         # One conversation for this task's calls where the runner keeps one (Codex): a follow-up resumes it with
         # only the new evidence or repair, so the earlier turns hit the prompt cache instead of being resent cold.
-        thread = self.runner.thread() if callable(getattr(self.runner, "thread", None)) else None
+        own = thread is None
+        if own:
+            thread = self.runner.thread() if callable(getattr(self.runner, "thread", None)) else None
         try:
             return self._task(stage, data, checker, task, schema, validator, merge, thread)
         finally:
-            if thread is not None:
+            if own and thread is not None:
                 thread.close()
 
     def _task(self, stage, data, checker, task, schema, validator, merge, thread) -> dict:
@@ -2176,6 +2179,28 @@ class Engine:
         # wait (then what the run adds is out of order); set by `_plan_units`.
         self.selection: dict | None = None
         self.ahead_of_order = False
+        # One runner conversation per unit, shared by its extract, integrate and review calls when they go to the
+        # same adapter (Codex): the later stages resume the session, so the earlier request is cached input.
+        self.unit_threads: dict[str, tuple[Any, Any]] = {}
+
+    def unit_thread(self, unit_id: str, runner: Any) -> Any:
+        """The unit's conversation for calls on `runner`: made on first use when the runner keeps one, reused by
+        the unit's later stages on the same adapter, None for another adapter (a stage model of its own)."""
+        owner, thread = self.unit_threads.get(unit_id, (None, None))
+        if thread is not None:
+            return thread if owner is runner else None
+        if not callable(getattr(runner, "thread", None)):
+            return None
+        thread = runner.thread()
+        self.unit_threads[unit_id] = (runner, thread)
+        return thread
+
+    def close_unit_thread(self, unit_id: str | None = None) -> None:
+        """Close the unit's conversation (every unit's with no ID): its temporary home goes with it."""
+        for key in [unit_id] if unit_id else list(self.unit_threads):
+            owner_thread = self.unit_threads.pop(key, None)
+            if owner_thread is not None:
+                owner_thread[1].close()
 
     def scan(self) -> Snapshot:
         proven = [Path(p) for p in self.store.get_meta("known_worktree_roots", [])]
@@ -2325,7 +2350,7 @@ class Engine:
                 from . import light
                 items, edges = light.skeleton([pool[i] for i in unit["sources"]])
                 answer = h.task("light", light.request_data(unit, snapshot_id, data, items), light.answer_check,
-                                validator=validator, schema=light.LIGHT_SCHEMA)
+                                validator=validator, schema=light.LIGHT_SCHEMA, thread=self.unit_thread(unit["id"], h.runner))
                 result = light.extraction(answer, items, edges, unit, snapshot_id, h.pool, h.provided, validator)
                 try:
                     validator.check_extraction(result, unit["id"], snapshot_id, graph)
@@ -2339,7 +2364,8 @@ class Engine:
             else:
                 try:
                     output = h.task("extract", data,
-                        lambda o: validator.check_extraction(o, unit["id"], snapshot_id, graph), validator=validator)
+                        lambda o: validator.check_extraction(o, unit["id"], snapshot_id, graph), validator=validator,
+                        thread=self.unit_thread(unit["id"], h.runner))
                     draft = output
                     # Semantics are reviewed against the proposed GraphDelta. Extraction
                     # calls route to a second model only after bounded contract failure.
@@ -2498,10 +2524,11 @@ class Engine:
                 delta = h.task("integrate", integrate_request_data(data, draft),
                                check, validator=validator, schema=review_patch_schema(reuse),
                                merge=lambda answer: self._merge_review_patch(
-                                   answer, draft, validator, candidate_set, mode="integrate_patch_merged"))
+                                   answer, draft, validator, candidate_set, mode="integrate_patch_merged"),
+                               thread=self.unit_thread(unit["id"], h.runner))
             else:
                 h.runner = runners.get("integrate")
-                delta = h.task("integrate", data, check, validator=validator)
+                delta = h.task("integrate", data, check, validator=validator, thread=self.unit_thread(unit["id"], h.runner))
             prepared.delta = delta
             if self.config.audit:
                 audit_guard(delta, graph)
@@ -2541,9 +2568,11 @@ class Engine:
             if patch_mode:
                 delta = harness.task("integrate", review_data, check_review, validator=validator,
                                      schema=review_patch_schema(self.config.integrate_evidence == "reuse"),
-                                     merge=lambda answer: self._merge_review_patch(answer, proposal, validator, candidate_set))
+                                     merge=lambda answer: self._merge_review_patch(answer, proposal, validator, candidate_set),
+                                     thread=self.unit_thread(harness.unit_id, harness.runner))
             else:
-                delta = harness.task("integrate", review_data, check_review, validator=validator)
+                delta = harness.task("integrate", review_data, check_review, validator=validator,
+                                     thread=self.unit_thread(harness.unit_id, harness.runner))
             prepared.delta = delta
         resolutions = delta.get("review_resolutions", []) if executed else []
         if executed:

@@ -871,6 +871,8 @@ def publish_result(state: StudioState) -> StudioState:
 
 
 def advance_unit(state: StudioState) -> StudioState:
+    engine, _, _ = _context(state)
+    engine.close_unit_thread(state["planned_units"][state["unit_index"]]["id"])  # the unit's conversation is done
     return {"unit_index": state["unit_index"] + 1, "unit_skipped": None}
 
 
@@ -881,6 +883,7 @@ def next_unit_route(state: StudioState) -> Literal["select_unit", "finish_run"]:
 def finish_run(state: StudioState) -> StudioState:
     try:
         engine, store, _ = _context(state)
+        engine.close_unit_thread()
         graph = store.graph()
         calls = store.llm_calls(state["run_id"])
         if state.get("mode") == "cli":

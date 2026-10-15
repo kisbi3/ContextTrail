@@ -126,6 +126,11 @@ def codex_thread_id(text: str) -> str | None:
 FOLLOW_UP_KEYS = ("evidence_rounds", "evidence_requests", "repair")
 FOLLOW_UP = ("Follow-up to your previous answer in this conversation. The request above still holds; only what is "
              "new is below. Answer again with the complete JSON the schema asks for.")
+# The next stage of the same work unit, sent into the conversation that holds the earlier stage's request and
+# answer (so they are cached input, not resent). The whole new request follows; it alone is to be answered.
+STAGE_FOLLOW_UP = ("The next stage of the same work unit, in this conversation. The records and your earlier answer "
+                   "above are context only; answer the request below on its own, with the complete JSON its schema "
+                   "asks for.")
 
 
 class Thread:
@@ -136,14 +141,23 @@ class Thread:
         self.session: str | None = None
         self.sent: dict | None = None
         self.usage: dict | None = None
+        self.system: str | None = None
 
-    def follow_up(self, message: dict) -> dict | None:
-        """The part of `message` the session has not seen, or None when it must start again."""
-        if self.session is None or self.sent is None:
+    def follow_up(self, message: dict, system: str | None = None) -> dict | None:
+        """What to send into the open session for `message`: the part it has not seen (an evidence round, a
+        repair), the whole request of a later stage of the same unit under `STAGE_FOLLOW_UP`, or None when the
+        session must start again (different instructions, or the same stage asked differently)."""
+        if self.session is None or self.sent is None or system != self.system:
             return None
         changed = {key for key in message.keys() | self.sent.keys() if message.get(key) != self.sent.get(key)}
-        if not changed or not changed <= set(FOLLOW_UP_KEYS):
+        if not changed:
             return None
+        if not changed <= set(FOLLOW_UP_KEYS):
+            # A later stage of the unit (integrate after extract; the delta review, which is an integrate request
+            # with a review instruction) continues; the same stage asked differently (a trimmed request) does not.
+            later = (message.get("stage") != self.sent.get("stage")
+                     or bool(message.get("review_instruction")) != bool(self.sent.get("review_instruction")))
+            return {"follow_up": STAGE_FOLLOW_UP, **message} if later else None
         before = self.sent.get("evidence_rounds") or []
         rounds = message.get("evidence_rounds") or []
         if rounds[:len(before)] != before:
@@ -156,11 +170,13 @@ class Thread:
                 delta[key] = message[key]
         return delta
 
-    def answered(self, message: dict, session: str | None, usage: dict | None) -> dict | None:
+    def answered(self, message: dict, session: str | None, usage: dict | None,
+                 system: str | None = None) -> dict | None:
         """Record the call; returns its own usage. A resumed session reports the session's running total, so a
         follow-up's usage is the difference from the previous call's."""
         previous = self.usage if self.session and session == self.session else None
         self.session, self.sent, self.usage = session, message if session else None, usage
+        self.system = system if session else None
         if previous is None or usage is None:
             return usage
         return {key: value - previous.get(key, 0) if isinstance(value, int) and isinstance(previous.get(key, 0), int)
@@ -605,7 +621,7 @@ class CLIRunner:
         (work / "mcp.json").write_text('{"mcpServers":{}}', encoding="utf-8")
         (work / "settings.json").write_text('{"disableAllHooks":true,"enabledPlugins":{},"autoMemoryEnabled":false}', encoding="utf-8")
         message = {k: v for k, v in task.items() if k != "system"}
-        follow_up = thread.follow_up(message) if thread is not None else None
+        follow_up = thread.follow_up(message, task["system"]) if thread is not None else None
         resume = thread.session if follow_up is not None else None
         paths = dict(work=str(work.resolve()), output=str(output.resolve())) if sys.platform == "darwin" else {}
         command = self.build_cli(schema, persist=thread is not None, resume=resume, **paths)
@@ -624,7 +640,7 @@ class CLIRunner:
             value, usage = parse_codex_output(text, output / "result.json")
             self.last_model = None
             if thread is not None:
-                usage = thread.answered(message, resume or codex_thread_id(text), usage)
+                usage = thread.answered(message, resume or codex_thread_id(text), usage, task["system"])
         else:
             value, usage = parse_claude_output(text)
             self.last_model = claude_reported_model(text)

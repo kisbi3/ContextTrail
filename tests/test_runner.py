@@ -270,3 +270,23 @@ def test_a_codex_follow_up_resumes_the_session_with_only_what_is_new():
     assert thread.follow_up({**asked,'data':{'records':[1]}}) is None
     thread.reset()
     assert thread.follow_up(asked) is None
+
+
+def test_a_later_stage_of_the_same_unit_continues_the_codex_session_with_its_whole_request():
+    from contexttrail.runners.cli_runner import STAGE_FOLLOW_UP, Thread
+
+    class Directory:
+        name = '/nowhere'
+        def cleanup(self): pass
+    thread = Thread(Directory())
+    extract = {'stage': 'extract', 'instructions': 'extract…', 'data': {'records': [1, 2]}}
+    thread.answered(extract, 'abc', {'input_tokens': 100}, 'common')
+    integrate = {'stage': 'integrate', 'instructions': 'integrate…', 'data': {'candidates': [1]}}
+    assert thread.follow_up(integrate, 'common') == {'follow_up': STAGE_FOLLOW_UP, **integrate}
+    thread.answered(integrate, 'abc', {'input_tokens': 250}, 'common')
+    # The delta review is an integrate request with a review instruction: a later stage too.
+    review = {**integrate, 'review_instruction': 'patch…', 'review_issues': ['x']}
+    assert thread.follow_up(review, 'common') == {'follow_up': STAGE_FOLLOW_UP, **review}
+    # The same stage asked differently, or other instructions (the light reading), start a new session.
+    assert thread.follow_up({**integrate, 'data': {'candidates': [2]}}, 'common') is None
+    assert thread.follow_up(review, 'light instructions') is None

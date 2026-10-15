@@ -907,3 +907,26 @@ def test_documentation_only_edits_are_flagged_in_tool_steps(laboratory):
                    tool_call_id="c")
     steps = {s["call"]: s for s in tool_steps([doc, code])}
     assert steps[doc.source_id]["doc"] is True and "doc" not in steps[code.source_id]
+
+
+def test_the_stages_of_one_unit_share_the_runners_conversation_and_it_closes_after_the_unit(laboratory):
+    _,store,engine,records,make=laboratory
+    records.append(make(CASES[0][0])); records.append(replace(make(CASES[4][0],key='s2'),recorded_at='2026-09-22T10:05:00Z'))
+    engine.config.integrate_output='full'  # so the unit integrates with a call of its own
+    class Conversation:
+        def __init__(self): self.closed=0
+        def close(self): self.closed+=1
+    class Threaded(FixtureRunner):
+        def __init__(self,*a,**k):
+            super().__init__(*a,**k); self.threads=[]; self.used=[]
+        def thread(self):
+            self.threads.append(Conversation()); return self.threads[-1]
+        def run(self,task,schema,cancel,thread=None):
+            self.used.append((task['stage'],thread)); return super().run(task,schema,cancel)
+    runner=Threaded();result=engine.analyze(lambda:runner)
+    assert result['status']=='complete'
+    stages=[stage for stage,_ in runner.used]
+    assert 'extract' in stages and 'integrate' in stages
+    assert len({id(thread) for _,thread in runner.used})==1      # one conversation for the unit's stages
+    assert len(runner.threads)==1 and runner.threads[0].closed==1  # closed once, after the unit
+    assert engine.unit_threads=={}
