@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -136,8 +137,9 @@ STAGE_FOLLOW_UP = ("The next stage of the same work unit, in this conversation. 
 class Thread:
     """The Codex session of one task's calls, kept in one temporary home until `close`."""
 
-    def __init__(self, directory):
+    def __init__(self, directory, cumulative_usage: bool = True):
         self.directory = directory
+        self.cumulative_usage = cumulative_usage  # Codex reports a resumed session's running total; Claude the call's own
         self.session: str | None = None
         self.sent: dict | None = None
         self.usage: dict | None = None
@@ -192,7 +194,7 @@ class Thread:
             self.first_sent = message if session else None
         self.session, self.sent, self.usage = session, message if session else None, usage
         self.system = system if session else None
-        if previous is None or usage is None:
+        if previous is None or usage is None or not self.cumulative_usage:
             return usage
         return {key: value - previous.get(key, 0) if isinstance(value, int) and isinstance(previous.get(key, 0), int)
                 else value for key, value in usage.items()}
@@ -568,7 +570,7 @@ class CLIRunner:
         return resolved
 
     def build_cli(self, schema: dict, *, work: str = "/work", output: str = "/out", persist: bool = False,
-                  resume: str | None = None) -> list[str]:
+                  resume: str | None = None, session: str | None = None) -> list[str]:
         """The CLI's argument list. Codex only: `persist` keeps the session in the run's temporary home so a
         follow-up call can `resume` it (same prompt cache key, so the earlier turns are cached)."""
         executable = self._require_executable()
@@ -576,8 +578,15 @@ class CLIRunner:
             command = [executable, "--restricted", "--safe-mode", "--print", "--output-format", "json",
                        "--tools", "", "--disallowedTools", "mcp__*", "--strict-mcp-config",
                        "--mcp-config", f"{work}/mcp.json", "--setting-sources", "",
-                       "--settings", f"{work}/settings.json", "--no-session-persistence",
+                       "--settings", f"{work}/settings.json",
                        "--system-prompt-file", f"{work}/system.md", "--json-schema", dumps(schema)]
+            # A kept session lives in the temporary home: started under an ID of ours, resumed by it.
+            if resume:
+                command += ["--resume", resume]
+            elif persist and session:
+                command += ["--session-id", session]
+            else:
+                command += ["--no-session-persistence"]
         else:
             command = [executable]
             risky = {"shell_tool", "unified_exec", "shell_snapshot", "js_repl", "apply_patch_freeform",
@@ -608,9 +617,10 @@ class CLIRunner:
         return command
 
     def thread(self) -> "Thread | None":
-        """A conversation for the calls of one task (Codex only): the first call keeps its session, and a
+        """A conversation for the calls of one task: the first call keeps its session in the run's temporary home
+        (Codex: the persisted `exec` session; Claude: `--session-id` instead of `--no-session-persistence`), and a
         follow-up (evidence, a repair, the final answer) resumes it with only what is new."""
-        return Thread(self._temporary()) if self.name == "codex" else None
+        return Thread(self._temporary(), cumulative_usage=self.name == "codex")
 
     def run(self, task: dict, schema: dict, cancel: threading.Event, thread: "Thread | None" = None) -> dict:
         if not self.ready:
@@ -639,7 +649,8 @@ class CLIRunner:
         follow_up = thread.follow_up(message, task["system"]) if thread is not None else None
         resume = thread.session if follow_up is not None else None
         paths = dict(work=str(work.resolve()), output=str(output.resolve())) if sys.platform == "darwin" else {}
-        command = self.build_cli(schema, persist=thread is not None, resume=resume, **paths)
+        session = resume or (str(uuid.uuid4()) if thread is not None else None)
+        command = self.build_cli(schema, persist=thread is not None, resume=resume, session=session, **paths)
         self.calls += 1
         self.last_continued = resume is not None
         code, text, _ = execute(self.sandbox_command(work, output, command),
@@ -658,6 +669,8 @@ class CLIRunner:
                 usage = thread.answered(message, resume or codex_thread_id(text), usage, task["system"])
         else:
             value, usage = parse_claude_output(text)
+            if thread is not None:
+                usage = thread.answered(message, session, usage, task["system"])
             self.last_model = claude_reported_model(text)
         self.last_usage = usage  # None stays unknown, not zero or an estimated bill.
         return value

@@ -103,17 +103,17 @@ research, software or both. Do not do the project's work or recommend new work.
 - Follow the stage's JSON contract.
 - Use IDs in the short form shown in the input (source S12, event E3, relation L2, ...). Do not
   expand them or make up IDs.
-- A quote is a contiguous exact string from the provided records. Do not repeat long lines or
-  many whole lines; you may quote a distinctive part of at least 8 characters exactly. The line
-  range covers every provided line that part is on. Do not summarise or alter the meaning.
-- How to quote: pick one distinctive stretch inside a single line (8 to 120 characters) and copy
-  it character by character, keeping the record's own language, spacing and escapes. Never
-  translate, shorten with "..." or "…", fix typos, or join text from two places. start_line and
-  end_line are the line numbers printed next to the text in the input, not counts or offsets. A
-  quote inside one line has start_line equal to end_line, that line's number; do not widen the
-  range to neighbouring lines.
-  If you cannot copy a quote exactly, drop that item's evidence instead of guessing.
-- Give judgements as short reasons with quotes. Do not ask for or output private reasoning.
+- Evidence is a line range of a provided record: source_id, start_line and end_line, the line
+  numbers printed next to the text in the input (not counts or offsets). Code keeps those lines
+  as the quote. Cite only lines you were shown, and no more lines than the claim needs (a few;
+  at most about 20).
+- quote is optional. Give one when a distinctive part says what the lines show better than the
+  whole lines: one stretch inside a single line (8 to 120 characters), copied character by
+  character with the record's own language, spacing and escapes — never translated, shortened
+  with "..." or "…", corrected or joined from two places; its start_line and end_line are that
+  line's number. If you cannot copy it exactly, leave quote out rather than guess; never drop the
+  evidence for that reason.
+- Give judgements as short reasons that name their evidence. Do not ask for or output private reasoning.
 - Do not write Mermaid, HTML or SQL.
 - If you need more material, return needs_evidence with allowed requests.
 - Each `read_requests` item has all of kind, ids, start_line, end_line, query and unit_id. For

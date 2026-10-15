@@ -293,3 +293,27 @@ def test_a_later_stage_of_the_same_unit_continues_the_codex_session_with_its_who
     # The same stage asked differently, or other instructions (the light reading), start a new session.
     assert thread.follow_up({**integrate, 'data': {'candidates': [2]}}, 'common') is None
     assert thread.follow_up(review, 'light instructions') is None
+
+
+def test_a_claude_call_keeps_its_session_under_an_id_of_ours_and_a_follow_up_resumes_it():
+    from contexttrail.runners.cli_runner import Thread
+    runner = CLIRunner('claude'); runner.executable = '/usr/bin/claude'
+    plain = runner.build_cli({})
+    assert '--no-session-persistence' in plain and '--session-id' not in plain and '--resume' not in plain
+    kept = runner.build_cli({}, persist=True, session='11111111-2222-4333-8444-555555555555')
+    assert kept[kept.index('--session-id') + 1] == '11111111-2222-4333-8444-555555555555' and '--no-session-persistence' not in kept
+    resumed = runner.build_cli({}, persist=True, resume='11111111-2222-4333-8444-555555555555')
+    assert resumed[resumed.index('--resume') + 1] == '11111111-2222-4333-8444-555555555555'
+    assert '--session-id' not in resumed and '--no-session-persistence' not in resumed
+    assert runner.thread() is not None  # Claude keeps a conversation per task now, like Codex
+
+    class Directory:
+        name = '/nowhere'
+        def cleanup(self): pass
+    # Claude reports each call's own usage, so a follow-up's usage is taken as it is, not as a difference.
+    thread = Thread(Directory(), cumulative_usage=False)
+    first = {'stage': 'extract', 'data': {'records': [1]}}
+    thread.answered(first, 'sid', {'input_tokens': 100}, 'common')
+    again = {**first, 'repair': 'fix it'}
+    assert thread.follow_up(again, 'common') == {'follow_up': thread.follow_up(again, 'common')['follow_up'], 'repair': 'fix it'}
+    assert thread.answered(again, 'sid', {'input_tokens': 40, 'cache_read_input_tokens': 90}, 'common') == {'input_tokens': 40, 'cache_read_input_tokens': 90}

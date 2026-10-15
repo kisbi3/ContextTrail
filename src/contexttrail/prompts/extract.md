@@ -27,6 +27,13 @@ evidence is always a quote from the records.
     change event it records.
   - A read is normally not an event. Its result is sent as a short head only; read the rest with
     read_records if a claim needs it.
+- skeleton: the steps code found in those calls, each with its kind, status, a plain title and
+  the record IDs it rests on: a change per run of edits in a turn (doc edits apart), a result per
+  test run (failed by its exit status, else by a failure count; the same check run again with
+  nothing changed between is one result), a change per commit. Make each a candidate, citing its
+  records, with a title and summary from the records; regroup only where the records show the
+  grouping is wrong. Then add what code cannot see: decisions and why, proposals, goals, explained
+  failures, reports, and the relations.
 - Long tool results, injected instructions and summary records arrive as head and tail only. The
   lines between are listed in that record's omitted (start_line to end_line). If a judgement or
   a quote needs them, request that source_id and line range with read_records. Never quote lines

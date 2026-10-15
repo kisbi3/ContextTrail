@@ -43,8 +43,14 @@ def enum(values: list[str]) -> dict:
     return {"type": "string", "enum": values}
 
 
-CITATION = obj({"source_id": STR, "start_line": {"type": "integer", "minimum": 1},
-                "end_line": {"type": "integer", "minimum": 1}, "quote": {"type": "string", "minLength": 1}})
+# `quote` is optional: without it, code keeps the cited lines themselves (`EvidenceValidator.fill_cut_quotes`),
+# so a citation can never fail for a quote copied wrongly; with it, the quote names what the lines show.
+CITATION = {"type": "object", "properties": {"source_id": STR, "start_line": {"type": "integer", "minimum": 1},
+                                             "end_line": {"type": "integer", "minimum": 1},
+                                             "quote": {"type": "string", "minLength": 1}},
+            "required": ["source_id", "start_line", "end_line"], "additionalProperties": False}
+# A quote code cuts covers at most this many of the cited lines; the rest is one `show` away.
+CUT_QUOTE_LINES = 20
 CITATIONS = arr(CITATION, 1)
 EVENT_FIELDS = {"kind": enum(KINDS), "title": {"type": "string", "minLength": 1, "maxLength": 240},
                 "summary": {"type": "string", "maxLength": 4000}, "actor": STR, "status": enum(STATUSES),
@@ -647,9 +653,46 @@ class EvidenceValidator:
             if item.get("focus"):
                 self.focus[evidence_id] = merge_focus(self.focus.get(evidence_id), item["focus"])
 
+    def fill_cut_quotes(self, value: Any) -> int:
+        """Give every citation without a quote the cited lines as its quote, cut by code: the lines the model was
+        shown within the range, at most `CUT_QUOTE_LINES` (the range is narrowed to them). A range naming nothing
+        shown is left for the checks to refuse. Walks the whole answer; returns how many were cut."""
+        cut = 0
+        if isinstance(value, dict):
+            evidence = value.get("evidence")
+            if isinstance(evidence, list):
+                for citation in evidence:
+                    if isinstance(citation, dict) and not citation.get("quote") and isinstance(citation.get("source_id"), str):
+                        record = self.records.get(citation["source_id"])
+                        start, end = citation.get("start_line"), citation.get("end_line")
+                        if record is None or not isinstance(start, int) or not isinstance(end, int):
+                            continue
+                        lines = record.content.splitlines()
+                        for lo, hi in self.provided.get(citation["source_id"], []):
+                            s, e = max(lo, start, 1), min(hi, end, len(lines))
+                            if s > e:
+                                continue
+                            e = min(e, s + CUT_QUOTE_LINES - 1)
+                            quote = "\n".join(lines[s - 1:e])
+                            if quote.strip():
+                                citation.update(start_line=s, end_line=e, quote=quote)
+                                self.normalizations.append({"mode": "quote_cut_by_code", "source_id": citation["source_id"],
+                                                            "lines": [s, e]})
+                                cut += 1
+                                break
+            for child in value.values():
+                cut += self.fill_cut_quotes(child)
+        elif isinstance(value, list):
+            for child in value:
+                cut += self.fill_cut_quotes(child)
+        return cut
+
     def citations(self, citations: list[dict]) -> list[str]:
         ids = []
         for citation in citations:
+            if not citation.get("quote"):
+                raise FlowError(f"cited lines were not provided to the model: {citation.get('source_id')}:"
+                                f"{citation.get('start_line')}-{citation.get('end_line')} (no quote to keep)")
             source_id = citation["source_id"]
             record = self.records.get(source_id)
             start, end, quote, focus = self._citation_span(citation, track=True)
@@ -897,6 +940,7 @@ class EvidenceValidator:
 
     def check_extraction(self, output: dict, unit_id: str, snapshot_id: str, graph: dict) -> None:
         validate_shape(output, EXTRACT_SCHEMA)
+        self.fill_cut_quotes(output)
         if output["unit_id"] != unit_id or output["snapshot_id"] != snapshot_id:
             raise FlowError("extraction unit/snapshot identifiers differ from the task.")
         if output["status"] != "complete" or output["read_requests"]:
@@ -974,6 +1018,7 @@ class EvidenceValidator:
         """
         output = copy.deepcopy(output)
         validate_shape(output, EXTRACT_SCHEMA)
+        self.fill_cut_quotes(output)
         if (output["unit_id"] != unit_id or output["snapshot_id"] != snapshot_id or output["status"] != "complete"
                 or output["read_requests"] or output["unprocessed_record_ids"]):
             raise FlowError("extraction result cannot be salvaged.")
@@ -1233,6 +1278,7 @@ class EvidenceValidator:
         if evidence_reuse:
             self.reuse_candidate_evidence(output, candidates)
         validate_shape(output, DELTA_SCHEMA)
+        self.fill_cut_quotes(output)
         if output["status"] != "complete" or output["read_requests"]:
             raise FlowError("GraphDelta is not complete.")
         if output["base_graph_version"] != graph["version"] or output["snapshot_id"] != snapshot_id:

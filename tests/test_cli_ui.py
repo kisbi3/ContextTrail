@@ -30,11 +30,21 @@ from contexttrail.ui import token_usage_label
 def test_stage_effort_is_saved_but_skipping_review_is_per_run(tmp_path):
     from contexttrail.cli import _options, parser
     store = Store(tmp_path / 'state', 'scope')
-    first = _options(parser().parse_args(['analyze', '.', '--integrate-effort', 'xhigh', '--no-review']), store)
+    first = _options(parser().parse_args(['analyze', '.', '--integrate-effort', 'xhigh', '--no-review', '--no-economy']), store)
     assert first.integrate_effort == 'xhigh' and first.semantic_review is False
     again = _options(parser().parse_args(['analyze', '.']), store)
     assert again.integrate_effort == 'xhigh' and again.semantic_review is True
     assert again.extract_effort == 'medium'
+
+
+def test_economy_is_the_default_and_no_economy_restores_the_integrate_and_review_calls(tmp_path):
+    from contexttrail.cli import _options, parser
+    store = Store(tmp_path / 'state', 'scope')
+    saving = _options(parser().parse_args(['analyze', '.']), store)
+    assert saving.integrate_output == 'draft_only' and saving.semantic_review is False and saving.read_rounds == 1
+    full = _options(parser().parse_args(['analyze', '.', '--no-economy']), store)
+    assert full.integrate_output != 'draft_only' and full.semantic_review is True and full.read_rounds == 2
+    assert _options(parser().parse_args(['analyze', '.']), store).integrate_output != 'draft_only'  # saved for the project
 
 
 def test_integrate_evidence_option_is_saved_for_later_runs_and_stays_hidden(tmp_path, capsys):

@@ -113,9 +113,11 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
         sub.add_argument("--integrate-output", choices=["full", "patch", "draft", "draft_only"], help=argparse.SUPPRESS)
         sub.add_argument("--economy", action=argparse.BooleanOptionalAction, default=None,
-                         help=tr("이 프로젝트에 저장: 통합·재검토 호출 없이 추출만으로 그래프를 만듦(호출·토큰 약 절반, 단위 사이 연결은 추출이 제안한 것만)",
-                                 "Saved for this project: build the graph from extraction alone, with no integrate or review call "
-                                 "(about half the calls and tokens; links across units only where the extraction proposes them)"))
+                         help=tr("기본값이며 이 프로젝트에 저장: 통합·재검토 호출 없이 추출만으로 그래프를 만듦(호출·토큰 약 절반). "
+                                 "--no-economy는 통합·재검토 호출을 되살림(단위 사이 연결이 더 많이 잡힘)",
+                                 "The default, saved for this project: build the graph from extraction alone, with no integrate or "
+                                 "review call (about half the calls and tokens). --no-economy restores the integrate and review "
+                                 "calls (more links across units)"))
         sub.add_argument("--light", action=argparse.BooleanOptionalAction, default=None,
                          help=tr("이 프로젝트에 저장: 코드가 도구 기록으로 뼈대(편집·테스트·커밋)를 만들고, 모델은 단위당 한 번 제목·요약과 "
                                  "결정·이유만 씀. 근거는 기록 ID로만 연결(인용 대조·수리·통합·재검토 없음)",
@@ -404,8 +406,9 @@ def _options(args, store: Store) -> AnalysisConfig:
     values["semantic_review"] = getattr(args, "semantic_review", True)
     if options.get("light"):
         values["analysis_mode"] = "light"
-    if options.get("economy") or options.get("light"):
-        # Extraction alone: the code-built draft is published, and the review that would patch it is not called.
+    if options.get("economy", True) or options.get("light"):
+        # Extraction alone (the default since 2026-10-16; `--no-economy` restores the integrate and review calls):
+        # the code-built draft is published, and the review that would patch it is not called.
         values["semantic_review"] = False
         values.setdefault("integrate_output", "draft_only")
         # One evidence round: every round resends the whole request, and a new Codex session caches none of it.

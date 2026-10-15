@@ -2290,6 +2290,12 @@ class Engine:
                 issues.append(f"audit: {omitted} older note events of these records are not shown to the model.")
         context = h.context(assigned, clues=" ".join(notes))
         data, required = extract_request_data(unit, snapshot_id, assigned, h, context, issues)
+        if not self._light():
+            # The steps code sees in the tool calls (edits per turn, test results, commits) go with the request as
+            # a skeleton: the model keeps them as candidates and adds what code cannot see, so a unit's structure
+            # rests on the tool calls rather than on the model's reading of them.
+            from . import light
+            data["skeleton"] = light.request_data(unit, snapshot_id, data, light.skeleton(assigned)[0])["skeleton"]
         if self.config.audit:
             data["journal_audit"] = {"note_event_ids": notes}
             required = uncited_edits(required, h.saved)
