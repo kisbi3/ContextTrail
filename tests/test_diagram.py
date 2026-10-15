@@ -243,3 +243,21 @@ def test_a_box_names_the_agent_that_did_the_step_and_a_persons_box_only_the_tool
     assert any("codex" in row for row in question) and not any("gpt-6.1-sol" in row for row in question)
     plain = "\n".join(flow_diagram(story(), 110).lines())
     assert "codex" not in plain  # an older graph without the field draws as before
+
+
+def test_a_sub_agents_box_says_so_in_its_header_and_has_its_own_border_colour():
+    graph = story()
+    by_id = {event["id"]: event for event in graph["events"]}
+    by_id["run"]["authoring"] = [{"tool": "claude", "model": "claude-sonnet-5-5", "effort": "high",
+                                  "role": "subagent", "agent": "Explore"}]
+    by_id["docs"]["authoring"] = [{"tool": "codex", "model": "gpt-6.1-sol", "role": "unattended", "agent": "codex exec"}]
+    by_id["fix"]["authoring"] = [{"tool": "claude", "model": "claude-opus-5-5", "effort": "high"}]
+    diagram = flow_diagram(graph, 110)
+    text = "\n".join(diagram.lines())
+    assert "결과 · 하위 Explore " in text and "변경 · codex exec " in text
+    assert "claude › Explore · sonnet-5-5 · high" in text and "codex exec · 사람 없음 · gpt-6.1-sol" in text
+    def border_style(key):
+        top, left, height, _ = diagram.boxes[key]
+        return {diagram.rows[top][left].style, diagram.rows[top + height - 1][left].style}
+    assert border_style("run") == {"sub"} and border_style("docs") == {"sub"}
+    assert "sub" not in border_style("fix")  # the session's own agent keeps the status-coloured border

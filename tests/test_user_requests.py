@@ -94,3 +94,7 @@ def test_sub_agent_work_hangs_from_the_parent_message_it_ran_under():
     [link] = [edge for edge in result["edges"] if edge["to_event_id"] == "review"]
     assert (link["from_event_id"], link["origin"]) == (asked["id"], "dialog_turn")
     assert "sub-agent" in link["rationale"]
+
+
+def test_a_message_of_a_run_with_no_person_is_not_the_persons_request():
+    assert not is_user_prompt(replace(record("g", "user", "review the diff"), lineage={"kind": "unattended", "agent_type": "codex exec"}))

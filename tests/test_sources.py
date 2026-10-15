@@ -408,3 +408,65 @@ def test_claude_records_carry_the_assistant_model_and_a_tool_result_follows_its_
     assert records[1].authoring == {"model": "claude-opus-5-5", "effort": "xhigh"}  # the turn's effort over the session's
     assert records[2].authoring == records[1].authoring  # the tool answered the call that model made
     assert records[3].authoring == {}  # a message Claude Code wrote itself has no model behind it
+
+
+def test_a_codex_exec_run_is_the_sub_agent_of_the_call_that_started_it_and_has_no_person(tmp_path):
+    from contexttrail.model import is_user_prompt
+    folder = tmp_path / "app"; folder.mkdir()
+    claude_home, codex_home = tmp_path / "claude", tmp_path / "codex"
+    thread = "01a13d65-195c-7040-a7e1-7a940f6dc20f"
+    write(claude_home / "projects" / "project" / "session.jsonl", [
+        {"type": "assistant", "uuid": "m1", "sessionId": "session", "cwd": str(folder),
+         "message": {"model": "claude-opus-5-5", "content": [{"type": "tool_use", "id": "t1", "name": "Bash",
+                                                                "input": {"command": "codex exec --json 'review the diff'"}}]}},
+        {"type": "user", "uuid": "m2", "parentUuid": "m1", "sessionId": "session", "cwd": str(folder),
+         "message": {"content": [{"type": "tool_result", "tool_use_id": "t1",
+                                  "content": '{"type":"thread.started","thread_id":"%s"}\n{"type":"item.completed"}' % thread}]}}])
+
+    def rollout(name, session_id, words):
+        write(codex_home / "sessions" / "2026" / "10" / "15" / f"rollout-2026-10-15T11-30-04-{name}.jsonl", [
+            {"type": "session_meta", "payload": {"id": session_id, "cwd": str(folder), "originator": "codex_exec", "source": "exec"}},
+            {"type": "turn_context", "payload": {"cwd": str(folder), "model": "gpt-6.1-sol", "effort": "high"}},
+            {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": words}]}},
+            {"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "One issue: missing except."}]}}])
+    rollout(thread, thread, "review the diff")
+    rollout("ffffffff-0000-0000-0000-000000000001", "ffffffff-0000-0000-0000-000000000001", "evaluate the test strategy")
+    records = collect_logs(Scope.resolve(folder), codex_home=codex_home, claude_home=claude_home).records
+    called = [r for r in records if r.session_id == thread]
+    assert [r.role for r in called] == ["user", "assistant"]
+    # Started by the Claude Code call whose result printed its thread ID: that session's sub-agent, named by the tool.
+    assert all(r.lineage == {"kind": "subagent", "agent_type": "codex exec", "parent_session_id": "session",
+                             "parent_tool_call_id": "t1", "parent_result_record_id": next(
+                                 r.source_id for r in records if r.role == "tool_result")} for r in called)
+    assert not is_user_prompt(called[0])  # the prompt was Claude's, not the person's
+    assert called[1].authoring == {"model": "gpt-6.1-sol", "effort": "high"}
+    # A run whose caller is not in the records stays a run with no person.
+    alone = [r for r in records if r.session_id == "ffffffff-0000-0000-0000-000000000001"]
+    assert alone and all(r.lineage == {"kind": "unattended", "agent_type": "codex exec"} for r in alone)
+    assert not is_user_prompt(alone[0])
+
+
+def test_a_claude_print_run_has_no_person(tmp_path):
+    from contexttrail.model import is_user_prompt
+    folder = tmp_path / "app"; folder.mkdir()
+    path = tmp_path / "claude.jsonl"
+    write(path, [
+        {"type": "user", "uuid": "u0", "sessionId": "session", "cwd": str(folder), "entrypoint": "sdk-cli",
+         "message": {"role": "user", "content": "Summarise the failing tests."}},
+        {"type": "assistant", "uuid": "u1", "parentUuid": "u0", "sessionId": "session", "cwd": str(folder), "entrypoint": "sdk-cli",
+         "message": {"model": "claude-opus-5-5", "content": [{"type": "text", "text": "Two fail on Windows paths."}]}}])
+    records = parse_claude(path, Scope.resolve(folder)).records
+    assert [r.lineage for r in records] == [{"kind": "unattended", "agent_type": "claude -p"}] * 2
+    assert not is_user_prompt(records[0])
+
+
+def test_a_transcript_over_the_size_limit_is_named_with_the_limit_in_the_limitations(tmp_path, monkeypatch):
+    from contexttrail.sources import local
+    folder = tmp_path / "app"
+    folder.mkdir()
+    path = tmp_path / "big.jsonl"
+    write(path, codex_rows(folder))
+    monkeypatch.setattr(local, "MAX_FILE_BYTES", 10)
+    snapshot = parse_codex(path, Scope.resolve(folder))
+    assert not snapshot.records
+    assert snapshot.limitations[0] == f"log file not read: big.jsonl (over the size limit of 10 bytes: {path.stat().st_size} bytes)"

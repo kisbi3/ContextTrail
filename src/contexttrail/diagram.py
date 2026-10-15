@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from wcwidth import wcswidth, wcwidth
 
 from .i18n import tr
-from .render import ASCII_MARK, KIND, MARK, RELATION, _when, agents_label, status_labels, status_tones
+from .render import ASCII_MARK, KIND, MARK, RELATION, _when, agents_label, delegate_label, status_labels, status_tones
 from .util import cell_slice, safe_text
 
 OBSERVED = {"observed_success", "observed_failure"}
@@ -349,8 +349,11 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
 
     def box(top: int, x: int, key: str) -> None:
         tone = tones[key]
-        border = tone if tone in ("ok", "warn", "fail") else ""
-        kind = KIND.get(by_id[key]["kind"], by_id[key]["kind"])
+        # A sub-agent's box (or a run another call started) has its own border colour, whatever its status;
+        # the status keeps its mark and label inside. The header says whose work it is.
+        delegate = delegate_label(by_id[key])
+        border = "sub" if delegate else tone if tone in ("ok", "warn", "fail") else ""
+        kind = KIND.get(by_id[key]["kind"], by_id[key]["kind"]) + (f" · {delegate}" if delegate else "")
         lines = contents(key)
         header = f"{g['h']} {number[key]} {kind} "
         diagram.put(top, x, g["tl"] + g["h"] * (box_width - 2) + g["tr"], border, key, True)

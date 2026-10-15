@@ -162,19 +162,45 @@ def _when(value: str | None) -> str:
     return moment.astimezone().strftime("%m-%d %H:%M")
 
 
+def agent_name(agent: dict) -> str:
+    """The tool that wrote a record, with the sub-agent it ran as: `claude › Explore`, or the called tool's own
+    name when it is one (`codex exec`)."""
+    tool, named = agent.get("tool", ""), agent.get("agent", "")
+    if not named:
+        return tool
+    return named if named.startswith(tool) else f"{tool} › {named}"
+
+
 def agents_label(event: dict) -> str:
     """Who did the work an event rests on, from its `authoring` (read off the cited records at publish): the
-    tool, then the model and effort its log named, as `claude · claude-opus-5-5 · xhigh`; a person's message
-    names only the tool. Several agents are separated by commas; empty when no agent record is cited."""
+    tool (with the sub-agent it ran as), then the model and effort its log named, as `claude · opus-5-5 · xhigh`
+    (a model's name drops the tool's own prefix); a run with no person says so; a person's message names only the
+    tool. Several agents are separated by commas; empty when no agent record is cited."""
     parts: list[str] = []
     for agent in event.get("authoring") or []:
-        pieces = [agent.get("tool", "")]
+        tool = agent.get("tool", "")
+        pieces = [agent_name(agent)]
+        if agent.get("role") == "unattended":
+            pieces.append(tr("사람 없음", "no person"))
         if event.get("actor") != "user":
-            pieces += [agent.get("model", ""), agent.get("effort", "")]
+            pieces += [agent.get("model", "").removeprefix(f"{tool}-"), agent.get("effort", "")]
         label = " · ".join(piece for piece in pieces if piece)
         if label and label not in parts:
             parts.append(label)
     return ", ".join(parts)
+
+
+def delegate_label(event: dict) -> str:
+    """For a box header: whose work this is when it is not the session's own agent, `하위 Explore` for a
+    sub-agent, the called tool's name (`codex exec`) for a run another call started; empty otherwise."""
+    for agent in event.get("authoring") or []:
+        if agent.get("role") not in ("subagent", "unattended"):
+            continue
+        named = agent.get("agent", "")
+        if named and named.startswith(agent.get("tool", "")):
+            return named
+        return tr("하위 ", "sub-agent ") + (named or agent.get("tool", ""))
+    return ""
 
 
 def analysis_label(event: dict) -> str:

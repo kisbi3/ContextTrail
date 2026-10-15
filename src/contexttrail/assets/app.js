@@ -9,7 +9,7 @@ const L = document.documentElement.lang === "ko" ? {
   names: {proposed:"제안",adopted:"채택",in_progress:"진행 중",asked:"요청",applied:"변경 적용",reported_complete:"완료 보고 · 미검증",observed_success:"관측 성공",observed_failure:"관측 실패",withdrawn:"철회",unknown:"미확인"},
   tokenMissing:"접근 토큰이 없거나 만료되었습니다. 터미널의 B로 새 주소를 확인하세요.",
   requestFailed:(status)=>"요청을 처리하지 못했습니다 ("+status+")",
-  actor:"주체: ", agents:"에이전트: ", analysis:"분석: ", copyReference:"에이전트용 참조 복사",
+  actor:"주체: ", agents:"에이전트: ", analysis:"분석: ", noPerson:"사람 없음", copyReference:"에이전트용 참조 복사",
   copyHint:"Claude Code·Codex 대화에 붙여넣으면 에이전트가 이 사건을 근거와 함께 읽습니다",
   copied:"복사함", selectedCopy:"선택함 · 복사하세요", relationEvidence:"관계 근거: ",
   sourceLines:(a,b)=>"원문 줄 "+a+"–"+b, unknownTime:"작성 시각 미상",
@@ -25,7 +25,7 @@ const L = document.documentElement.lang === "ko" ? {
   names: {proposed:"proposed",adopted:"adopted",in_progress:"in progress",asked:"asked",applied:"applied",reported_complete:"reported done · unverified",observed_success:"observed success",observed_failure:"observed failure",withdrawn:"withdrawn",unknown:"unknown"},
   tokenMissing:"The access token is missing or expired. Press B in the terminal for a new link.",
   requestFailed:(status)=>"The request could not be handled ("+status+")",
-  actor:"actor: ", agents:"agent: ", analysis:"analysed by: ", copyReference:"Copy reference for an agent",
+  actor:"actor: ", agents:"agent: ", analysis:"analysed by: ", noPerson:"no person", copyReference:"Copy reference for an agent",
   copyHint:"Paste it into a Claude Code or Codex conversation and the agent reads this event with its evidence",
   copied:"copied", selectedCopy:"selected · copy it", relationEvidence:"relation evidence: ",
   sourceLines:(a,b)=>"source lines "+a+"–"+b, unknownTime:"time unknown",
@@ -52,7 +52,7 @@ async function select(id) {
   const e=data.event, area=$("detail");area.replaceChildren();
   area.append(el("span",e.status_label||L.names[e.status]||e.status,"badge"),el("span",e.basis,"badge"),el("h3",e.title),el("p",e.summary),el("p",L.actor+e.actor,"muted"));
   // Who did the work (the tool, and for the agent's own work its model and effort) and which analysis model wrote the event.
-  const agents=(e.authoring||[]).map(a=>[a.tool,e.actor==="user"?"":a.model,e.actor==="user"?"":a.effort].filter(Boolean).join(" · ")).filter((v,i,s)=>v&&s.indexOf(v)===i);
+  const agents=(e.authoring||[]).map(a=>[a.agent?(a.agent.startsWith(a.tool)?a.agent:a.tool+" › "+a.agent):a.tool,a.role==="unattended"?L.noPerson:"",e.actor==="user"?"":(a.model||"").replace(a.tool+"-",""),e.actor==="user"?"":a.effort].filter(Boolean).join(" · ")).filter((v,i,s)=>v&&s.indexOf(v)===i);
   if(agents.length)area.append(el("p",L.agents+agents.join(", "),"muted"));
   if(e.analysis)area.append(el("p",L.analysis+[e.analysis.runner,e.analysis.model,e.analysis.effort].filter(Boolean).join(" "),"muted"));
   area.append(el("small",e.id,"muted"));

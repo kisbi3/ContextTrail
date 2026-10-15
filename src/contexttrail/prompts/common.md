@@ -124,8 +124,11 @@ research, software or both. Do not do the project's work or recommend new work.
 [Normalised source metadata]
 - role=metadata is not something the user said. derivation=summary or lineage.kind=compaction
   is compressed or derived context; do not promote it to direct evidence of an approval, run or check at the time.
-- lineage.kind=subagent is a sub-agent's work. Keep only the delegation through
+- lineage.kind=subagent is a sub-agent's work, or another tool's run (`codex exec`, `claude -p`;
+  agent_type names it) that a call in the parent session started. Keep only the delegation through
   parent_session_id/parent_tool_call_id; do not turn the sub-agent's judgement or runs into the user's.
+- lineage.kind=unattended is a run with no person at the terminal (`codex exec`, `claude -p`) whose
+  caller was not found. Its user-role messages are that caller's instructions, not the person's words.
 - lineage.kind=attachment is a snapshot of a file or edit excerpt included in the record at the
   time; it is not the current file state or something the user said.
 - Records with the same lineage.fragment_of are pieces of one record split for the input budget.

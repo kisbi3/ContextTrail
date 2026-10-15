@@ -392,3 +392,12 @@
 - **표시는 상자마다 한 줄**, 상태 아래에 흐리게: `codex · gpt-6.1-sol · high`. 사람 메시지 상자는 도구만(`claude`) — 사람이 쓴 말에 모델을 붙이면 오해다. 값이 없는 옛 그래프는 전과 같이 그려진다.
 - **(b) 분석 모델은 상자에 넣지 않는다.** 단위가 추가한 사건에 `analysis = {runner, model, effort}`를 원장에서 찍되, 사건 상세·`show`·`--json`에만 `분석:`으로 보인다. 소유자의 UI 우려대로 흐름 보기는 (a)만 보여 준다.
 - **대가:** 상자마다 한 줄이 늘어 흐름이 조금 길어진다. 모델 이름은 로그 그대로라 `claude · claude-opus-5-5 · xhigh`처럼 도구 이름이 겹쳐 보이지만, 줄여 쓰면 추측이 되므로 그대로 둔다.
+
+## 2026-10-15: 하위 에이전트와 "도구가 부른 도구"는 상자 머리글과 테두리 색으로 구분한다
+
+소유자: "claude나 codex에서 subagent를 활용하는 경우도 있잖아? 또는 claude에서 검수 역할로 codex를 부르거나 하는. 그거를 거를 수 있을까?" → 들여쓴 묶음 제안에는 "한눈에 보기 어려워 보이는데" → 머리글에 누가 했는지 적는 안에 "좋아. 그리고 subagent는 box의 border 색을 다르게 하자."
+
+- **하위 에이전트**는 전부터 구조로 이어져 있었다(`lineage.kind = subagent`, 부모 세션과 띄운 도구 호출). 빠진 것은 표시였다.
+- **도구가 부른 도구**(`codex exec`, `claude -p`)는 세션 자체의 표로 알아본다: Codex `session_meta.originator = codex_exec`/`source = exec`, Claude Code 행의 `entrypoint = sdk-*`. 파서가 `lineage.kind = unattended`(`agent_type`에 도구 이름)로 적고, 그 세션 ID가 다른 세션의 도구 호출·결과에 나오면(`codex exec --json`의 `thread.started`, `claude -p --output-format json`의 `session_id`) 그 호출의 하위 에이전트로 잇는다(`_link_called_tools`, 수집 뒤 한 번). 시간이 겹친다는 이유로는 잇지 않는다. 그 세션의 user 메시지는 사람의 말이 아니다(`is_user_prompt`가 lineage kind로 제외) — 전에는 Claude가 Codex에 보낸 검수 지시가 사람의 요청 상자로 올라갔다.
+- **표시:** 상자 머리글에 `[05] 결과 · 하위 Explore`, `[07] 결과 · codex exec`. 그 상자의 테두리는 상태와 무관하게 자홍(`sub` 스타일; 상태 표시는 안의 ✓ ! ✗ 그대로). 에이전트 줄은 `claude › Explore · sonnet-5-5 · high`, 부른 쪽을 모르면 `codex exec · 사람 없음 · gpt-6.1-sol`. 모델 이름은 도구 이름과 겹치는 앞머리를 뗀다(`claude-opus-5-5` → `opus-5-5`; 기계적이라 추측이 아님).
+- **대가:** `lineage`는 내용 해시에 들어가므로, 새로 "사람 없음"으로 알아본 세션의 기록은 해시가 바뀌어 그 단위만 한 번 다시 분석된다. 프롬프트(`common.md`)에 `lineage.kind=unattended` 설명이 추가되어 모델 입력이 바뀐다(추출·초안 단위만 영향). 하위 에이전트의 걸음을 본 흐름에서 접어 결과 상자 하나로 보이는 것(제안 B의 Enter)은 다음 단계다.

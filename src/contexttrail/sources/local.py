@@ -12,7 +12,9 @@ from ..model import Snapshot, SourceRecord, segment_record
 from ..util import FlowError, digest, ident, within
 from .opencode import opencode_data_dir, opencode_databases, parse_opencode
 
-MAX_FILE_BYTES = 64 * 1024 * 1024
+# A transcript over this size is not read (it is held in memory twice while parsed). A day of Claude Code work
+# with large tool outputs passed 64 MiB, which silently dropped the session, so the limit is 256 MiB.
+MAX_FILE_BYTES = 256 * 1024 * 1024
 MAX_LINE_BYTES = 4 * 1024 * 1024
 # Keep a single prompt-visible record below Engine.record_chars (48k by default).
 SEGMENT_CHARS = 32_000
@@ -136,17 +138,17 @@ def _jsonl(path: Path) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
         with os.fdopen(descriptor, "rb") as stream:
             before = os.fstat(stream.fileno())
             if before.st_size > MAX_FILE_BYTES:
-                raise FlowError(tr(f"로그 파일 한도({MAX_FILE_BYTES} bytes) 초과: {path.name}",
-                                   f"Log file over the limit ({MAX_FILE_BYTES} bytes): {path.name}"))
+                # English: the reason lands in the limitations the model reads.
+                raise FlowError(f"over the size limit of {MAX_FILE_BYTES} bytes: {before.st_size} bytes")
             data = stream.read(before.st_size)
             after = os.fstat(stream.fileno())
             stream.seek(0)
             again = stream.read(before.st_size)
             if data != again or after.st_size < before.st_size:
-                raise FlowError(tr(f"로그를 읽는 동안 재작성/축소됨: {path.name}",
-                                   f"Log rewritten or truncated while being read: {path.name}"))
+                raise FlowError("rewritten or truncated while being read")
     except (OSError, FlowError) as exc:
-        return [], [f"log file not read: {path.name} ({type(exc).__name__})"], {}
+        # The reason stays in the limitation: a file over the size limit used to read as a bare "FlowError".
+        return [], [f"log file not read: {path.name} ({exc if isinstance(exc, FlowError) else type(exc).__name__})"], {}
     boundary = data.rfind(b"\n") + 1
     if boundary != len(data):
         warnings.append(f"last JSONL record still being written, skipped: {path.name}")
@@ -293,6 +295,10 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
     cwd = metadata.get("cwd")
     cwd = cwd if isinstance(cwd, str) and Path(cwd).is_absolute() else None
     lineage = _codex_lineage(metadata)
+    if not lineage and (metadata.get("originator") == "codex_exec" or metadata.get("source") == "exec"):
+        # `codex exec`: no person at the terminal. What sits in the user role came from whoever ran it
+        # (a script, another agent); `_link_called_tools` makes it that caller's sub-agent when its ID is found.
+        lineage = {"kind": "unattended", "agent_type": "codex exec"}
     # A forked sub-agent starts with a copy of its parent's history; its own history begins at
     # this rollout item. The copy is the parent's session, read (and analysed) there, not here.
     # A fork the person made refers to the parent by `history_base` and copies nothing.
@@ -577,6 +583,10 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
             warnings.append(f"Claude subagent excluded from scope, parent link unverified: {path.name}")
         return Snapshot([], warnings, [manifest] if manifest else [])
     lineage = dict(subagent_link or {})
+    entry = next((d.get("entrypoint") for _, d, _ in rows if isinstance(d.get("entrypoint"), str)), "")
+    if not lineage and entry.startswith("sdk-"):
+        # `claude -p` or an SDK: no person at the terminal (see the Codex `exec` case).
+        lineage = {"kind": "unattended", "agent_type": "claude -p" if entry == "sdk-cli" else "claude sdk"}
     for line, data, raw_hash in rows:
         cwd = data.get("cwd", cwd)
         relevant |= scope.includes(cwd)
@@ -742,6 +752,27 @@ def jsonl_files(codex_home: Path, claude_home: Path) -> list[tuple[Path, str]]:
     return found
 
 
+def _link_called_tools(records: dict[str, SourceRecord]) -> None:
+    """A session run with no person (`codex exec`, `claude -p`) whose session ID appears in another session's
+    tool call or result was started by that call: it becomes that session's sub-agent, `agent_type` naming the
+    tool. The ID is what the called tool printed (`thread.started`, `session_id`); nothing is matched by time."""
+    callees: dict[str, list[SourceRecord]] = {}
+    for record in records.values():
+        if (record.lineage or {}).get("kind") == "unattended" and record.session_id:
+            callees.setdefault(record.session_id, []).append(record)
+    for record in records.values():
+        if not callees:
+            return
+        if record.role not in {"tool_call", "tool_result"} or record.session_id in callees:
+            continue
+        for session_id in [s for s in callees if s != record.session_id and s in record.content]:
+            link = {"kind": "subagent", "parent_session_id": record.session_id, "parent_tool_call_id": record.tool_call_id}
+            if record.role == "tool_result":
+                link["parent_result_record_id"] = record.source_id
+            for member in callees.pop(session_id):
+                member.lineage = {**member.lineage, **link}
+
+
 def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: Path | None = None,
                  opencode_home: Path | None = None) -> Snapshot:
     """Every in-scope record of the three tools: Codex and Claude Code JSONL files, the opencode database."""
@@ -764,6 +795,7 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
             merge(parse_codex(path, scope))
     for path in opencode_databases(opencode_home):
         merge(parse_opencode(path, scope))
+    _link_called_tools(result)
     ordered = sorted(result.values(), key=lambda r: (r.recorded_at or "", r.provider, r.session_id or "",
                                                     r.locator.get("line", 0), r.locator.get("fragment_index", 0), r.source_id))
     return Snapshot(ordered, list(dict.fromkeys(warnings)), files)

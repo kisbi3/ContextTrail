@@ -1518,6 +1518,13 @@ def authoring_of(sources: list[dict]) -> list[dict]:
             continue
         named = {key: value for key, value in (source.get("authoring") or {}).items() if isinstance(value, str) and value}
         entry = {"tool": tool, **named}
+        # A sub-agent (or a tool another session's call ran) and a run with no person keep their role and name.
+        lineage = source.get("lineage") or {}
+        if lineage.get("kind") in ("subagent", "unattended"):
+            entry["role"] = lineage["kind"]
+            agent = lineage.get("agent_type") or lineage.get("agent_nickname") or lineage.get("agent_role")
+            if isinstance(agent, str) and agent:
+                entry["agent"] = agent
         found.setdefault(tuple(sorted(entry.items())), entry)
     return [found[key] for key in sorted(found)]
 

@@ -142,9 +142,33 @@ def test_event_detail_names_the_agent_that_did_the_work_and_the_model_that_analy
              "evidence_ids": [], "session_ids": ["s1"], "authoring": [agent],
              "analysis": {"runner": "codex", "model": "gpt-6.1-sol", "effort": "medium"}}
     texts = [text for text, _ in event_detail({"events": [event], "edges": []}, "a", lambda _id: None)]
-    assert "에이전트: claude · claude-opus-5-5 · xhigh" in texts
+    assert "에이전트: claude · opus-5-5 · xhigh" in texts  # the model name drops the tool's own prefix
     assert "분석: codex gpt-6.1-sol medium" in texts
     assert agents_label({**event, "actor": "user"}) == "claude"
     assert agents_label({**event, "authoring": [agent, {"tool": "codex", "model": "gpt-6-luna"}]}) == \
-        "claude · claude-opus-5-5 · xhigh, codex · gpt-6-luna"
+        "claude · opus-5-5 · xhigh, codex · gpt-6-luna"
     assert agents_label({**event, "authoring": []}) == ""
+
+
+def test_agent_labels_name_sub_agents_called_tools_and_runs_with_no_person():
+    from contexttrail.render import agents_label, delegate_label
+    from contexttrail.schema import authoring_of
+    sub = {"tool": "claude", "model": "claude-sonnet-5-5", "effort": "high", "role": "subagent", "agent": "Explore"}
+    called = {"tool": "codex", "model": "gpt-6.1-sol", "effort": "high", "role": "subagent", "agent": "codex exec"}
+    alone = {"tool": "codex", "model": "gpt-6.1-sol", "role": "unattended", "agent": "codex exec"}
+    event = {"actor": "assistant", "authoring": [sub]}
+    assert agents_label(event) == "claude › Explore · sonnet-5-5 · high"
+    assert delegate_label(event) == "하위 Explore"
+    assert agents_label({**event, "authoring": [called]}) == "codex exec · gpt-6.1-sol · high"
+    assert delegate_label({**event, "authoring": [called]}) == "codex exec"
+    assert agents_label({**event, "authoring": [alone]}) == "codex exec · 사람 없음 · gpt-6.1-sol"
+    assert delegate_label({**event, "authoring": [{"tool": "claude", "model": "claude-opus-5-5"}]}) == ""
+    # The roles come off the cited records' lineage, with the sub-agent's name as each tool records it.
+    sources = [{"provider": "claude", "authoring": {"model": "claude-sonnet-5-5"},
+                "lineage": {"kind": "subagent", "parent_session_id": "p", "agent_type": "Explore"}},
+               {"provider": "codex", "authoring": {}, "lineage": {"kind": "subagent", "agent_nickname": "Reviewer"}},
+               {"provider": "codex", "authoring": {}, "lineage": {"kind": "unattended", "agent_type": "codex exec"}},
+               {"provider": "git"}]
+    assert authoring_of(sources) == [{"tool": "claude", "model": "claude-sonnet-5-5", "role": "subagent", "agent": "Explore"},
+                                     {"tool": "codex", "role": "subagent", "agent": "Reviewer"},
+                                     {"tool": "codex", "role": "unattended", "agent": "codex exec"}]

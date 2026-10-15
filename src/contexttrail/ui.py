@@ -98,7 +98,7 @@ def _shorten(text: str, width: int) -> str:
 def _styles(color: bool) -> dict[str, int]:
     """curses attributes per detail style. Tones keep their glyph (✓ ! ✗) without color."""
     styles = {"": 0, "plain": 0, "title": curses.A_BOLD, "heading": curses.A_BOLD, "dim": curses.A_DIM,
-              "ok": 0, "warn": curses.A_BOLD, "fail": curses.A_BOLD, "frame": 0}
+              "ok": 0, "warn": curses.A_BOLD, "fail": curses.A_BOLD, "frame": 0, "sub": 0}
     if not color or os.environ.get("NO_COLOR"):
         return styles
     try:
@@ -106,8 +106,10 @@ def _styles(color: bool) -> dict[str, int]:
             return styles
         curses.start_color()
         curses.use_default_colors()
+        # `sub` is the border of a sub-agent's box (or a run another call started): magenta, whatever its status.
         for number, (name, value) in enumerate((("frame", curses.COLOR_CYAN), ("ok", curses.COLOR_GREEN),
-                                                ("warn", curses.COLOR_YELLOW), ("fail", curses.COLOR_RED)), 1):
+                                                ("warn", curses.COLOR_YELLOW), ("fail", curses.COLOR_RED),
+                                                ("sub", curses.COLOR_MAGENTA)), 1):
             curses.init_pair(number, value, -1)
             styles[name] |= curses.color_pair(number)
         styles["heading"] |= curses.color_pair(1)
