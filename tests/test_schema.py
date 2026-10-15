@@ -45,3 +45,4 @@ def test_a_citation_without_a_quote_gets_the_cited_lines_cut_by_code():
     assert len(checker.citations(answer["event_candidates"][0]["evidence"])) == 1
     with pytest.raises(FlowError):
         checker.citations([{"source_id": "src_a", "start_line": 35, "end_line": 36}])
+

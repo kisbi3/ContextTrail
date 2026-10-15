@@ -107,12 +107,12 @@ research, software or both. Do not do the project's work or recommend new work.
   numbers printed next to the text in the input (not counts or offsets). Code keeps those lines
   as the quote. Cite only lines you were shown, and no more lines than the claim needs (a few;
   at most about 20).
-- quote is optional. Give one when a distinctive part says what the lines show better than the
-  whole lines: one stretch inside a single line (8 to 120 characters), copied character by
-  character with the record's own language, spacing and escapes — never translated, shortened
-  with "..." or "…", corrected or joined from two places; its start_line and end_line are that
-  line's number. If you cannot copy it exactly, leave quote out rather than guess; never drop the
-  evidence for that reason.
+- quote is null as a rule: the cited lines are the evidence. Give a quote only when one short
+  stretch inside a single line (8 to 120 characters) says what the lines show better than the
+  whole lines and you can copy it character by character with the record's own language,
+  spacing and escapes — never translated, shortened with "..." or "…", corrected or joined
+  from two places; its start_line and end_line are then that line's number. A quote that does
+  not match costs a repair round; null never does. Never drop evidence for want of a quote.
 - Give judgements as short reasons that name their evidence. Do not ask for or output private reasoning.
 - Do not write Mermaid, HTML or SQL.
 - If you need more material, return needs_evidence with allowed requests.

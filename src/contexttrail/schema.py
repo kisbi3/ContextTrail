@@ -45,10 +45,9 @@ def enum(values: list[str]) -> dict:
 
 # `quote` is optional: without it, code keeps the cited lines themselves (`EvidenceValidator.fill_cut_quotes`),
 # so a citation can never fail for a quote copied wrongly; with it, the quote names what the lines show.
-CITATION = {"type": "object", "properties": {"source_id": STR, "start_line": {"type": "integer", "minimum": 1},
-                                             "end_line": {"type": "integer", "minimum": 1},
-                                             "quote": {"type": "string", "minLength": 1}},
-            "required": ["source_id", "start_line", "end_line"], "additionalProperties": False}
+# Every key stays required (OpenAI's strict structured output refuses an optional key); `quote` may be null.
+CITATION = obj({"source_id": STR, "start_line": {"type": "integer", "minimum": 1},
+                "end_line": {"type": "integer", "minimum": 1}, "quote": {"type": ["string", "null"]}})
 # A quote code cuts covers at most this many of the cited lines; the rest is one `show` away.
 CUT_QUOTE_LINES = 20
 CITATIONS = arr(CITATION, 1)
@@ -939,8 +938,8 @@ class EvidenceValidator:
         return result
 
     def check_extraction(self, output: dict, unit_id: str, snapshot_id: str, graph: dict) -> None:
+        self.fill_cut_quotes(output)  # before the shape check: a citation may come without its quote key at all
         validate_shape(output, EXTRACT_SCHEMA)
-        self.fill_cut_quotes(output)
         if output["unit_id"] != unit_id or output["snapshot_id"] != snapshot_id:
             raise FlowError("extraction unit/snapshot identifiers differ from the task.")
         if output["status"] != "complete" or output["read_requests"]:
@@ -1017,8 +1016,8 @@ class EvidenceValidator:
         Returns the trimmed output, the waived tool calls and the notes on what was dropped.
         """
         output = copy.deepcopy(output)
+        self.fill_cut_quotes(output)  # before the shape check: a citation may come without its quote key at all
         validate_shape(output, EXTRACT_SCHEMA)
-        self.fill_cut_quotes(output)
         if (output["unit_id"] != unit_id or output["snapshot_id"] != snapshot_id or output["status"] != "complete"
                 or output["read_requests"] or output["unprocessed_record_ids"]):
             raise FlowError("extraction result cannot be salvaged.")
@@ -1277,8 +1276,8 @@ class EvidenceValidator:
                     evidence_reuse: bool = False) -> dict:
         if evidence_reuse:
             self.reuse_candidate_evidence(output, candidates)
-        validate_shape(output, DELTA_SCHEMA)
         self.fill_cut_quotes(output)
+        validate_shape(output, DELTA_SCHEMA)
         if output["status"] != "complete" or output["read_requests"]:
             raise FlowError("GraphDelta is not complete.")
         if output["base_graph_version"] != graph["version"] or output["snapshot_id"] != snapshot_id:
