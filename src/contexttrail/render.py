@@ -168,7 +168,9 @@ def agent_name(agent: dict) -> str:
     tool, named = agent.get("tool", ""), agent.get("agent", "")
     if not named:
         return tool
-    return named if named.startswith(tool) else f"{tool} › {named}"
+    # A called tool is named as a command (`codex exec`, `claude -p`); a sub-agent type is one word (`Explore`,
+    # `claude-code-guide`), shown under its tool.
+    return named if named.startswith(f"{tool} ") else f"{tool} › {named}"
 
 
 def agents_label(event: dict) -> str:
@@ -197,7 +199,7 @@ def delegate_label(event: dict) -> str:
         if agent.get("role") not in ("subagent", "unattended"):
             continue
         named = agent.get("agent", "")
-        if named and named.startswith(agent.get("tool", "")):
+        if named and named.startswith(f"{agent.get('tool', '')} "):
             return named
         return tr("하위 ", "sub-agent ") + (named or agent.get("tool", ""))
     return ""

@@ -52,7 +52,7 @@ async function select(id) {
   const e=data.event, area=$("detail");area.replaceChildren();
   area.append(el("span",e.status_label||L.names[e.status]||e.status,"badge"),el("span",e.basis,"badge"),el("h3",e.title),el("p",e.summary),el("p",L.actor+e.actor,"muted"));
   // Who did the work (the tool, and for the agent's own work its model and effort) and which analysis model wrote the event.
-  const agents=(e.authoring||[]).map(a=>[a.agent?(a.agent.startsWith(a.tool)?a.agent:a.tool+" › "+a.agent):a.tool,a.role==="unattended"?L.noPerson:"",e.actor==="user"?"":(a.model||"").replace(a.tool+"-",""),e.actor==="user"?"":a.effort].filter(Boolean).join(" · ")).filter((v,i,s)=>v&&s.indexOf(v)===i);
+  const agents=(e.authoring||[]).map(a=>[a.agent?(a.agent.startsWith(a.tool+" ")?a.agent:a.tool+" › "+a.agent):a.tool,a.role==="unattended"?L.noPerson:"",e.actor==="user"?"":(a.model||"").replace(a.tool+"-",""),e.actor==="user"?"":a.effort].filter(Boolean).join(" · ")).filter((v,i,s)=>v&&s.indexOf(v)===i);
   if(agents.length)area.append(el("p",L.agents+agents.join(", "),"muted"));
   if(e.analysis)area.append(el("p",L.analysis+[e.analysis.runner,e.analysis.model,e.analysis.effort].filter(Boolean).join(" "),"muted"));
   area.append(el("small",e.id,"muted"));

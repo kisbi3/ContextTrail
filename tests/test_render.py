@@ -163,6 +163,10 @@ def test_agent_labels_name_sub_agents_called_tools_and_runs_with_no_person():
     assert delegate_label({**event, "authoring": [called]}) == "codex exec"
     assert agents_label({**event, "authoring": [alone]}) == "codex exec · 사람 없음 · gpt-6.1-sol"
     assert delegate_label({**event, "authoring": [{"tool": "claude", "model": "claude-opus-5-5"}]}) == ""
+    # A sub-agent type that happens to start with the tool's name is still a sub-agent, not a called tool.
+    guide = {"tool": "claude", "role": "subagent", "agent": "claude-code-guide"}
+    assert delegate_label({**event, "authoring": [guide]}) == "하위 claude-code-guide"
+    assert agents_label({**event, "authoring": [guide]}) == "claude › claude-code-guide"
     # The roles come off the cited records' lineage, with the sub-agent's name as each tool records it.
     sources = [{"provider": "claude", "authoring": {"model": "claude-sonnet-5-5"},
                 "lineage": {"kind": "subagent", "parent_session_id": "p", "agent_type": "Explore"}},

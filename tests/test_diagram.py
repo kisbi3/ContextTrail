@@ -261,3 +261,29 @@ def test_a_sub_agents_box_says_so_in_its_header_and_has_its_own_border_colour():
         return {diagram.rows[top][left].style, diagram.rows[top + height - 1][left].style}
     assert border_style("run") == {"sub"} and border_style("docs") == {"sub"}
     assert "sub" not in border_style("fix")  # the session's own agent keeps the status-coloured border
+
+
+def test_a_sub_agents_boxes_stand_beside_the_parents_next_step_joined_by_one_line_into_it():
+    graph = story()
+    by_id = {event["id"]: event for event in graph["events"]}
+    # The sub-agent ran between the script change and the fix; its two boxes stand beside the fix.
+    for key in ("fail", "docs"):
+        by_id[key]["authoring"] = [{"tool": "claude", "model": "claude-sonnet-5-5", "role": "subagent", "agent": "Explore"}]
+    graph["edges"] = [edge for edge in graph["edges"] if edge["to_event_id"] not in ("fail", "docs")]
+    graph["edges"].append({**link("q", "fail", "follows"), "origin": "dialog_turn"})
+    graph["events"] = [by_id[k] for k in ("q", "plan", "script", "run", "fail", "docs", "fix", "answer")]
+    diagram = flow_diagram(graph, 120)
+    text = "\n".join(diagram.lines())
+    fix_top, fix_left, _, _ = diagram.boxes["fix"]
+    right = diagram.boxes["run"][1]
+    assert diagram.boxes["fail"][1] == right and diagram.boxes["docs"][1] == right
+    assert diagram.boxes["fail"][0] >= fix_top and diagram.boxes["docs"][0] > diagram.boxes["fail"][0]
+    assert "결과 · 하위 Explore" in text and "─Explore" in text
+    # The line enters the parent's box ("◀") and the fix → run result still leaves it ("├") on its own line.
+    row = "".join(cell.char for cell in diagram.rows[fix_top + 1])
+    assert "├" in row[fix_left:] or "◀" in row[fix_left:]
+    # The turn link to the sub-agent is the stack itself, not a note; a relation from it is a note in both boxes.
+    assert "[01] 후속" not in text
+    assert "후속" not in "".join(diagram.lines())
+    # A dialog-turn-only sub-agent box is not in the story column, so the column reads q → plan → script → fix.
+    assert [k for k in diagram.order() if diagram.boxes[k][1] == fix_left] == ["q", "plan", "script", "fix", "answer"]

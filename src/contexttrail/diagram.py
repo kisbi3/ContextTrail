@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass, field
+from typing import Any
 
 from wcwidth import wcswidth, wcwidth
 
@@ -32,11 +33,23 @@ OBSERVED = {"observed_success", "observed_failure"}
 # Relations that put a result beside the event it came from, most telling first.
 ANCHOR_ORDER = {"verifies": 0, "produces": 1}
 LIGHT = {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "│", "lt": "├", "rt": "┤",
-         "down": "┬", "cross": "┼", "right": "▶", "arrow_down": "▼", "up": "↑", "back": "←", "forward": "→",
-         "flow": "═", "then": "┊", "then_down": "▽"}
+         "down": "┬", "cross": "┼", "right": "▶", "left": "◀", "arrow_down": "▼", "up": "↑", "back": "←",
+         "forward": "→", "flow": "═", "then": "┊", "then_down": "▽"}
 PLAIN = {"tl": "+", "tr": "+", "bl": "+", "br": "+", "h": "-", "v": "|", "lt": "+", "rt": "+",
-         "down": "+", "cross": "+", "right": ">", "arrow_down": "v", "up": "^", "back": "<-", "forward": "->",
-         "flow": "=", "then": ":", "then_down": "v"}
+         "down": "+", "cross": "+", "right": ">", "left": "<", "arrow_down": "v", "up": "^", "back": "<-",
+         "forward": "->", "flow": "=", "then": ":", "then_down": "v"}
+
+
+def _sub_agent(event: dict) -> bool:
+    """Whether the event is a sub-agent's work (a tool another session's call ran counts; a run with no person
+    and no known caller does not: it has no parent step to stand beside)."""
+    return any(agent.get("role") == "subagent" for agent in event.get("authoring") or [])
+
+
+def _sub_label(event: dict) -> str:
+    """The sub-agent's name for the line joining its box: `Explore`, `codex exec`."""
+    return next((agent.get("agent") or agent.get("tool", "") for agent in event.get("authoring") or []
+                 if agent.get("role") == "subagent"), "")
 # The selected box is redrawn with heavy lines.
 HEAVY = str.maketrans("┌┐└┘─│├┤┬┼", "┏┓┗┛━┃┣┫┳╋")
 MAX_RAILS = 4
@@ -230,14 +243,34 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
         if incoming:
             anchor[key] = min(incoming, key=lambda edge: (ANCHOR_ORDER[edge["relation"]],
                                                           order[edge["from_event_id"]]))
+    groups = _flows(events, edges)
+    # A sub-agent's work stands beside the parent's step that went on after it: a stack of its boxes on the
+    # right, joined by one line into that box (beside the last step when nothing followed). Layout only: it
+    # shows when the sub-agent ran in the parent's story, never that it caused anything.
+    delegated: dict[str, str] = {}
+    for group in groups:
+        story = [key for key in group if key not in anchor and not _sub_agent(by_id[key])]
+        for key in group:
+            if key in anchor or not _sub_agent(by_id[key]):
+                continue
+            beside = next((s for s in story if order[s] > order[key]), story[-1] if story else None)
+            if beside is not None:
+                delegated[key] = beside
+    # A result of a sub-agent's own change joins its stack rather than standing beside a box not in the column.
+    for key, edge in list(anchor.items()):
+        if edge["from_event_id"] in delegated:
+            anchor.pop(key)
+            if _sub_agent(by_id[key]):
+                delegated[key] = delegated[edge["from_event_id"]]
     # Every link into a right-hand result: the one that places it draws the box, others point at it.
-    stacks: dict[str, list[tuple[str, dict]]] = {}
+    stacks: dict[str, list[tuple[str, Any]]] = {}
     for edge in sorted(edges, key=lambda edge: order[edge["to_event_id"]]):
         if edge["to_event_id"] in anchor:
             stacks.setdefault(edge["from_event_id"], []).append(
                 ("box" if anchor[edge["to_event_id"]] is edge else "ref", edge))
-    groups = _flows(events, edges)
-    columns = [[key for key in group if key not in anchor] for group in groups]
+    for key in sorted(delegated, key=order.get):
+        stacks.setdefault(delegated[key], []).append(("sub", key))
+    columns = [[key for key in group if key not in anchor and key not in delegated] for group in groups]
 
     # Column → column links: down the column when neighbours, on a margin rail otherwise,
     # else written inside the boxes at both ends (only the drawn end for a link leaving the view).
@@ -256,6 +289,11 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
 
     for edge in outside:
         note(edge)
+    for edge in edges:
+        # A link to or from a sub-agent's box is written inside both boxes; its turn link is the stack itself.
+        if ((edge["from_event_id"] in delegated or edge["to_event_id"] in delegated)
+                and edge["to_event_id"] not in anchor and edge.get("origin") != "dialog_turn"):
+            note(edge)
     for column in columns:
         index = {key: n for n, key in enumerate(column)}
         busy: list[int] = []  # last box index each rail is busy until
@@ -307,8 +345,9 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
     label_room = max((wcswidth(arrival(edge)) for group, _ in rails for edge in group), default=0)
     margin = 2 * lanes + 1 + label_room if lanes else 0
     # The gap between the columns holds "──┬─" + the widest label drawn across it + "──▶".
-    across = max((wcswidth(RELATION.get(edge["relation"], edge["relation"])) for edge in edges
-                  if edge["to_event_id"] in anchor), default=0)
+    across = max([wcswidth(RELATION.get(edge["relation"], edge["relation"])) for edge in edges
+                  if edge["to_event_id"] in anchor] + [wcswidth(_sub_label(by_id[key])) for key in delegated],
+                 default=0)
     arrow_gap = max(ARROW_GAP, across + 7)
     box_width = (width - margin - arrow_gap) // 2
     if box_width < 22:
@@ -420,17 +459,23 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
                 diagram.put(last, column_x, g["arrow_down"], "dim", edges=links)
             previous = key
             items = stacks.get(key, [])
-            row, arrows = top, []
-            for kind, edge in items:
+            row, arrows = top, []  # (row, label, link id or None, "out" for a result, "in" for a sub-agent's box)
+            for kind, item in items:
+                if kind == "sub":
+                    box(row, x_right, item)
+                    arrows.append((row + 1, _sub_label(by_id[item]), None, item))
+                    row += height(item) + 1
+                    continue
+                edge = item
                 relation = RELATION.get(edge["relation"], edge["relation"])
                 target = edge["to_event_id"]
                 if kind == "box":
                     box(row, x_right, target)
-                    arrows.append((row + 1, relation, edge["id"]))
+                    arrows.append((row + 1, relation, edge["id"], None))
                     row += height(target) + 1
                 else:  # a result drawn beside another box: point at it instead of drawing it twice
                     arrow_row = row if arrows else row + 1  # the first arrow must leave from inside the box
-                    arrows.append((arrow_row, relation, edge["id"]))
+                    arrows.append((arrow_row, relation, edge["id"], None))
                     where = (f"{g['up']} {tr('위', 'up')}" if target in diagram.boxes
                              else f"{g['arrow_down']} {tr('아래', 'below')}")
                     diagram.put(arrow_row, x_right + 1, f"{number[target]} {where}", "dim", target,
@@ -439,16 +484,27 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
             if arrows:
                 joint = x_left + box_width + 2
                 first_row = arrows[0][0]
-                every = frozenset(edge_id for _, _, edge_id in arrows)
-                diagram.put(first_row, x_left + box_width - 1, g["lt"], diagram.rows[first_row][x_left].style,
+                every = frozenset(edge_id for _, _, edge_id, _ in arrows if edge_id)
+                # Results leave the box ("├──"); a sub-agent stack feeds into it ("◀──").
+                entry = g["left"] if arrows[0][3] else g["lt"]
+                diagram.put(first_row, x_left + box_width - 1, entry, diagram.rows[first_row][x_left].style,
                             key, True, every)
                 diagram.put(first_row, x_left + box_width, g["h"] * 2, "dim", edges=every)
-                for index, (arrow_row, relation, edge_id) in enumerate(arrows):
+                for index, (arrow_row, label, edge_id, sub) in enumerate(arrows):
                     last = index == len(arrows) - 1
                     joint_char = (g["down"] if not last else g["h"]) if index == 0 else (g["bl"] if last else g["lt"])
-                    onward = frozenset(later for _, _, later in arrows[index:])
+                    onward = frozenset(later for _, _, later, _ in arrows[index:] if later)
                     diagram.put(arrow_row, joint, joint_char, "dim", edges=onward)
-                    arrow(arrow_row, joint + 1, relation, frozenset({edge_id}))
+                    if sub is None:
+                        arrow(arrow_row, joint + 1, label, frozenset({edge_id}))
+                    else:
+                        # "┬─Explore────┤": the sub-agent's box on the line into this one; the arrowhead is
+                        # at the entry, or on the branch when results leave the box on the same line.
+                        tail = ("" if entry == g["left"] else g["left"]) + g["h"] + label
+                        diagram.put(arrow_row, joint + 1, tail, "dim")
+                        end = joint + 1 + wcswidth(tail)
+                        diagram.put(arrow_row, end, g["h"] * max(0, x_right - end), "dim")
+                        diagram.put(arrow_row, x_right, g["rt"], "sub", sub, True)
                     if not last:
                         for between_row in range(arrow_row + 1, arrows[index + 1][0]):
                             diagram.put(between_row, joint, g["v"], "dim", edges=onward - {edge_id})
