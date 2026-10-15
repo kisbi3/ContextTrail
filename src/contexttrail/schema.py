@@ -1567,7 +1567,7 @@ def link_forks(graph: dict, source_of: Callable[[str], dict | None]) -> int:
                                "basis": "structural", "evidence_ids": list(first["evidence_ids"][:1]),
                                "rationale": "the first request of a session forked from this conversation after "
                                             "this user message (dialog structure, not a causal claim)",
-                               "active": True, "origin": FORK_ORIGIN})
+                               "active": True, "origin": FORK_ORIGIN, "fork_point_at": info.get("point_at", "")})
         added += 1
     return added
 

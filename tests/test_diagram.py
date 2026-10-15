@@ -295,3 +295,55 @@ def test_the_line_from_a_forked_sessions_first_request_is_called_forked():
     graph["edges"].append({**link("q", "again", "follows"), "basis": "structural", "origin": "fork"})
     text = "\n".join(flow_diagram(graph, 110).lines())
     assert "갈라짐" in text and "후속" not in text
+
+
+def forked():
+    """A conversation that forked: the parent went on (one result) and the fork did its own work, each side with a
+    sub-agent."""
+    sub = [{"tool": "claude", "model": "claude-sonnet-5-5", "role": "subagent", "agent": "Explore"}]
+    events = [node("q1", "question", "asked", "문서 정리까지 해줘", session="A"),
+              node("docs", "action", "applied", "문서 갱신", session="A"),
+              node("ex", "outcome", "reported_complete", "로그 조사", session="A"),
+              node("evals", "outcome", "observed_success", "evals 13/18", session="A"),
+              node("q2", "question", "asked", "이어서 slash command", session="B"),
+              node("cmd", "action", "applied", "설치 명령 추가", session="B"),
+              node("t", "outcome", "observed_success", "pytest 496 passed", session="B"),
+              node("rev", "outcome", "reported_complete", "검수 지적", session="B")]
+    for n, event in enumerate(events):
+        event["recorded_at"] = f"2026-09-26T15:{n:02d}:00Z"
+        event["actor"] = "user" if event["kind"] == "question" else "assistant"
+    events[2]["authoring"] = sub
+    events[7]["authoring"] = [{"tool": "codex", "model": "gpt-6.1-sol", "role": "subagent", "agent": "codex exec"}]
+    edges = [link("q1", "docs", "motivates"),
+             {**link("q1", "q2", "follows"), "basis": "structural", "origin": "fork", "fork_point_at": "2026-09-26T15:01:30Z"},
+             link("q2", "cmd", "motivates"), link("cmd", "t", "verifies")]
+    return {"events": events, "edges": edges}
+
+
+def test_a_forked_conversation_is_drawn_as_two_sides_after_the_fork_with_sub_agents_folded_when_narrow():
+    diagram = flow_diagram(forked(), 126)
+    text = "\n".join(diagram.lines())
+    left = diagram.boxes["q1"][1]
+    assert diagram.boxes["docs"][1] == left and diagram.boxes["evals"][1] == left  # the parent goes on in its column
+    assert diagram.boxes["q2"][1] > left and diagram.boxes["cmd"][1] == diagram.boxes["q2"][1]  # the fork beside it
+    assert diagram.boxes["q2"][0] > diagram.boxes["docs"][0] and diagram.boxes["evals"][0] == diagram.boxes["q2"][0]
+    assert "갈라짐" in text and "세션 A 이어짐" in text and "갈라진 세션 B" in text
+    # Narrow: results fold into the status line and a sub-agent is one magenta line in the box, no side boxes.
+    assert "t" not in diagram.boxes and "ex" not in diagram.boxes and "rev" not in diagram.boxes
+    assert "→ 하위 Explore · 로그 조사" in text and "→ codex exec · 검수 지적" in text
+    assert "검증: pytest 496 passed" in text
+
+
+def test_a_forked_conversation_keeps_side_boxes_when_the_screen_is_wide():
+    diagram = flow_diagram(forked(), 200)
+    assert "t" in diagram.boxes and "ex" in diagram.boxes and "rev" in diagram.boxes
+    assert diagram.boxes["t"][1] > diagram.boxes["cmd"][1] and diagram.boxes["ex"][1] > diagram.boxes["docs"][1]
+    assert diagram.boxes["q2"][1] > diagram.boxes["ex"][1]  # the fork's column comes after the parent's side column
+
+
+def test_a_fork_whose_parent_went_no_further_is_one_column_with_a_forked_link():
+    graph = forked()
+    graph["events"] = [e for e in graph["events"] if e["id"] not in ("ex", "evals")]
+    diagram = flow_diagram(graph, 126)
+    assert diagram.boxes["q2"][1] == diagram.boxes["q1"][1]
+    assert "[01] 갈라짐" in "\n".join(diagram.lines())
