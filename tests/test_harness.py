@@ -913,6 +913,7 @@ def test_the_stages_of_one_unit_share_the_runners_conversation_and_it_closes_aft
     _,store,engine,records,make=laboratory
     records.append(make(CASES[0][0])); records.append(replace(make(CASES[4][0],key='s2'),recorded_at='2026-09-22T10:05:00Z'))
     engine.config.integrate_output='full'  # so the unit integrates with a call of its own
+    engine.config.unit_thread=True
     class Conversation:
         def __init__(self): self.closed=0
         def close(self): self.closed+=1

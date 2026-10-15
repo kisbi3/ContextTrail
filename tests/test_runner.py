@@ -281,12 +281,15 @@ def test_a_later_stage_of_the_same_unit_continues_the_codex_session_with_its_who
     thread = Thread(Directory())
     extract = {'stage': 'extract', 'instructions': 'extract…', 'data': {'records': [1, 2]}}
     thread.answered(extract, 'abc', {'input_tokens': 100}, 'common')
-    integrate = {'stage': 'integrate', 'instructions': 'integrate…', 'data': {'candidates': [1]}}
-    assert thread.follow_up(integrate, 'common') == {'follow_up': STAGE_FOLLOW_UP, **integrate}
+    integrate = {'stage': 'integrate', 'instructions': 'integrate…', 'data': {'candidates': [1], 'records': [1, 2]}}
+    # What the session's first request already holds (the same records view) is named, not sent again.
+    assert thread.follow_up(integrate, 'common') == {'follow_up': STAGE_FOLLOW_UP, **integrate,
+                                                     'data': {'candidates': [1], 'already_in_conversation': ['records']}}
     thread.answered(integrate, 'abc', {'input_tokens': 250}, 'common')
     # The delta review is an integrate request with a review instruction: a later stage too.
     review = {**integrate, 'review_instruction': 'patch…', 'review_issues': ['x']}
-    assert thread.follow_up(review, 'common') == {'follow_up': STAGE_FOLLOW_UP, **review}
+    assert thread.follow_up(review, 'common') == {'follow_up': STAGE_FOLLOW_UP, **review,
+                                                  'data': {'candidates': [1], 'already_in_conversation': ['records']}}
     # The same stage asked differently, or other instructions (the light reading), start a new session.
     assert thread.follow_up({**integrate, 'data': {'candidates': [2]}}, 'common') is None
     assert thread.follow_up(review, 'light instructions') is None

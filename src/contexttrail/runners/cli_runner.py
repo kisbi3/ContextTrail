@@ -142,6 +142,7 @@ class Thread:
         self.sent: dict | None = None
         self.usage: dict | None = None
         self.system: str | None = None
+        self.first_sent: dict | None = None  # the session's first request: what a later stage need not repeat
 
     def follow_up(self, message: dict, system: str | None = None) -> dict | None:
         """What to send into the open session for `message`: the part it has not seen (an evidence round, a
@@ -157,7 +158,19 @@ class Thread:
             # with a review instruction) continues; the same stage asked differently (a trimmed request) does not.
             later = (message.get("stage") != self.sent.get("stage")
                      or bool(message.get("review_instruction")) != bool(self.sent.get("review_instruction")))
-            return {"follow_up": STAGE_FOLLOW_UP, **message} if later else None
+            if not later:
+                return None
+            # What the session's first request already holds (the records view, the graph views) is not sent
+            # again: the part of `data` whose values are the same is named instead.
+            first = (self.first_sent or {}).get("data") or {}
+            data = message.get("data")
+            if isinstance(data, dict) and first:
+                held = [key for key, value in data.items() if key in first and first[key] == value]
+                if held:
+                    slim = {key: value for key, value in data.items() if key not in held}
+                    slim["already_in_conversation"] = held
+                    return {"follow_up": STAGE_FOLLOW_UP, **message, "data": slim}
+            return {"follow_up": STAGE_FOLLOW_UP, **message}
         before = self.sent.get("evidence_rounds") or []
         rounds = message.get("evidence_rounds") or []
         if rounds[:len(before)] != before:
@@ -175,6 +188,8 @@ class Thread:
         """Record the call; returns its own usage. A resumed session reports the session's running total, so a
         follow-up's usage is the difference from the previous call's."""
         previous = self.usage if self.session and session == self.session else None
+        if not (self.session and session == self.session):
+            self.first_sent = message if session else None
         self.session, self.sent, self.usage = session, message if session else None, usage
         self.system = system if session else None
         if previous is None or usage is None:
@@ -183,7 +198,7 @@ class Thread:
                 else value for key, value in usage.items()}
 
     def reset(self) -> None:
-        self.session = self.sent = self.usage = None
+        self.session = self.sent = self.usage = self.first_sent = self.system = None
 
     def close(self) -> None:
         self.directory.cleanup()

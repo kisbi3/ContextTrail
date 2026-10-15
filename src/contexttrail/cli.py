@@ -107,6 +107,7 @@ def parser() -> argparse.ArgumentParser:
                                                                    "scan always prints JSON; accepted to match find/status"))
         sub.add_argument("--unit-chars", type=int)
         sub.add_argument("--context-mode", choices=["full", "lean"], help=argparse.SUPPRESS)
+        sub.add_argument("--unit-thread", action="store_const", const=True, default=None, help=argparse.SUPPRESS)
         sub.add_argument("--trigger", choices=["hook"], help=argparse.SUPPRESS)
         sub.add_argument("--integrate-evidence", choices=["full", "reuse"], help=argparse.SUPPRESS)
         sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
@@ -177,6 +178,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--preview", action="store_true", help=tr("AI 호출 없이 WorkUnit·실제 추출 입력 HTML 작성",
                                                              "Write the WorkUnits and the exact extract inputs as HTML without AI calls"))
     sub.add_argument("--context-mode", choices=["full", "lean"], help=argparse.SUPPRESS)
+    sub.add_argument("--unit-thread", action="store_const", const=True, default=None, help=argparse.SUPPRESS)
     sub.add_argument("--integrate-evidence", choices=["full", "reuse"], help=argparse.SUPPRESS)
     sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
     sub.add_argument("--integrate-output", choices=["full", "patch", "draft", "draft_only"], help=argparse.SUPPRESS)
@@ -366,7 +368,7 @@ def _options(args, store: Store) -> AnalysisConfig:
     options = store.get_meta("options", {})
     for key in ("runner", "model", "codex_home", "claude_home", "opencode_home", "history_limit", "timeout", "record_chars", "unit_chars",
                 "extract_model", "integrate_model", "escalation_model", "extract_effort", "integrate_effort",
-                "escalation_effort", "extract_workers", "output_language", "context_mode", "integrate_evidence",
+                "escalation_effort", "extract_workers", "output_language", "context_mode", "unit_thread", "integrate_evidence",
                 "review_output", "integrate_output"):
         value = getattr(args, key, None)
         if value is not None:

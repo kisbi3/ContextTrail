@@ -43,6 +43,9 @@ class AnalysisConfig:
     unit_records: int = 200
     context_events: int = 24
     context_mode: str = "lean"
+    # One Codex conversation per unit shared by its stages (`Engine.unit_thread`); measured a net loss in time and
+    # cost on 2026-10-16 (`docs/plans/PERFORMANCE_PLAN.md` §21), so off unless asked for (`--unit-thread`).
+    unit_thread: bool = False
     read_rounds: int = 2
     read_chars: int = 36_000
     runner_name: str | None = None
@@ -2186,13 +2189,16 @@ class Engine:
     @staticmethod
     def _adapter(runner: Any) -> tuple:
         """What makes two runner instances the same adapter: the pool makes one instance per role, so identity is
-        the tool, model and effort, not the object."""
-        return (type(runner), getattr(runner, "name", None), getattr(runner, "model", None), getattr(runner, "effort", None))
+        the tool and model, not the object (the reasoning effort is a per-call setting the session can change)."""
+        return (type(runner), getattr(runner, "name", None), getattr(runner, "model", None))
 
     def unit_thread(self, unit_id: str, runner: Any) -> Any:
-        """The unit's conversation for calls on `runner`: made on first use when the runner keeps one, reused by
-        the unit's later stages on the same adapter (tool, model, effort), None for another adapter (a stage
-        model of its own). Any instance of the adapter can resume it: the session lives in the thread's home."""
+        """With `unit_thread` on, the unit's conversation for calls on `runner`: made on first use when the runner
+        keeps one, reused by the unit's later stages on the same adapter (tool and model), None for another
+        adapter (a stage model of its own). Any instance of the adapter can resume it: the session lives in the
+        thread's home. Off (the default), None: each task keeps its own conversation as before."""
+        if not self.config.unit_thread:
+            return None
         owner, thread = self.unit_threads.get(unit_id, (None, None))
         if thread is not None:
             return thread if owner == self._adapter(runner) else None
