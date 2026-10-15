@@ -259,12 +259,17 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
     # right, joined by one line into that box (beside the last step when nothing followed). Layout only: it
     # shows when the sub-agent ran in the parent's story, never that it caused anything.
     delegated: dict[str, str] = {}
+
+    def when(key: str) -> tuple[str, int]:
+        # Events of different sessions are listed in the order they were analysed; time decides what came next.
+        return (by_id[key].get("recorded_at") or "", order[key])
+
     for group in groups:
-        story = [key for key in group if key not in anchor and not _sub_agent(by_id[key])]
+        story = sorted((key for key in group if key not in anchor and not _sub_agent(by_id[key])), key=when)
         for key in group:
             if key in anchor or not _sub_agent(by_id[key]):
                 continue
-            beside = next((s for s in story if order[s] > order[key]), story[-1] if story else None)
+            beside = next((s for s in story if when(s) > when(key)), story[-1] if story else None)
             if beside is not None:
                 delegated[key] = beside
     # A result of a sub-agent's own change joins its stack rather than standing beside a box not in the column.

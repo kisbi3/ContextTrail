@@ -577,16 +577,16 @@ def orient_relation(edge: dict, events: dict[str, dict]) -> bool:
 
 def retype_answered_user_goals(events: list[dict], edges: list[dict],
                                records: dict[str, SourceRecord]) -> list[str]:
-    """A person's message written as a goal (or proposal) that an `answers` relation leaves.
+    """A person's message written as a goal (or proposal) is read as a question (asked).
 
-    A typed message is a question (asked) or a decision (adopted); only a question can be
-    answered, so the relation leaves one reading. Only events citing nothing but the
-    person's own messages are changed. Returns the changed IDs.
+    A typed message is a question (asked) or a decision (adopted), never a goal or proposal
+    (the prompts say so; a model still writes one now and then, and then the request is lost
+    from the request views and a forked session's first request cannot be linked). Only events
+    citing nothing but the person's own messages are changed. Returns the changed IDs.
     """
-    answered = {edge["from_event_id"] for edge in edges if edge["relation"] == "answers"}
     changed = []
     for event in events:
-        if event["id"] not in answered or event["actor"] != "user" or event["kind"] not in {"goal", "proposal"}:
+        if event["actor"] != "user" or event["kind"] not in {"goal", "proposal"}:
             continue
         sources = [records.get(citation["source_id"]) for citation in event["evidence"]]
         if sources and all(record is not None and is_user_prompt(record) for record in sources):
@@ -904,7 +904,7 @@ class EvidenceValidator:
         if output["unprocessed_record_ids"]:
             raise FlowError("unit not published because it still has unprocessed records.")
         for event_id in retype_answered_user_goals(output["event_candidates"], output["edge_candidates"], self.records):
-            self.normalizations.append({"mode": "user_goal_as_answered_question", "event": event_id})
+            self.normalizations.append({"mode": "user_goal_as_question", "event": event_id})
         # Quote, status and relation errors are reported together: there is only one repair round.
         try:
             self._check_all_citations(output)
@@ -1387,7 +1387,7 @@ class EvidenceValidator:
         local_ids: dict[str, str] = {}
         claim_errors: list[str] = []
         for event_id in retype_answered_user_goals(output["events_to_add"], output["edges_to_add"], self.records):
-            self.normalizations.append({"mode": "user_goal_as_answered_question", "event": event_id})
+            self.normalizations.append({"mode": "user_goal_as_question", "event": event_id})
         for item in output["events_to_add"]:
             temp_id = item["id"]
             if not temp_id.startswith("tmp:") or temp_id in local_ids:

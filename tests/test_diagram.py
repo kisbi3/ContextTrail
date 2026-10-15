@@ -347,3 +347,22 @@ def test_a_fork_whose_parent_went_no_further_is_one_column_with_a_forked_link():
     diagram = flow_diagram(graph, 126)
     assert diagram.boxes["q2"][1] == diagram.boxes["q1"][1]
     assert "[01] 갈라짐" in "\n".join(diagram.lines())
+
+
+def test_a_sub_agents_boxes_stand_beside_the_step_that_followed_them_in_time_not_in_list_order():
+    # A sub-agent's events are listed after the whole parent session (they were analysed later), but they ran
+    # between the parent's second and third steps, so they stand beside the third.
+    graph = story()
+    by_id = {event["id"]: event for event in graph["events"]}
+    times = {"q": "10:00", "plan": "10:01", "script": "10:05", "run": "10:06", "fail": "10:07", "fix": "10:10",
+             "docs": "10:12", "answer": "10:13"}
+    for key, hm in times.items():
+        by_id[key]["recorded_at"] = f"2026-10-16T{hm}:00Z"
+    sub = {"id": "s", "kind": "outcome", "status": "reported_complete", "title": "하위 조사", "summary": "", "actor": "assistant",
+           "evidence_ids": [], "session_ids": ["s1"], "recorded_at": "2026-10-16T10:03:00Z",
+           "authoring": [{"tool": "claude", "model": "claude-sonnet-5-5", "role": "subagent", "agent": "Explore"}]}
+    graph["events"].append(sub)
+    graph["edges"].append({**link("q", "s", "follows"), "origin": "dialog_turn"})
+    diagram = flow_diagram(graph, 120)
+    assert diagram.boxes["s"][0] >= diagram.boxes["script"][0]
+    assert diagram.boxes["s"][0] < diagram.boxes["fail"][0] + diagram.boxes["fail"][2]

@@ -18,7 +18,7 @@ def test_a_persons_answered_goal_is_read_as_their_question(laboratory):
     checker = validator(pool)
     checker.check_extraction(output, "unit", "snap", store.graph())
     assert (output["event_candidates"][0]["kind"], output["event_candidates"][0]["status"]) == ("question", "asked")
-    assert "user_goal_as_answered_question" in [n["mode"] for n in checker.normalizations]
+    assert "user_goal_as_question" in [n["mode"] for n in checker.normalizations]
     # Only a goal resting on the person's own words has one reading; otherwise the goal stays and the answers
     # relation, which the rules refuse, is left out.
     said = {**event("tmp:q", pool["answer"], "goal", "proposed"), "actor": "user"}
@@ -87,3 +87,16 @@ def test_a_unit_is_saved_without_the_candidate_that_failed_twice(laboratory):
     assert [e["title"] for e in graph["events"]] == [CASES[0][2]]
     assert any(CASES[1][2] in line for line in graph["limitations"])
     assert [task["stage"] for task in runner.tasks] == ["extract", "extract", "integrate"]
+
+
+def test_a_users_goal_is_read_as_a_question_even_with_no_answer(tmp_path):
+    from contexttrail.schema import retype_answered_user_goals
+    from contexttrail.model import SourceRecord
+    record = SourceRecord("src_q", "claude", "s", "user", "CLI에 --no-hook 옵션을 붙이자.", {"kind": "jsonl", "path": "/l", "line": 1})
+    goal = {"id": "tmp:g", "kind": "goal", "status": "in_progress", "actor": "user",
+            "evidence": [{"source_id": "src_q", "start_line": 1, "end_line": 1, "quote": "CLI에 --no-hook 옵션을 붙이자."}]}
+    assert retype_answered_user_goals([goal], [], {"src_q": record}) == ["tmp:g"]
+    assert (goal["kind"], goal["status"]) == ("question", "asked")
+    # The assistant's own goal, or one resting on more than the person's words, is left as written.
+    own = {**goal, "id": "tmp:o", "actor": "assistant", "kind": "goal", "status": "in_progress"}
+    assert retype_answered_user_goals([own], [], {"src_q": record}) == []
