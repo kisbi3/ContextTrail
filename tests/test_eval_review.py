@@ -31,6 +31,8 @@ def test_rejected_model_response_is_visible_and_old_eval_can_be_reviewed(tmp_pat
             if task["stage"] == "extract":
                 for candidate in response["event_candidates"]:  # none left to keep
                     candidate["evidence"][0]["quote"] = "<invented-quote>"
+            if task["stage"] == "light":
+                return {**response, "skeleton": "not a list"}  # the light reading tried next is refused too
             return response
 
     monkeypatch.setattr(evaluation, "FixtureRunner", WrongQuote)
@@ -38,9 +40,10 @@ def test_rejected_model_response_is_visible_and_old_eval_can_be_reviewed(tmp_pat
     report = run_eval("demo", output, "mock", AnalysisConfig())
     assert report["first_run"]["status"] == "failed"
     captures = [json.loads(path.read_text()) for path in (output / "call-review").glob("*.json")]
-    assert len(captures) == 6  # the demo's three units are each tried and repaired once; none stops the others
-    assert all(item["response"]["event_candidates"][0]["evidence"][0]["quote"] == "<invented-quote>"
-               for item in captures)
+    assert len(captures) == 12  # per unit: the full reading and its repair, then the light reading and its repair
+    full = [item for item in captures if "event_candidates" in item["response"]]
+    assert len(full) == 6 and all(item["response"]["event_candidates"][0]["evidence"][0]["quote"] == "<invented-quote>"
+                                  for item in full)
     page = (output / "review.html").read_text()
     assert "&lt;invented-quote&gt;" in page
     assert "문자열 불일치" in page

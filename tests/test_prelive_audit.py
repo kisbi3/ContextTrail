@@ -180,7 +180,7 @@ def test_malformed_needs_evidence_finishes_call_ledger(laboratory):
             return output
     result=engine.analyze(BadEnvelope)
     assert result['status']=='failed'
-    assert len(store.llm_calls())==2
+    assert len(store.llm_calls())==4  # the full reading and its repair, then the light reading and its repair
     assert all(c['status']=='validation_error' and c['finished_at'] for c in store.llm_calls())
 
 

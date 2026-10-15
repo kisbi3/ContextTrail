@@ -539,7 +539,7 @@ def test_read_rounds_are_bounded(laboratory):
             output.update(status='needs_evidence',event_candidates=[],read_requests=[{'kind':'read_records','ids':['s1'],'start_line':1,'end_line':1,'query':None,'unit_id':None}])
             return output
     runner=Endless();result=engine.analyze(lambda:runner)
-    assert result['status']=='failed' and runner.calls==4
+    assert result['status']=='failed' and runner.calls==6  # 4 in the full reading, then the light reading and its repair
     assert store.graph()['version']==0
 
 

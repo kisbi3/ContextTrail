@@ -344,12 +344,14 @@ def test_invalid_quote_is_blocked_after_one_repair(laboratory):
     class BadQuote(FixtureRunner):
         def run(self, task, schema, cancel):
             output = super().run(task, schema, cancel)
+            if task["stage"] == "light":
+                return {**output, "skeleton": "not a list"}  # the light reading tried after the repair is refused too
             output["event_candidates"][0]["evidence"][0]["quote"] = "invented quote"
             return output
     runner = BadQuote()
     result = engine.analyze(lambda: runner)
     assert result["status"] == "failed"
-    assert runner.calls == 2
+    assert runner.calls == 4  # extract, its repair, then the light reading and its repair
     assert store.graph()["version"] == 0
     assert store.sources()["s1"]["processed_hash"] is None
 

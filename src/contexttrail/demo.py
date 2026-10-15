@@ -76,6 +76,11 @@ class FixtureRunner:
         self.calls += 1
         self.tasks.append(copy.deepcopy(task))
         data = task["data"]
+        if task["stage"] == "light":
+            # The light answer: the code-built skeleton named back, no events of its own.
+            return {"status": "complete", "snapshot_id": data["snapshot_id"], "unit_id": data["unit_id"],
+                    "skeleton": [{"id": item["id"], "title": item["title"], "summary": ""} for item in data.get("skeleton", [])],
+                    "events": []}
         if task["stage"] == "extract":
             candidates = []
             # An audit: the records a note already cites are not written again, as a model told to would do.

@@ -262,6 +262,7 @@ def _incomplete_input(issues: list[str]) -> bool:
         r"Git history is limited to the latest \d+ commits per worktree\.",
         r"Merge commit [0-9a-f]+ is read as its diff against the first parent only\.",
         r"re-analyzing an already integrated work unit: .+",
+        r"light analysis: the full extraction of this unit still failed validation after the repair round, so the unit was read with the code-built skeleton and one light call\.",
         r"corrected the processed ledger of \d+ already integrated records \(not resent\)\.",
         r"audit: .+",
         # A unit skipped for a failure of its own (validation after repair, input over budget) and held back.
@@ -2012,6 +2013,9 @@ class Harness:
                 repair_count += 1
 
 
+# Said in a unit's limitations when the full extraction failed validation twice and the unit was read the light way.
+LIGHT_FALLBACK_LIMITATION = ("light analysis: the full extraction of this unit still failed validation after the repair "
+                             "round, so the unit was read with the code-built skeleton and one light call.")
 READS_USED_UP = ("None left: answer with status complete from the records and evidence you have, and name what "
                  "you could not check in limitations.")
 
@@ -2282,6 +2286,7 @@ class Engine:
                      cached.get("context_digest") == current_context_digest)
         reasons: list[str] = []
         draft = None
+        light_fallback = False
         output = None
         waived: list[str] = list(cached.get("waived_citations", [])) if reuse else []
         dropped: list[str] = list(cached.get("dropped_candidates", [])) if reuse else []
@@ -2314,17 +2319,22 @@ class Engine:
         else:
             self.store.save_unit(unit["id"], unit["sources"], h.dependencies, "parsed")
             h.runner, h.routing_role = runners.get("extract"), "extract"
-            if self._light():
+            def read_light() -> tuple[dict, list[str], list[str]]:
+                """The light reading of the unit: code builds the skeleton, one call names and adds to it, and the
+                citations are cut by code, so nothing is asked again; what the checks refuse is left out."""
                 from . import light
                 items, edges = light.skeleton([pool[i] for i in unit["sources"]])
                 answer = h.task("light", light.request_data(unit, snapshot_id, data, items), light.answer_check,
                                 validator=validator, schema=light.LIGHT_SCHEMA)
-                output = light.extraction(answer, items, edges, unit, snapshot_id, h.pool, h.provided, validator)
+                result = light.extraction(answer, items, edges, unit, snapshot_id, h.pool, h.provided, validator)
                 try:
-                    validator.check_extraction(output, unit["id"], snapshot_id, graph)
+                    validator.check_extraction(result, unit["id"], snapshot_id, graph)
+                    return result, [], []
                 except FlowError:
-                    # Nothing is asked again: what the checks refuse is left out and named in limitations.
-                    output, waived, dropped = validator.salvage_extraction(output, unit["id"], snapshot_id, graph)
+                    return validator.salvage_extraction(result, unit["id"], snapshot_id, graph)
+
+            if self._light():
+                output, waived, dropped = read_light()
                 draft = output
             else:
                 try:
@@ -2335,11 +2345,22 @@ class Engine:
                     # calls route to a second model only after bounded contract failure.
                     reasons = []
                 except TaskValidationError as exc:
-                    if not self.config.escalation_model:
-                        output, waived, dropped = self._salvage_extraction(exc, validator, unit["id"], snapshot_id, graph)
-                    else:
+                    if self.config.escalation_model:
                         reasons = ["bounded_validation_failure"]
                         data["previous_validation_error"] = str(exc)[:400]
+                    else:
+                        try:
+                            output, waived, dropped = self._salvage_extraction(exc, validator, unit["id"], snapshot_id, graph)
+                        except TaskValidationError:
+                            if self.config.audit:
+                                raise
+                            # Nothing of the answer could be kept after the repair round. Rather than hold the unit
+                            # back, read it the light way: the same unit, one more call, citations the model cannot
+                            # get wrong. Smaller units would cut steps apart and multiply boxes; this keeps them.
+                            output, waived, dropped = read_light()
+                            output["limitations"] = list(dict.fromkeys(
+                                output.get("limitations", []) + [LIGHT_FALLBACK_LIMITATION]))
+                            light_fallback = True
         should_escalate = bool(self.config.escalation_model and reasons)
         if should_escalate:
             if draft is not None:
@@ -2376,7 +2397,7 @@ class Engine:
         cached = {"payload": output, "evidence": validator.evidence, "routing_signature": signature,
                   "user_requests_added": requests_added, "waived_citations": waived,
                   "dropped_candidates": dropped,
-                  "routing_reasons": reasons, "escalated": should_escalate,
+                  "routing_reasons": reasons, "escalated": should_escalate, "light_fallback": light_fallback,
                   "draft_payload": draft if should_escalate else None,
                   "extraction_graph_version": graph["version"], "read_manifest": h.read_manifest,
                   "context_selection": context.get("context_selection", {}),

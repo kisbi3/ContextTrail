@@ -19,8 +19,9 @@ def two_sessions(records, make):
                     replace(make(CASES[4][0], key="b", session="two"), recorded_at="2026-09-23T10:00:00Z")])
 
 
-def failing(session_text, *, stage="extract"):
-    """A runner whose answer for the unit holding `session_text` quotes something the source never said."""
+def failing(session_text, *, stage="extract", light_ok=False):
+    """A runner whose answer for the unit holding `session_text` quotes something the source never said; with
+    `light_ok` its light answer (the fallback) is fine, so the unit is read that way instead of held back."""
     class Invented(FixtureRunner):
         def run(self, task, schema, cancel):
             output = super().run(task, schema, cancel)
@@ -28,6 +29,9 @@ def failing(session_text, *, stage="extract"):
             texts = [line["text"] for record in data.get("new_records", []) for line in record["lines"]]
             if task["stage"] == stage and session_text in texts and output.get("event_candidates"):
                 output["event_candidates"][0]["evidence"][0]["quote"] = "<invented quote>"
+            if task["stage"] == "light" and session_text in texts and not light_ok:
+                # The light reading the full failure falls back to is refused too (a malformed answer).
+                return {**output, "skeleton": "not a list"}
             return output
     return Invented
 
@@ -294,3 +298,17 @@ def test_a_unit_failing_in_a_parallel_batch_is_skipped_and_its_neighbour_complet
     result = engine.analyze(failing(CASES[0][0]))
     assert result["status"] == "partial" and result["completed_units"] == 1 and result["skipped_units"] == 1
     assert [e["title"] for e in store.graph()["events"]] == [CASES[4][2]]
+
+
+def test_a_unit_whose_answer_cannot_be_validated_is_read_the_light_way_instead_of_held_back(laboratory):
+    from contexttrail.analysis import LIGHT_FALLBACK_LIMITATION
+    _, store, engine, records, make = laboratory
+    two_sessions(records, make)
+    result = engine.analyze(failing(CASES[0][0], light_ok=True))
+    assert result["status"] == "complete" and result["completed_units"] == 2 and store.unit_failures() == {}
+    stages = [(call["stage"], call["status"]) for call in store.llm_calls()]
+    assert stages.count(("extract", "validation_error")) == 2 and ("light", "complete") in stages
+    assert any(LIGHT_FALLBACK_LIMITATION in text for text in result["limitations"] + store.graph().get("limitations", []))
+    # The unit is published: its record is processed and its request is in the graph.
+    assert store.sources()["a"]["processed_hash"] is not None
+    assert any(CASES[0][0] in event["title"] for event in store.graph()["events"])

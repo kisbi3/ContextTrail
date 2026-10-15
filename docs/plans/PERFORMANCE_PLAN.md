@@ -363,3 +363,28 @@ lean으로 조각당 입력이 줄었는데 예산 상수(`PAYLOAD_RECORD_FACTOR
 - **읽기:** 사건은 약 30% 줄었고 네 번 모두 수리 호출이 없었다. 점수는 Sol이 평균 15(편차 큼: 18과 12), Haiku는 10.5로 이전보다 낮다. 놓친 항목은 거의 둘이다. (1) 6번째 실환경 실행의 `observed_success`(`live6_complete`)가 4회 중 3회 빠졌다. 다시 보니(같은 날 저녁) 네 실행 모두 그 기록을 인용했고, 셋은 "15 통과·3 실패, 수리 호출 완료"라는 `observed_failure` 하나로 만들며 수리 성공을 요약에 적었다. 그 실행은 한 번에 성공(수리 후 complete)과 실패(기대 3건)를 함께 냈으므로 새 규칙으로는 결과 하나가 맞고, 성공을 따로 기대하는 fixture 항목(그리고 `repair_fix → verifies → live6`)이 옛 단위 전제다. 모델 손실이 아니다. (2) Sol 2회차는 수리 수정과 회귀 테스트 추가를 한 변경으로 합쳤다. 같은 실행이 판가름했으니 새 규칙으로는 맞지만 fixture는 둘을 따로 기대한다. Haiku가 5번째 실행 실패를 두 결과로 나누는 것은 바꾸기 전부터 같았다.
 - **fixture 참고:** `repairfix-expected-v2`는 옛 단위(수정과 회귀 테스트가 따로)를 전제한 항목이 2개(사건 1, 관계 1) 있다. 새 단위로 다시 재려면 fixture 기대를 손봐야 한다. 이 평가에서는 손대지 않았다.
 
+
+## 21. 프롬프트 캐시 적중률 (2026-10-16 측정, 계획)
+
+소유자: "cache hit이 높아지면 더 빨라질테니 그 방법도 생각해보자."
+
+**지금 (평가 보고서의 역할별 합계)**
+
+| 실행 | 도구 | 단계 | 입력 토큰 | 캐시 적중 |
+|---|---|---|---|---|
+| fork-haiku, subfork-haiku2 | Claude Haiku | 전체 | read 214k/123k, create 199k/117k | 52%, 51% |
+| step-haiku | Claude Haiku | 전체 | read 101k, create 231k | 30% |
+| subfork-luna | Codex Luna | extract / integrate / review | 121k / 61k / 51k | 40% / 18% / 38% |
+| fork-luna | Codex Luna | extract / integrate / review | 91k / 25k / 59k | 33% / 96% / 0% |
+| step-sol, resume1 | Codex Sol | extract / integrate / review | 56k / 36–74k / 90k | 0% / 0–48% / 0% |
+
+- 적중은 두 곳에서만 난다: 호출마다 같은 접두(도구의 시스템 프롬프트 + `common.md`)와, 한 `Harness.task` 안의 후속 호출(수리·근거 요청)이 같은 세션을 이어갈 때(Codex `exec resume`, 96%·48%). 단위의 기록·후보·그래프 보기는 호출마다 다르고 매번 새 세션이라 적중이 없다.
+- Sol이 0%인 것은 해당 실행의 사용량 보고에 `cached_input_tokens`가 없었던 것일 수 있다(확인 필요).
+
+**올리는 방법 (기대 효과 순)**
+
+1. **단위 스레드 — extract·integrate·review를 한 세션의 후속 메시지로.** 지금은 단계마다 새 세션이라 integrate가 기록 보기와 그래프 보기를 다시 보낸다. extract 세션을 이어 "이제 통합" 메시지만 보내면 extract 요청 전체가 캐시된 입력이 되고(후속 호출 사례 96%), integrate·review 요청에서 이미 세션에 있는 부분(기록, 기존 그래프 보기)을 뺄 수 있다. 단위당 입력 토큰 약 1/3 감소와 적중 70% 이상이 기대치. 시스템 프롬프트는 이미 `common.md`만이라 단계가 바뀌어도 같다. 모델 입력이 바뀌므로 fixture 평가로 확인한다. Claude CLI는 `--no-session-persistence`를 쓰고 있어 같은 방식(`--resume`)을 따로 확인해야 한다.
+2. **요청 안의 순서 — 호출마다 같은 부분을 앞에.** 기존 그래프 보기·매니페스트처럼 extract와 integrate가 공유하는 부분을 메시지 앞에, 단계 지시문을 맨 뒤에 두면 제공자의 접두 캐시가 단계 사이에서도 맞는다. 1번 없이도 10~20% 기대. 역시 모델 입력 변경.
+3. **단위 사이 스레드 유지는 하지 않는다.** 앞 단위의 기록이 문맥에 남아 섞이고, 문맥이 커져 뒤 호출이 느려진다.
+
+다음 단계: 1번을 Codex에서 구현하고 repairfix·subfork fixture로 점수·시간·캐시를 전후 비교한다.

@@ -217,5 +217,7 @@ def extraction(answer: dict, items: list[dict], edges: list[dict], unit: dict, s
 
 
 def answer_check(answer: dict) -> Any:
-    """The light answer has no claims to check beyond its shape (checked by the harness); bad sources are dropped later."""
+    """The light answer has no claims to check beyond its shape; a source the checks refuse is dropped later."""
+    from .schema import validate_shape
+    validate_shape(answer, LIGHT_SCHEMA)
     return None
