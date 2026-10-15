@@ -2183,16 +2183,23 @@ class Engine:
         # same adapter (Codex): the later stages resume the session, so the earlier request is cached input.
         self.unit_threads: dict[str, tuple[Any, Any]] = {}
 
+    @staticmethod
+    def _adapter(runner: Any) -> tuple:
+        """What makes two runner instances the same adapter: the pool makes one instance per role, so identity is
+        the tool, model and effort, not the object."""
+        return (type(runner), getattr(runner, "name", None), getattr(runner, "model", None), getattr(runner, "effort", None))
+
     def unit_thread(self, unit_id: str, runner: Any) -> Any:
         """The unit's conversation for calls on `runner`: made on first use when the runner keeps one, reused by
-        the unit's later stages on the same adapter, None for another adapter (a stage model of its own)."""
+        the unit's later stages on the same adapter (tool, model, effort), None for another adapter (a stage
+        model of its own). Any instance of the adapter can resume it: the session lives in the thread's home."""
         owner, thread = self.unit_threads.get(unit_id, (None, None))
         if thread is not None:
-            return thread if owner is runner else None
+            return thread if owner == self._adapter(runner) else None
         if not callable(getattr(runner, "thread", None)):
             return None
         thread = runner.thread()
-        self.unit_threads[unit_id] = (runner, thread)
+        self.unit_threads[unit_id] = (self._adapter(runner), thread)
         return thread
 
     def close_unit_thread(self, unit_id: str | None = None) -> None:
