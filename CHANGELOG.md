@@ -2,6 +2,12 @@
 
 All notable changes to ContextTrail are listed here, newest first. Dates are the dates the change landed on `main`. Measurements behind each entry are in `docs/plans/PERFORMANCE_PLAN.md` and `docs/DECISIONS.md`.
 
+## Unreleased
+
+### Fixed
+- **A note written while an analysis runs waits instead of being refused.** The end-of-turn hooks start an automatic analysis and ask for a note at the same moment, and the analysis held the project for about a minute, so the note the reminder asked for was refused ("an analysis is running … Run the same note again in a minute"). `contexttrail note` now queues it (the same queue a read-only sandbox uses) and the next end-of-turn hook stores it once the analysis is done; while it waits the reminder counts it as written.
+- **Writing outside the project is not work to note.** The reminder counted every shell line that writes a file, so a turn that only wrote to a scratch folder or `/tmp` was sent back for a note. With the project known, `journal.writes_files` places each write (`write_targets`: redirects and `rm`/`mkdir`/`touch`/`truncate`/`tee`/`cp`/`mv`/`sed -i`, variables set earlier on the line and `~` expanded, the body of a heredoc fed to `cat`/`tee` read as data) and leaves out a line whose every write lands on an absolute path outside the project; an edit of an absolute path outside it is left out too. A write it cannot place (a relative or quoted path, code that writes) still counts.
+
 ## 0.1.0a8 – 2026-10-16
 
 ### Added

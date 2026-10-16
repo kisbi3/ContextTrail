@@ -568,7 +568,7 @@ def _note(args) -> int:
         raise FlowError("note needs --kind and --title (and at least one --quote)")
     options = dict(kind=args.kind, title=args.title, summary=args.summary, quotes=args.quote, status=args.status,
                    actor=args.actor, relations={name: getattr(args, name) for name in journal.RELATION_OPTIONS})
-    queued = None
+    queued, why = None, "this environment cannot write the project's state"
     if store is None:
         queued = journal.queue(scope, session, **options)
     else:
@@ -576,8 +576,14 @@ def _note(args) -> int:
             result = journal.write(scope, store, session, **options)
         except (OSError, sqlite3.Error):
             queued = journal.queue(scope, session, **options)
+        except FlowError as exc:
+            # An analysis holds the project (often the automatic one the last turn's end started): the note waits
+            # in the queue and the end-of-turn hook stores it once the analysis is done.
+            if "an analysis is running" not in str(exc):
+                raise
+            queued, why = journal.queue(scope, session, **options), "an analysis is running in this project"
     if queued:
-        message = (f"{queued['queued']} queued: this environment cannot write the project's state, so the note is stored, "
+        message = (f"{queued['queued']} queued: {why}, so the note is stored, "
                    f"with every check, when the turn ends. Its quotes were found. Link to it as {queued['queued']}.")
         print(dumps({"queued": queued["queued"]}, pretty=True) if args.json else message)
         return 0

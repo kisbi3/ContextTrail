@@ -28,7 +28,7 @@ import uuid
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from .analysis import (_GIT_CALL, _HEREDOC, _VCS_SUBCOMMANDS, _command_segments, _command_text, _vcs_mutates,
                        link_request_turns, step_hint)
@@ -551,11 +551,72 @@ _FILE_COMMANDS = re.compile(r"\bsed\s+-i|\btee\s|\b(?:mv|cp|rm|touch|mkdir|trunc
 _QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\\\]|\\\\.)*\"")
 
 
-def writes_files(command: str) -> bool:
+def writes_files(command: str, inside: Callable[[str], bool] | None = None) -> bool:
     """True when a shell command line writes or removes a file (quoted text, like code passed to
-    `python -c`, is not read as shell)."""
+    `python -c`, is not read as shell). With `inside` (is this absolute path in the project?), a line whose
+    every write lands on an absolute path outside the project (a scratch folder, /tmp) is not counted; a
+    write it cannot place (a relative path, a quoted one, code that writes) still is."""
     bare = _QUOTED.sub("''", command)
-    return bool(_FILE_COMMANDS.search(bare)) or any(target != "/dev/null" for target in _REDIRECT.findall(bare))
+    if not (_FILE_COMMANDS.search(bare) or any(target != "/dev/null" for target in _REDIRECT.findall(bare))):
+        return False
+    if inside is None:
+        return True
+    targets = write_targets(command)
+    return targets is None or any(inside(target) for target in targets)
+
+
+_ASSIGNMENT = re.compile(r"(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=([^\s;&|()'\"`$]+)")
+_VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
+_PLACED = {"rm", "mkdir", "touch", "truncate", "tee", "cp", "mv", "sed"}
+
+
+def write_targets(command: str) -> list[str] | None:
+    """The absolute paths a shell command line writes to, or None when some write cannot be placed: a relative
+    or quoted path, a variable not set on the same line, or a write by code (`write_text`, `apply_patch`, `patch`).
+    Variables assigned earlier on the line (`S=/tmp/x; … > $S/out`) and `~` are expanded. The body of a heredoc
+    fed to `cat` or `tee` is data and is left out; one fed to an interpreter is code and is read."""
+    command = _drop_data_heredocs(command)
+    values = dict(_ASSIGNMENT.findall(command))
+    bare = _QUOTED.sub("''", command)
+
+    def place(word: str) -> str | None:
+        word = _VARIABLE.sub(lambda m: values.get(m.group(1), "\0"), word)
+        if "\0" in word or "''" in word or "`" in word:
+            return None
+        word = os.path.expanduser(word)
+        return word if word.startswith("/") else None
+
+    targets: list[str | None] = [place(t) for t in _REDIRECT.findall(bare) if t != "/dev/null"]
+    for segment in _SEGMENTS.split(bare):
+        words = [w for w in segment.split() if not _ASSIGNMENT.fullmatch(" " + w)]
+        if not words:
+            continue
+        name = words[0].rsplit("/", 1)[-1]
+        if name not in _PLACED:
+            if _FILE_COMMANDS.search(segment):
+                return None  # git apply, patch, write_text, apply_patch: the code decides where
+            continue
+        if name == "sed" and not re.search(r"\s-i", segment):
+            continue
+        args = [w for w in words[1:] if not w.startswith("-")]
+        if name == "sed":
+            args = args[-1:]  # the script is quoted away; the file is the last word
+        elif name in {"cp", "mv"}:
+            args = args[-1:]
+        targets.extend(place(arg) for arg in args)
+    return None if any(target is None for target in targets) else [t for t in targets if t]
+
+
+_SEGMENTS = re.compile(r"&&|\|\||[;|\n]")
+# On a command flattened with "; " between its lines (`_command_text(body, "; ")`): `<<'EOF'; …; EOF`.
+_HEREDOC_BODY = re.compile(r"<<-?\s*(['\"]?)(\w+)\1(.*?);\s*\2(?=\s*(?:;|$))")
+
+
+def _drop_data_heredocs(text: str) -> str:
+    def body(match: re.Match) -> str:
+        words = _SEGMENTS.split(text[:match.start()])[-1].split()
+        return "" if words and words[0].rsplit("/", 1)[-1] in {"cat", "tee"} else match.group(0)
+    return _HEREDOC_BODY.sub(body, text)
 
 
 _REMOTE_ADDRESS = re.compile(r"://|^[\w.-]+@[\w.-]+:")
@@ -583,14 +644,19 @@ def _changes_git_state(command: str) -> bool:
     return False
 
 
-def unnoted_work(records: list[SourceRecord], since: float) -> list[SourceRecord]:
+def unnoted_work(records: list[SourceRecord], since: float,
+                 inside: Callable[[str], bool] | None = None) -> list[SourceRecord]:
     """Edits (also through the shell), commits, tests and Git changes recorded after `since`,
-    the note calls themselves aside."""
+    the note calls themselves aside. With `inside`, an edit of an absolute path outside the project and a
+    shell line whose every write lands outside it are not the project's work (`writes_files`)."""
     def work(record: SourceRecord) -> bool:
-        hint = step_hint(record)[2]
+        _, target, hint = step_hint(record)
         if hint == "vcs":
             return _changes_git_state(_command_text(record.content.partition("\n")[2], "; "))
-        return hint in WORK_HINTS or (hint == "run" and writes_files(_command_text(record.content.partition("\n")[2])))
+        if hint == "edit" and inside is not None and target.startswith("/") and not inside(target):
+            return False
+        # Lines kept apart ("; "), so a heredoc's body can be told from the command that writes it.
+        return hint in WORK_HINTS or (hint == "run" and writes_files(_command_text(record.content.partition("\n")[2], "; "), inside))
     return [record for record in quotable(records) if record.role == "tool_call"
             and _seconds(record.recorded_at) > since and work(record)]
 
@@ -672,9 +738,12 @@ def _remind(scope: Scope, store: Store, payload: dict, session_id: str, **homes:
     if payload.get("stop_hook_active") or away:
         return None  # this turn was already sent back once, or no one is there to answer
     activity = (store.get_meta(ACTIVITY_KEY, {}) or {}).get(session_id, {})
+    # A note still waiting in the queue (refused while an analysis ran) counts as written.
+    waiting = [_seconds(item.get("queued_at")) for item in queued(scope, session_id)]
     since = max(_seconds(activity.get("noted_at")), _seconds(activity.get("reminded_at")),
-                _seconds((store.get_meta(SETTINGS_KEY) or {}).get("enabled_at")))
-    work = unnoted_work(session_records(scope, store, session_id, **homes), since)
+                _seconds((store.get_meta(SETTINGS_KEY) or {}).get("enabled_at")), *waiting)
+    work = unnoted_work(session_records(scope, store, session_id, **homes), since,
+                        inside=lambda path: scope.worktree_for(path) is not None)
     if not work:
         return None
     _mark(store, session_id, "reminded_at", max(record.recorded_at for record in work))

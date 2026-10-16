@@ -544,3 +544,44 @@ def test_the_host_tool_is_read_from_a_process_command_line():
     assert journal._tool_of("node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js") == "claude"
     assert journal._tool_of("/Users/me/.opencode/bin/opencode") == "opencode"
     assert journal._tool_of("/bin/zsh -c contexttrail note --kind outcome") is None
+
+
+def test_a_note_written_while_an_analysis_runs_waits_in_the_queue_and_the_hook_stores_it(project, monkeypatch, capsys,
+                                                                                         private_tmp, tmp_path):
+    folder, scope, store = project
+    for name in ("CODEX_THREAD_ID", "OPENCODE_SESSION_ID", "CLAUDECODE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
+    store.set_meta(journal.SETTINGS_KEY, {"enabled_at": "2026-10-07T09:00:00+00:00"})
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    # The automatic analysis the last turn's end started holds the project.
+    with store.analyze_lock():
+        assert main(["note", str(folder), "--kind", "action", "--title", "Lock", "--quote", "write_atomically(path)"]) == 0
+        out = capsys.readouterr().out
+        assert out.startswith("q_") and "an analysis is running in this project" in out
+        # Still running at the turn's end: the note stays queued, and the queued note counts as written.
+        assert journal.hook(hook_input(folder), **homes) is None
+        assert journal.queued(scope, SESSION) and not journal.noted(store.graph(), SESSION)
+    assert journal.hook(hook_input(folder), **homes) is None
+    assert not journal.queued(scope, SESSION) and len(journal.noted(store.graph(), SESSION)) == 1
+
+
+def test_writes_outside_the_project_are_not_work_to_note():
+    from contexttrail.model import SourceRecord
+    inside = lambda path: path.startswith("/work/app")
+    def call(command, tool="Bash"):
+        body = {"command": command} if tool == "Bash" else {"file_path": command, "old_string": "a", "new_string": "b"}
+        return SourceRecord("c", "claude", SESSION, "tool_call", f"Tool: {tool}\n" + json.dumps(body), {},
+                            recorded_at="2026-10-07T10:00:00Z")
+    outside = ["S=/tmp/scratch; sed -n '1,5p' CHANGELOG.md > $S/notes.md; gh release view",
+               "S=/tmp/scratch; rm -rf $S/venv; python3 -m venv $S/venv",
+               "cat > /tmp/scratch/make.py <<'EOF'\nPath(out).write_text(x)\nif a > b: pass\nEOF\npython3 /tmp/scratch/make.py",
+               "mkdir -p ~/scratch/run && cp /work/app/a.json ~/scratch/run/"]
+    for command in outside:
+        assert not journal.unnoted_work([call(command)], 0.0, inside), command
+    assert not journal.unnoted_work([call("/tmp/scratch/fig.py", "Edit")], 0.0, inside)
+    # In the project, or where the line does not say: still work.
+    for command in ["echo x > /work/app/a.txt", "cd /work/app && echo x > a.txt", 'rm -rf "$S/x"',
+                    "python3 - <<'EOF'\nPath('a').write_text('x')\nEOF", "git apply /tmp/p.diff"]:
+        assert journal.unnoted_work([call(command)], 0.0, inside), command
+    assert journal.unnoted_work([call("/work/app/src/a.py", "Edit")], 0.0, inside)
