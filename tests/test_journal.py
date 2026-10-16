@@ -652,3 +652,33 @@ def test_the_hook_reads_only_what_the_transcript_gained(project, tmp_path, monke
     decision = journal.hook(hook_input(folder, transcript_path=str(path)), **homes)
     assert len(seen) == 1 and decision["decision"] == "block" and "edit " in decision["reason"]
     assert "Calls since the last note:" in decision["reason"]
+
+
+def test_the_automatic_analysis_takes_a_quiet_sessions_tail_before_the_backlog(project, tmp_path):
+    from contexttrail.analysis import AnalysisConfig, Engine
+    from contexttrail.store import _timestamp
+    folder, scope, store = project
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    # An older session nobody noted waits in the backlog.
+    old = homes["claude_home"] / "projects" / "app" / "old-session.jsonl"
+    old.write_text(dumps({"type": "user", "uuid": "o1", "sessionId": "old-session", "cwd": str(folder),
+                          "timestamp": "2026-10-01T09:00:00Z",
+                          "message": {"content": [{"type": "text", "text": "Use SQLite for the store."}]}}) + "\n")
+    note(scope, store, kind="action", title="Lock the store", quotes=["write_atomically(path)"])
+    path = homes["claude_home"] / "projects" / "app" / f"{SESSION}.jsonl"
+    with path.open("a") as handle:
+        handle.write(dumps(row(folder, 7, "user", [{"type": "text", "text": "Now add a retry."}])) + "\n")
+    hook_run = Engine(scope, store, AnalysisConfig(**homes, trigger="hook"))
+    records = hook_run.scan().records
+    store.ingest(records)
+    tail = next(r for r in records if "Now add a retry." in r.content)
+    store.acknowledge_journaled(records, moment=_timestamp(tail.recorded_at) + 3600)
+
+    def first_unit(engine):
+        with store.analyze_lock():
+            units, _, _ = engine._plan_units(engine.scan(), [])
+        return units[0]["sources"], engine.ahead_of_order
+    sources, ahead = first_unit(hook_run)
+    assert tail.source_id in sources and ahead  # the tail first, its events out of order
+    sources, ahead = first_unit(Engine(scope, store, AnalysisConfig(**homes)))
+    assert tail.source_id not in sources and not ahead  # a run the person starts keeps the oldest first

@@ -2734,7 +2734,30 @@ class Engine:
             order = {r.source_id: n for n, r in enumerate(snapshot.records)}
             plans = sorted((unit for unit in plans if in_scope(unit)), key=lambda unit: min(order[i] for i in unit["sources"]))
             self.ahead_of_order = any(pool[i].session_id not in family for i in pending)
+        elif self.config.trigger == "hook":
+            plans = self._tails_first(plans, pool, pending)
         return self._hold_back_failed(plans, pool, issues, repair=repair), pending, missing
+
+    def _tails_first(self, plans: list[dict], pool: dict[str, SourceRecord], pending: set[str]) -> list[dict]:
+        """The automatic analysis takes first the units holding what a noted session left after its last note
+        once it went quiet (`Store.journal_tails`): recent work in no note, which oldest-first would leave
+        behind the whole backlog. The rest keeps the oldest-first order; what is added ahead of an older
+        waiting record is out of order, as with `--recent`."""
+        tails = self.store.journal_tails()
+        if not tails:
+            return plans
+
+        def in_tail(source_id: str) -> bool:
+            record = pool[source_id]
+            owner = record.session_id if record.session_id in tails else (record.lineage or {}).get("parent_session_id")
+            stamp = _record_timestamp(record.recorded_at)
+            return owner in tails and stamp is not None and tails[owner][0] < stamp <= tails[owner][1]
+        first = [unit for unit in plans if any(in_tail(i) for i in unit["sources"])]
+        if not first:
+            return plans
+        taken = {i for unit in first for i in unit["sources"]}
+        self.ahead_of_order = any(i not in taken for i in pending)
+        return first + [unit for unit in plans if unit not in first]
 
     def _select_sessions(self, snapshot: Snapshot) -> dict | None:
         """The sessions an ordinary run takes ahead of the oldest-first order (`--session`, `--recent`, `--since`)."""
