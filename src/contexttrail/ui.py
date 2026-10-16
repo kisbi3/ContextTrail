@@ -14,6 +14,7 @@ from wcwidth import wcswidth
 
 from .diagram import HEAVY, Diagram, _wrap, flow_diagram, request_turns
 from .i18n import language, tr
+from .schema import folded_view
 from .render import (ASCII_MARK, MARK, event_detail, linked_events, status_labels, status_tones,
                      terminal_graph)
 from .agent_view import reference
@@ -260,6 +261,7 @@ class FlowPanels:
 
     def set_graph(self, graph: dict) -> None:
         keep = self.current
+        graph = folded_view(graph)
         self.graph = graph
         self.lines = terminal_graph(graph, ascii_only=self.ascii_only, marks=True)
         self.labels, self.tones = status_labels(graph), status_tones(graph)

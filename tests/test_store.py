@@ -170,3 +170,56 @@ def test_publishing_hangs_a_forked_sessions_first_request_under_the_parents_last
     # The parent's last request before the fork point (not the one it went on with afterwards), structural, not a cause.
     assert [(e["from_event_id"], e["to_event_id"], e["relation"], e["basis"]) for e in forks] == [("p3", "f1", "follows", "structural")]
     assert store.publish(published, [], {}, {}, expected_version=1)["edges"].count(forks[0]) == 1  # not added twice
+
+
+def test_a_parents_copy_of_a_sub_agents_report_is_drawn_as_the_sub_agents_box(tmp_path):
+    from contexttrail.model import empty_graph
+    from contexttrail.schema import folded_view
+    store = Store(tmp_path / "state", "scope")
+    lineage = {"kind": "subagent", "parent_session_id": "parent", "parent_tool_call_id": "toolu_1",
+               "parent_result_record_id": "src_res", "agent_type": "Explore"}
+    call = SourceRecord("src_call", "claude", "parent", "tool_call", '{"name": "Agent"}', {"kind": "jsonl", "path": "/p", "line": 2},
+                        tool_call_id="toolu_1", recorded_at="2026-10-16T10:04:00Z")
+    result = SourceRecord("src_res", "claude", "parent", "tool_result", "Three call sites, all through post_review.",
+                          {"kind": "jsonl", "path": "/p", "line": 3}, tool_call_id="toolu_1", recorded_at="2026-10-16T10:06:00Z")
+    grep = SourceRecord("src_g", "claude", "agent-1", "tool_result", "src/review.py:3", {"kind": "jsonl", "path": "/a", "line": 2},
+                        recorded_at="2026-10-16T10:05:00Z", lineage=lineage)
+    said = SourceRecord("src_s", "claude", "agent-1", "assistant", "Three call sites.", {"kind": "jsonl", "path": "/a", "line": 3},
+                        recorded_at="2026-10-16T10:05:30Z", lineage=lineage)
+    fix = SourceRecord("src_fix", "claude", "parent", "tool_call", "edit review.py", {"kind": "jsonl", "path": "/p", "line": 4},
+                       recorded_at="2026-10-16T10:07:00Z")
+    pool = [call, result, grep, said, fix]
+    store.ingest(pool)
+
+    def ev(key, kind, status, record, at):
+        return {"id": key, "kind": kind, "status": status, "title": key, "summary": "", "actor": "assistant",
+                "basis": "tool_record", "session_ids": [record.session_id], "worktree_ids": [], "recorded_at": at,
+                "occurred_at": None, "evidence_ids": [f"e_{key}"]}
+    graph = empty_graph("scope")
+    graph["events"] = [ev("report", "outcome", "observed_success", result, result.recorded_at),
+                       ev("grep", "outcome", "observed_success", grep, grep.recorded_at),
+                       ev("concl", "outcome", "reported_complete", said, said.recorded_at),
+                       ev("fix", "action", "applied", fix, fix.recorded_at)]
+    graph["edges"] = [{"id": "l1", "from_event_id": "report", "to_event_id": "fix", "relation": "motivates", "basis": "explicit",
+                       "evidence_ids": ["e_report"], "rationale": "", "active": True},
+                      {"id": "l2", "from_event_id": "grep", "to_event_id": "concl", "relation": "follows", "basis": "inferred",
+                       "evidence_ids": ["e_grep"], "rationale": "", "active": True}]
+    records = dict(zip(("report", "grep", "concl", "fix"), (result, grep, said, fix)))
+    evidence = {f"e_{k}": {"id": f"e_{k}", "source_id": r.source_id, "start_line": 1, "end_line": 1, "quote": r.content,
+                           "source": r.metadata()} for k, r in records.items()}
+    published = store.publish(graph, [], {}, evidence, expected_version=0)
+    by_id = {e["id"]: e for e in published["events"]}
+    # The parent's copy of the report points at the sub-agent's last outcome; nothing else is marked or removed.
+    assert by_id["report"]["folded_into"] == "concl"
+    assert [k for k, e in by_id.items() if "folded_into" in e] == ["report"] and len(published["edges"]) == 2
+    view = folded_view(published)
+    assert [e["id"] for e in view["events"]] == ["grep", "concl", "fix"]
+    assert {(e["from_event_id"], e["to_event_id"]) for e in view["edges"]} == {("concl", "fix"), ("grep", "concl")}
+    assert next(e for e in view["events"] if e["id"] == "concl")["received_reports"] == [
+        {"id": "report", "title": "report", "status": "observed_success"}]
+    assert store.graph() == published  # the stored graph keeps both
+    # Before the sub-agent's own events are in the graph there is nothing to fold into.
+    alone = empty_graph("scope")
+    alone["events"] = [ev("report", "outcome", "observed_success", result, result.recorded_at)]
+    again = store.publish(alone, [], {}, {}, expected_version=1)
+    assert "folded_into" not in again["events"][0]

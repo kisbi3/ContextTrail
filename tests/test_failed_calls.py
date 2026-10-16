@@ -100,3 +100,27 @@ def test_a_users_goal_is_read_as_a_question_even_with_no_answer(tmp_path):
     # The assistant's own goal, or one resting on more than the person's words, is left as written.
     own = {**goal, "id": "tmp:o", "actor": "assistant", "kind": "goal", "status": "in_progress"}
     assert retype_answered_user_goals([own], [], {"src_q": record}) == []
+
+
+def test_a_sub_agents_instructions_are_not_a_persons_request():
+    from contexttrail.model import SourceRecord
+    from contexttrail.schema import drop_caller_instructions
+    told = SourceRecord("src_t", "claude", "agent-1", "user", "Find every call site.", {"kind": "jsonl", "path": "/a", "line": 1},
+                        lineage={"kind": "subagent", "parent_session_id": "parent", "agent_type": "Explore"})
+    typed = SourceRecord("src_p", "claude", "parent", "user", "Add the hook.", {"kind": "jsonl", "path": "/p", "line": 1})
+    found = SourceRecord("src_f", "claude", "agent-1", "assistant", "Three call sites.", {"kind": "jsonl", "path": "/a", "line": 2},
+                         lineage={"kind": "subagent", "parent_session_id": "parent", "agent_type": "Explore"})
+    pool = {r.source_id: r for r in (told, typed, found)}
+    def ev(key, record, actor):
+        return {"id": key, "kind": "question" if actor == "user" else "outcome", "actor": actor,
+                "evidence": [{"source_id": record.source_id, "start_line": 1, "end_line": 1, "quote": None}]}
+    output = {"event_candidates": [ev("tmp:p", typed, "user"), ev("tmp:t", told, "user"), ev("tmp:f", found, "assistant")],
+              "edge_candidates": [{"id": "tmp:e1", "from_event_id": "tmp:t", "to_event_id": "tmp:f", "relation": "answers"},
+                                  {"id": "tmp:e2", "from_event_id": "tmp:p", "to_event_id": "tmp:f", "relation": "motivates"}],
+              "existing_event_matches": [{"candidate_id": "tmp:t", "existing_event_id": "ev_x"}],
+              "open_items": [{"id": "tmp:o", "related_event_ids": ["tmp:t", "tmp:f"]}]}
+    # The parent's instructions to its sub-agent go, with what pointed at them; the person's message stays.
+    assert drop_caller_instructions(output, pool) == ["tmp:t"]
+    assert [e["id"] for e in output["event_candidates"]] == ["tmp:p", "tmp:f"]
+    assert [e["id"] for e in output["edge_candidates"]] == ["tmp:e2"]
+    assert output["existing_event_matches"] == [] and output["open_items"][0]["related_event_ids"] == ["tmp:f"]

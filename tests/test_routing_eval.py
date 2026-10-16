@@ -359,7 +359,8 @@ def test_fixture_cannot_enable_revision_path_reads():
 
 def test_eval_and_ops_cli(tmp_path, capsys):
     out = tmp_path/'eval'
-    assert main(['eval', '--runner', 'mock', '--output', str(out), '--workers', '2',
+    # The integrate call (and its model) is the full path's; workers side by side see no unit before them.
+    assert main(['eval', '--runner', 'mock', '--output', str(out), '--workers', '2', '--no-economy',
                  '--extract-model', 'small', '--integrate-model', 'strong']) == 0
     report = json.loads((out/'report.json').read_text())
     assert report['mode'] == 'synthetic_mock' and report['expectations']['failed'] == 0

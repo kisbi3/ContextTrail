@@ -65,9 +65,11 @@ def review_patch_answer(proposed: dict, answer: dict, candidates: dict | None = 
 class FixtureRunner:
     name, version, model, is_mock = "synthetic-fixture", "fixture-v1", None, True
 
-    def __init__(self):
+    def __init__(self, links_in_extraction: bool = False):
         self.calls = 0
         self.tasks = []
+        # With no integrate call to draw them (economy), the extraction proposes the story's links itself.
+        self.links_in_extraction = links_in_extraction
 
     def preflight(self):
         return {"runner": self.name, "live_model_test": False}
@@ -104,8 +106,21 @@ class FixtureRunner:
                     "recorded_at": record.get("recorded_at"), "occurred_at": None,
                     "evidence": [{"source_id": record["source_id"], "start_line": 1,
                                   "end_line": len(record["lines"]), "quote": text}]})
+            # The story's reason for the switch, from an event of this unit or one an earlier unit wrote (shown
+            # among the existing events), as a model does when no integrate call follows (economy).
+            edges = []
+            titles = {n: {story[n][2] for story in (CASES, CASES_EN)} for n in range(len(CASES))}
+            shown = data.get("existing_events", [])
+            for left, right, relation in STORY_LINKS if self.links_in_extraction else []:
+                earlier = next((e for e in [*shown, *candidates] if e.get("title") in titles[left]), None)
+                later = next((c for c in candidates if c["title"] in titles[right]), None)
+                if relation == "motivates" and earlier and later:
+                    edges.append({"id": f"tmp:link{left}-{right}", "from_event_id": earlier["id"], "to_event_id": later["id"],
+                                  "relation": relation, "basis": "explicit", "evidence": later["evidence"],
+                                  "rationale": tr("합성 fixture에 명시된 전환 이유", "The reason for the switch as stated in the synthetic fixture"),
+                                  "active": True})
             return {"status": "complete", "read_requests": [], "snapshot_id": data["snapshot_id"],
-                    "unit_id": data["unit_id"], "event_candidates": candidates, "edge_candidates": [],
+                    "unit_id": data["unit_id"], "event_candidates": candidates, "edge_candidates": edges,
                     "existing_event_matches": [], "open_items": [], "limitations": [], "unprocessed_record_ids": []}
         output = {"status": "complete", "read_requests": [], "snapshot_id": data["snapshot_id"],
                   "base_graph_version": data["base_graph_version"], "events_to_add": [], "events_to_update": [],

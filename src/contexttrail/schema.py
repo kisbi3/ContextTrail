@@ -600,6 +600,34 @@ def retype_answered_user_goals(events: list[dict], edges: list[dict],
     return changed
 
 
+CALLER_KINDS = ("subagent", "unattended")
+
+
+def drop_caller_instructions(output: dict, records: dict[str, SourceRecord]) -> list[str]:
+    """A user-role message a calling agent wrote is not the person's: the instructions a sub-agent got from its
+    parent, or the prompt of a run with no person at the terminal (`lineage.kind` subagent/unattended). An
+    `actor=user` event citing nothing but such messages is removed from an extraction, with its relations and
+    the open items' and matches' references to it; the delegation is drawn as the sub-agent's stack, and
+    `link_request_turns` hangs the sub-agent's work under the parent's message. Returns the removed IDs."""
+    dropped = set()
+    for event in output["event_candidates"]:
+        if event.get("actor") != "user":
+            continue
+        sources = [records.get(citation["source_id"]) for citation in event["evidence"]]
+        if sources and all(record is not None and record.role == "user"
+                           and (record.lineage or {}).get("kind") in CALLER_KINDS for record in sources):
+            dropped.add(event["id"])
+    if dropped:
+        output["event_candidates"] = [e for e in output["event_candidates"] if e["id"] not in dropped]
+        output["edge_candidates"] = [e for e in output["edge_candidates"]
+                                     if e["from_event_id"] not in dropped and e["to_event_id"] not in dropped]
+        output["existing_event_matches"] = [m for m in output["existing_event_matches"]
+                                            if m["candidate_id"] not in dropped]
+        for item in output["open_items"]:
+            item["related_event_ids"] = [i for i in item["related_event_ids"] if i not in dropped]
+    return sorted(dropped)
+
+
 def check_relation(edge: dict, events: dict[str, dict]) -> None:
     """Endpoint rules for relations whose meaning depends on what they connect."""
     source, target = events[edge["from_event_id"]], events[edge["to_event_id"]]
@@ -946,6 +974,8 @@ class EvidenceValidator:
             raise FlowError("an unfinished evidence-request reply cannot be used as the extraction result.")
         if output["unprocessed_record_ids"]:
             raise FlowError("unit not published because it still has unprocessed records.")
+        for event_id in drop_caller_instructions(output, self.records):
+            self.normalizations.append({"mode": "caller_instructions_not_user", "event": event_id})
         for event_id in retype_answered_user_goals(output["event_candidates"], output["edge_candidates"], self.records):
             self.normalizations.append({"mode": "user_goal_as_question", "event": event_id})
         # Quote, status and relation errors are reported together: there is only one repair round.
@@ -1021,6 +1051,7 @@ class EvidenceValidator:
         if (output["unit_id"] != unit_id or output["snapshot_id"] != snapshot_id or output["status"] != "complete"
                 or output["read_requests"] or output["unprocessed_record_ids"]):
             raise FlowError("extraction result cannot be salvaged.")
+        drop_caller_instructions(output, self.records)
         retype_answered_user_goals(output["event_candidates"], output["edge_candidates"], self.records)
         existing = {event["id"]: event for event in graph["events"]}
         kept: dict[str, dict] = {}
@@ -1433,6 +1464,7 @@ class EvidenceValidator:
         claim_errors: list[str] = []
         for event_id in retype_answered_user_goals(output["events_to_add"], output["edges_to_add"], self.records):
             self.normalizations.append({"mode": "user_goal_as_question", "event": event_id})
+        first_new = len(result["events"])
         for item in output["events_to_add"]:
             temp_id = item["id"]
             if not temp_id.startswith("tmp:") or temp_id in local_ids:
@@ -1448,6 +1480,10 @@ class EvidenceValidator:
             event.update(id=event_id, created_in_run=run_id, updated_in_run=run_id)
             result["events"].append(event)
             event_map[event_id] = event
+        # The list is the order the views number and draw: a unit's new events go in the order their records were
+        # written, whatever order the model listed them in (a stable sort; an event with no time keeps its place last).
+        result["events"][first_new:] = sorted(result["events"][first_new:],
+                                              key=lambda event: (not event.get("recorded_at"), event.get("recorded_at") or ""))
         updated = set()
         for update in output["events_to_update"]:
             event_id = update["id"]
@@ -1615,6 +1651,80 @@ def link_forks(graph: dict, source_of: Callable[[str], dict | None]) -> int:
                                "active": True, "origin": FORK_ORIGIN, "fork_point_at": info.get("point_at", "")})
         added += 1
     return added
+
+
+FOLDED = "folded_into"
+
+
+def fold_delegate_reports(graph: dict, source_of: Callable[[str], dict | None]) -> int:
+    """A parent's result that rests only on a delegation's own call and result (the report a sub-agent or a
+    called tool sent back) repeats what that agent's own events show. Such an outcome gets `folded_into`: the
+    called agent's last outcome (else its last event), once the called session has events. Display only: the
+    views draw the two as one box, the event and its relations stay in the graph. Recomputed at every publish;
+    a Codex sub-agent's records name no call, so its parent's results are left as they are. Returns the count."""
+    sources = {event["id"]: [s for s in (source_of(i) for i in event.get("evidence_ids", [])) if s]
+               for event in graph["events"]}
+    called: dict[tuple, list[dict]] = {}
+    for event in graph["events"]:
+        for source in sources[event["id"]]:
+            lineage = source.get("lineage") or {}
+            if lineage.get("kind") != "subagent" or not lineage.get("parent_session_id"):
+                continue
+            key = (lineage["parent_session_id"], lineage.get("parent_tool_call_id"), lineage.get("parent_result_record_id"))
+            if key[1] or key[2]:
+                called.setdefault(key, []).append(event)
+                break
+
+    def is_delegation(source: dict, key: tuple) -> bool:
+        session, call, result = key
+        return source.get("session_id") == session and (
+            bool(call) and source.get("tool_call_id") == call or bool(result) and source.get("source_id") == result)
+
+    folded = 0
+    for event in graph["events"]:
+        event.pop(FOLDED, None)
+        own = sources[event["id"]]
+        if event.get("kind") != "outcome" or not own or any(
+                (source.get("lineage") or {}).get("kind") == "subagent" for source in own):
+            continue
+        for key, events in called.items():
+            if all(is_delegation(source, key) for source in own):
+                outcomes = [e for e in events if e.get("kind") == "outcome"] or events
+                event[FOLDED] = max(outcomes, key=lambda e: e.get("recorded_at") or "")["id"]
+                folded += 1
+                break
+    return folded
+
+
+def folded_view(graph: dict) -> dict:
+    """The graph as the views draw it: an event folded into a called agent's event (`fold_delegate_reports`) is
+    left out, its relations move to that event (a loop or a repeat of a relation drawn already is dropped), and
+    the event keeps it under `received_reports` for its detail. The stored graph is unchanged."""
+    target = {e["id"]: e[FOLDED] for e in graph["events"] if e.get(FOLDED)}
+    present = {e["id"] for e in graph["events"]}
+    target = {key: value for key, value in target.items() if value in present and value not in target}
+    if not target:
+        return graph
+    view = dict(graph)
+    received: dict[str, list[dict]] = {}
+    for event in graph["events"]:
+        if event["id"] in target:
+            received.setdefault(target[event["id"]], []).append(
+                {"id": event["id"], "title": event["title"], "status": event.get("status")})
+    view["events"] = [{**event, "received_reports": received[event["id"]]} if event["id"] in received else event
+                      for event in graph["events"] if event["id"] not in target]
+    edges, seen = [], set()
+    for edge in graph["edges"]:
+        moved = {**edge, "from_event_id": target.get(edge["from_event_id"], edge["from_event_id"]),
+                 "to_event_id": target.get(edge["to_event_id"], edge["to_event_id"])}
+        triple = (moved["from_event_id"], moved["to_event_id"], moved["relation"])
+        if moved["from_event_id"] == moved["to_event_id"] or (edge["active"] and triple in seen):
+            continue
+        if edge["active"]:
+            seen.add(triple)
+        edges.append(moved if moved != edge else edge)
+    view["edges"] = edges
+    return view
 
 
 def fill_authoring(graph: dict, source_of: Callable[[str], dict | None]) -> None:

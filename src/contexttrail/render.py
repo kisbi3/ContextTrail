@@ -247,6 +247,9 @@ def event_detail(graph: dict, event_id: str, evidence: Callable[[str], dict | No
         lines.append((tr("에이전트: ", "agent: ") + agents_label(event), "dim"))
     if analysis_label(event):
         lines.append((tr("분석: ", "analysed by: ") + analysis_label(event), "dim"))
+    for report in event.get("received_reports") or []:
+        # The caller's own result for the same report, drawn as this box (`schema.folded_view`).
+        lines.append((tr("호출한 쪽이 받은 보고: ", "report as its caller received it: ") + clean(report["title"]), "dim"))
     lines += [("", ""), (tr("무슨 일이 있었나", "What happened"), "heading")]
     lines += [("  " + clean(part), "") for part in safe_text(event["summary"]).splitlines() if part.strip()]
     active = [edge for edge in graph["edges"] if edge["active"] and

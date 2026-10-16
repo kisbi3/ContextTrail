@@ -489,12 +489,16 @@ def _prefetch_next(state: StudioState, engine: Engine, store: Store, snapshot_id
     """Start extracting the next planned unit in the background, against the graph as it is now.
 
     Like a batch of workers, the next unit is extracted before this one is published; the
-    integration that follows sees the published graph. Runs only with one extract worker.
+    integration that follows sees the published graph. Runs only with one extract worker, and
+    not when no integrate call follows (`draft_only`, the economy default): then there is no call
+    to overlap, and the extraction is the only one that can link the next unit to this one's events,
+    so it has to see them published.
     """
     session = _cli_session(state)
     following = state["unit_index"] + 1
     budget = session.runners.budget
-    if (engine.config.extract_workers != 1 or following >= len(state["planned_units"])
+    if (engine.config.extract_workers != 1 or engine.config.integrate_output == "draft_only"
+            or following >= len(state["planned_units"])
             or session.cancel.is_set() or session.prefetch is not None
             or budget.maximum - budget.started < PREFETCH_MIN_CALLS or not session.runners.parallel_safe()):
         return

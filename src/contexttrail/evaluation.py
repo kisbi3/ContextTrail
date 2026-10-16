@@ -16,7 +16,7 @@ from .i18n import tr
 from .model import Snapshot, SourceRecord
 from .render import export_text
 from .runners import CLIRunner
-from .schema import KINDS, RELATIONS, STATUSES
+from .schema import KINDS, RELATIONS, STATUSES, folded_view
 from .store import Store
 from .util import FlowError, digest, dumps, ident, private_dir
 
@@ -443,7 +443,9 @@ def run_eval(fixture: str, output: Path, runner_name: str, config: AnalysisConfi
     engine = Engine(scope, store, config)
     engine.scan = lambda: snapshot
     engine.review_capture = EvalCallRecorder(output)
-    factory = FixtureRunner if runner_name == 'mock' else lambda: CLIRunner(runner_name, model=model, timeout=timeout)
+    drafts = config.integrate_output == 'draft_only'
+    factory = ((lambda: FixtureRunner(links_in_extraction=drafts)) if runner_name == 'mock'
+               else lambda: CLIRunner(runner_name, model=model, timeout=timeout))
     first = engine.analyze(factory, update=progress)
     calls = store.llm_calls(first['run_id'])
     # A failed live trial must not silently be re-run and consume another budget.
@@ -461,7 +463,7 @@ def run_eval(fixture: str, output: Path, runner_name: str, config: AnalysisConfi
               'config': {k: str(v) if isinstance(v, Path) else v for k, v in dataclasses.asdict(config).items()},
               'first_run': {k: v for k, v in first.items() if k != 'graph'},
               'noop_check': {'status': second['status'], 'runner_calls': second['runner_calls']} if second else None,
-              'ops': summarize_calls(calls), 'semantic_review': review_summary(graph), 'expectations': check_expectations(graph, evidence, data.get('expectations')),
+              'ops': summarize_calls(calls), 'semantic_review': review_summary(graph), 'expectations': check_expectations(folded_view(graph), evidence, data.get('expectations')),
               'style': {**style_checks(graph, evidence, snapshot.records), 'output_language': config.output_language},
               'fixture_integrity': integrity,
               'limitations': [tr('유효한 JSON/인용/기대 사건 검사만으로 의미적 정답을 보장하지 않습니다.',

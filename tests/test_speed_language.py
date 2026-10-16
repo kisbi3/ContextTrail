@@ -80,6 +80,20 @@ def test_the_next_unit_is_extracted_while_this_one_is_integrated(laboratory):
     assert not any(t.name.startswith("pf-prefetch") and t.is_alive() for t in threading.enumerate())
 
 
+def test_with_no_integrate_call_each_extraction_sees_the_units_published_before_it(laboratory):
+    _, store, engine, records, make = laboratory
+    sessions(records, make, 3)
+    engine.config.integrate_output = "draft_only"
+    shown = []
+    class Watched(FixtureRunner):
+        def run(self, task, schema, cancel):
+            shown.append(len(task["data"]["existing_events"]))
+            return super().run(task, schema, cancel)
+    assert engine.analyze(Watched)["status"] == "complete"
+    # No prefetch: the second and third extractions are built after the units before them were published.
+    assert shown[0] == 0 and all(count > 0 for count in shown[1:]) and len(shown) == 3
+
+
 def test_a_shared_runner_or_a_nearly_spent_budget_keeps_units_in_order(laboratory):
     _, store, engine, records, make = laboratory
     sessions(records, make, 3)

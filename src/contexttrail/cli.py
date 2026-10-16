@@ -32,7 +32,7 @@ from .i18n import tr
 from .render import event_detail, export_text, terminal_graph
 from .runners import CLIRunner
 from .runners.cli_runner import EFFORTS
-from .schema import STATUSES
+from .schema import STATUSES, folded_view
 from .store import Store
 from .ui import GraphApp, TerminalApp, legend, token_usage_label
 from .util import FlowError, dumps, safe_text, within
@@ -187,6 +187,10 @@ def parser() -> argparse.ArgumentParser:
     # Fewer records per unit splits a fixture so later units integrate against an existing graph.
     sub.add_argument("--unit-records", type=int, help=argparse.SUPPRESS)
     sub.add_argument("--light", action="store_true", help=tr("경량 분석(analyze --light와 같음)", "Light analysis (as analyze --light)"))
+    sub.add_argument("--economy", action=argparse.BooleanOptionalAction, default=None,
+                     help=tr("기본값처럼 추출 호출만(기본). --no-economy는 통합·재검토 호출까지 실행",
+                             "Extraction calls only, as the default analysis (default). --no-economy also runs the "
+                             "integrate and review calls"))
     langsmith_options(sub)
     route_options(sub)
     sub = commands.add_parser("review", help=tr("저장된 eval의 모델 후보·인용·검증 결과를 HTML로 열람. AI 호출 없음",
@@ -335,6 +339,7 @@ def _graph(args) -> int:
         graph = store.graph()
         title = scope.folder.name
         lookup = store.evidence
+    graph = folded_view(graph)
     if sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get("TERM", "dumb") != "dumb":
         GraphApp(graph, lookup, title=safe_text(title, multiline=False), mouse=not args.no_mouse).run()
         return 0
@@ -407,16 +412,21 @@ def _options(args, store: Store) -> AnalysisConfig:
     if options.get("light"):
         values["analysis_mode"] = "light"
     if options.get("economy", True) or options.get("light"):
-        # Extraction alone (the default since 2026-10-16; `--no-economy` restores the integrate and review calls):
-        # the code-built draft is published, and the review that would patch it is not called.
-        values["semantic_review"] = False
-        values.setdefault("integrate_output", "draft_only")
-        # One evidence round: every round resends the whole request, and a new Codex session caches none of it.
-        values.setdefault("read_rounds", 1)
+        _economy(values)
     values["langsmith_enabled"] = getattr(args, "langsmith_enabled", False)
     values["langsmith_include_content"] = getattr(args, "langsmith_include_content", False)
     values["langsmith_project"] = getattr(args, "langsmith_project", None)
     return AnalysisConfig(**values)
+
+
+def _economy(values: dict) -> None:
+    """Extraction alone (the default since 2026-10-16, for `analyze` and `eval`; `--no-economy` restores the
+    integrate and review calls): the code-built draft is published, and the review that would patch it is not
+    called. An integrate output named on the command line is kept."""
+    values["semantic_review"] = False
+    values.setdefault("integrate_output", "draft_only")
+    # One evidence round: every round resends the whole request, and a new Codex session caches none of it.
+    values.setdefault("read_rounds", 1)
 
 
 def _session(value: str | None) -> str | None:
@@ -741,6 +751,8 @@ def main(argv: list[str] | None = None) -> int:
             options.setdefault("max_calls", 20)
             if getattr(args, "light", False):
                 options.update(analysis_mode="light", semantic_review=False, integrate_output="draft_only")
+            elif args.economy is not False:
+                _economy(options)  # what `analyze` runs by default, so the numbers are the default's
             if options.get("output_language") == "auto":
                 options.pop("output_language")
             if args.preview:

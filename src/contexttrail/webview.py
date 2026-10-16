@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 from .agent_view import reference
 from .i18n import language, tr
 from .render import RELATION, evidence_excerpt, mermaid, status_labels, svg
+from .schema import folded_view
 from .freshness import check_from_store
 from .freshness import summary as freshness_summary
 from .store import Store
@@ -128,7 +129,7 @@ class LocalViewer:
                 if not self.authorized():
                     return self.send_data(401, {"error": "access token required"})
                 try:
-                    graph = self.graph()
+                    graph = folded_view(self.graph())
                     if path == "/graph":
                         refreshing = bool(viewer.refresh_thread and viewer.refresh_thread.is_alive())
                         return self.send_data(200, {"graph": graph, "last_check": viewer.store.get_meta("last_check", {}),

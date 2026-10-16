@@ -359,3 +359,13 @@ def test_english_screen_follows_the_language_flag_env_and_saved_project_language
     monkeypatch.setenv("LC_ALL", "en_US.UTF-8")
     assert main(['view', str(folder), '--no-tui', '--language', 'auto']) == 0
     assert '이번 실행의 Runner 호출' in capsys.readouterr().out  # auto is no choice: the saved Korean shows
+
+
+def test_eval_runs_the_default_economy_analysis_unless_told_otherwise(tmp_path, capsys):
+    from contexttrail.cli import main
+    main(["eval", "--fixture", "demo", "--runner", "mock", "--output", str(tmp_path / "default")])
+    config = json.loads((tmp_path / "default" / "report.json").read_text())["config"]
+    assert (config["integrate_output"], config["semantic_review"], config["read_rounds"]) == ("draft_only", False, 1)
+    main(["eval", "--fixture", "demo", "--runner", "mock", "--no-economy", "--output", str(tmp_path / "full")])
+    config = json.loads((tmp_path / "full" / "report.json").read_text())["config"]
+    assert config["integrate_output"] != "draft_only" and config["semantic_review"] is True
