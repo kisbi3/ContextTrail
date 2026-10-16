@@ -223,3 +223,31 @@ def test_a_parents_copy_of_a_sub_agents_report_is_drawn_as_the_sub_agents_box(tm
     alone["events"] = [ev("report", "outcome", "observed_success", result, result.recorded_at)]
     again = store.publish(alone, [], {}, {}, expected_version=1)
     assert "folded_into" not in again["events"][0]
+
+
+def test_graph_versions_are_kept_compressed_and_older_text_ones_are_packed_once(tmp_path):
+    import sqlite3
+    import pytest
+    from contexttrail.model import empty_graph
+    from contexttrail.util import FlowError, dumps, now
+    store = Store(tmp_path / "state", "scope")
+    graph = empty_graph("scope")
+    graph["events"] = [{"id": "a", "kind": "question", "status": "asked", "title": "x" * 500, "summary": "", "actor": "user",
+                        "basis": "explicit_statement", "session_ids": [], "worktree_ids": [], "recorded_at": None,
+                        "occurred_at": None, "evidence_ids": []}]
+    published = store.publish(graph, [], {}, {}, expected_version=0)
+    with sqlite3.connect(store.path) as db:
+        kind, size = db.execute("SELECT typeof(graph), length(graph) FROM graph_versions").fetchone()
+        assert kind == "blob" and size < len(dumps(published)) / 3
+        # A state written by 0.1.0a7: text rows, schema 1.
+        db.execute("INSERT INTO graph_versions VALUES (?,?,?)", (2, dumps({**published, "version": 2}), now()))
+        db.execute("PRAGMA user_version=1")
+    assert store.graph(2)["events"] == published["events"]  # still readable before it is packed
+    reopened = Store(tmp_path / "state", "scope")
+    with sqlite3.connect(store.path) as db:
+        assert [row[0] for row in db.execute("SELECT typeof(graph) FROM graph_versions")] == ["blob", "blob"]
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        db.execute("PRAGMA user_version=3")
+    assert reopened.graph(1) == published and reopened.graph()["version"] == 2
+    with pytest.raises(FlowError, match="Unsupported DB schema: 3|지원하지 않는 DB schema: 3"):
+        Store(tmp_path / "state", "scope")

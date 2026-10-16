@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import fcntl
 import json
+import zlib
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -45,6 +46,22 @@ def in_journal(session_id: str | None, lineage: dict | None, recorded_at: str | 
     return since is None or stamp is None or stamp >= since
 
 
+# Schema 2: graph versions are stored zlib-compressed behind GRAPH_MARK. A version is a whole graph, and the
+# views and pasted references (`contexttrail:ev_…@vN`) read old ones, so they are kept, only smaller (about 5x).
+GRAPH_SCHEMA = 2
+GRAPH_MARK = b"zlib1:"
+
+
+def pack_text(text: str) -> bytes:
+    return GRAPH_MARK + zlib.compress(text.encode("utf-8"), 6)
+
+
+def unpack_graph(value: str | bytes) -> dict:
+    if isinstance(value, bytes) and value.startswith(GRAPH_MARK):
+        return json.loads(zlib.decompress(value[len(GRAPH_MARK):]).decode("utf-8"))
+    return json.loads(value)
+
+
 class Store:
     """Short transactions only. No DB write transaction is held across an AI call."""
 
@@ -59,7 +76,7 @@ class Store:
         os.chmod(self.path, 0o600)
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, GRAPH_SCHEMA):
                 raise FlowError(tr(f"지원하지 않는 DB schema: {version}", f"Unsupported DB schema: {version}"))
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS project_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -81,8 +98,10 @@ class Store:
                     attempt INTEGER NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL,
                     metadata TEXT NOT NULL, details TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS idx_llm_calls_run ON llm_calls(run_id, started_at);
-                PRAGMA user_version=1;
             """)
+            if version < GRAPH_SCHEMA:
+                self._pack_old_graphs(db)
+            db.execute(f"PRAGMA user_version={GRAPH_SCHEMA}")
             # WAL lets the screen and the browser keep reading while an analysis writes
             # (a rollback journal locks readers out for the whole of a large ingest).
             # State lives on local disk only (docs/SPEC.md), where WAL is supported.
@@ -92,6 +111,18 @@ class Store:
                 raise FlowError(tr("저장된 프로젝트 scope와 요청 scope가 일치하지 않습니다.", "The saved project scope does not match the requested scope."))
             db.execute("INSERT OR IGNORE INTO project_meta VALUES ('scope_id', ?)", (dumps(scope_id),))
             db.commit()
+
+    @staticmethod
+    def _pack_old_graphs(db: sqlite3.Connection) -> None:
+        """Schema 2 keeps each graph version compressed (`pack_graph`); versions written as text before are packed
+        once, here, one row at a time. The pages they free are reused by later writes (no VACUUM, which would
+        rewrite the whole file under readers)."""
+        for (version,) in db.execute("SELECT version FROM graph_versions WHERE typeof(graph)='text'").fetchall():
+            # Another process opening the same state may have packed it meanwhile.
+            row = db.execute("SELECT graph FROM graph_versions WHERE version=? AND typeof(graph)='text'", (version,)).fetchone()
+            if row:
+                db.execute("UPDATE graph_versions SET graph=? WHERE version=?", (pack_text(row[0]), version))
+        db.commit()
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -135,7 +166,7 @@ class Store:
                 row = db.execute("SELECT graph FROM graph_versions WHERE version=?", (version,)).fetchone()
             if version is not None and row is None:
                 raise FlowError(tr("요청한 그래프 버전이 없습니다.", "The requested graph version does not exist."))
-            return json.loads(row[0]) if row else empty_graph(self.scope_id)
+            return unpack_graph(row[0]) if row else empty_graph(self.scope_id)
 
     def sources(self) -> dict[str, dict]:
         with self.connection() as db:
@@ -394,7 +425,7 @@ class Store:
                 fill_authoring(graph, source_of)
                 link_forks(graph, source_of)
                 fold_delegate_reports(graph, source_of)
-                db.execute("INSERT INTO graph_versions VALUES (?,?,?)", (graph["version"], dumps(graph), now()))
+                db.execute("INSERT INTO graph_versions VALUES (?,?,?)", (graph["version"], pack_text(dumps(graph)), now()))
                 for unit_id in unit_ids:
                     db.execute("UPDATE work_units SET status='integrated',updated_at=? WHERE id=?", (now(), unit_id))
                 for source_id, content_hash in processed.items():
