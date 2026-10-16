@@ -2764,7 +2764,7 @@ class Engine:
         self.held_back = set()
         if not failures:
             return plans
-        noted, since = self.store.journaled_sessions(), self.store.journal_since()
+        noted, since, tails = self.store.journaled_sessions(), self.store.journal_since(), self.store.journal_tails()
         kept, held = [], []
         for unit in plans:
             entry = failures.get(unit["id"])
@@ -2773,7 +2773,7 @@ class Engine:
                 continue
             records = [pool[i] for i in unit["sources"] if i in pool]
             if not unit["id"].startswith(AUDIT_PREFIX) and records and all(
-                    in_journal(r.session_id, r.lineage, r.recorded_at, noted, since) for r in records):
+                    in_journal(r.session_id, r.lineage, r.recorded_at, noted, since, tails) for r in records):
                 if repair:
                     self.store.save_unit(unit["id"], unit["sources"], unit["dependencies"], "superseded")
                     self.store.clear_unit_failure(unit["id"])
@@ -2797,14 +2797,14 @@ class Engine:
         Returns the units, the records still to audit and no missing sources. `repair` is unused: nothing
         in the ledger needs correcting."""
         pool = {r.source_id: r for r in snapshot.records}
-        noted, since = self.store.journaled_sessions(), self.store.journal_since()
+        noted, since, tails = self.store.journaled_sessions(), self.store.journal_since(), self.store.journal_tails()
         stored = self.store.units()
         covered = {i for unit in stored if unit["status"] == "integrated" for i in unit["sources"]}
 
         def of_noted_session(record: SourceRecord) -> bool:
             # A noted session's records from before notes were on are ordinary analysis, not an audit.
             return record.provider != "git" and in_journal(record.session_id, record.lineage, record.recorded_at,
-                                                           noted, since)
+                                                           noted, since, tails)
         family = None
         if self.config.session:
             family = session_family(snapshot.records, self.config.session)

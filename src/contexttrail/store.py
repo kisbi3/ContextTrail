@@ -6,6 +6,7 @@ import json
 import zlib
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,11 @@ _SQL_VARIABLES = 900
 
 JOURNAL_KEY = "journal_sessions"
 JOURNAL_SETTINGS_KEY = "journal"  # journal.SETTINGS_KEY: {"enabled_at", "since"}
+JOURNAL_ACTIVITY_KEY = "journal_activity"  # journal.ACTIVITY_KEY: per session "noted_at", "reminded_at", …
+# Per noted session: [from, to], the records after its last note, given back to analysis once the session went
+# quiet (`TAIL_IDLE_SECONDS` after its last record) with no note for them.
+JOURNAL_TAILS_KEY = "journal_tails"
+TAIL_IDLE_SECONDS = 3600
 FAILURES_KEY = "unit_failures"
 
 
@@ -36,13 +42,19 @@ def _timestamp(value: str | None) -> float | None:
 
 
 def in_journal(session_id: str | None, lineage: dict | None, recorded_at: str | None,
-               sessions: dict | set, since: float | None) -> bool:
+               sessions: dict | set, since: float | None, tails: dict | None = None) -> bool:
     """Whether notes account for a record: it belongs to a noted session (or one of its sub-agents) and was
-    written once notes were on (`since`). A noted session's older records stay with analysis; a record with
-    no time counts as noted."""
-    if session_id not in sessions and (lineage or {}).get("parent_session_id") not in sessions:
+    written once notes were on (`since`). A noted session's older records stay with analysis, and so do the
+    records after its last note once it went quiet (`tails`, `Store.journal_tails`); a record with no time
+    counts as noted."""
+    owner = session_id if session_id in sessions else (lineage or {}).get("parent_session_id")
+    if owner not in sessions:
         return False
     stamp = _timestamp(recorded_at)
+    if stamp is not None and tails and owner in tails:
+        start, end = tails[owner]
+        if start < stamp <= end:
+            return False
     return since is None or stamp is None or stamp >= since
 
 
@@ -278,7 +290,44 @@ class Store:
                   and (t := _timestamp(event.get("recorded_at"))) is not None]
         return min(times) if times else None
 
-    def acknowledge_journaled(self, records: list[SourceRecord]) -> int:
+    def journal_tails(self) -> dict[str, tuple[float, float]]:
+        """The stretch of each noted session given back to analysis (`acknowledge_journaled`), as timestamps."""
+        found = {}
+        for session, (start, end) in (self.get_meta(JOURNAL_TAILS_KEY, {}) or {}).items():
+            if (a := _timestamp(start)) is not None and (b := _timestamp(end)) is not None:
+                found[session] = (a, b)
+        return found
+
+    def _find_tails(self, records: list[SourceRecord], sessions: dict, moment: float) -> dict[str, tuple[float, float]]:
+        """A noted session that went quiet with records after its last note: those records are analysis's.
+        With the end-of-turn reminder sent only once work piles up, a session may end with work no note wrote."""
+        stored = dict(self.get_meta(JOURNAL_TAILS_KEY, {}) or {})
+        activity = self.get_meta(JOURNAL_ACTIVITY_KEY, {}) or {}
+        last: dict[str, tuple[float, str]] = {}
+        for r in records:
+            owner = r.session_id if r.session_id in sessions else (r.lineage or {}).get("parent_session_id")
+            stamp = _timestamp(r.recorded_at)
+            if owner in sessions and stamp is not None and stamp > last.get(owner, (0.0, ""))[0]:
+                last[owner] = (stamp, r.recorded_at)
+        changed = False
+        for session, (stamp, written) in last.items():
+            noted = (activity.get(session) or {}).get("noted_at")
+            start = _timestamp(noted)
+            previous = stored.get(session)
+            if previous and (_timestamp(previous[1]) or 0) >= stamp:
+                continue  # given back already, nothing new since
+            if start is None or stamp <= start or moment - stamp < TAIL_IDLE_SECONDS:
+                continue
+            # A later stretch after a resumed session starts at the old stretch's end when no note came between.
+            begin = previous[0] if previous and (_timestamp(previous[1]) or 0) > start else noted
+            stored[session] = [begin, written]
+            changed = True
+        if changed:
+            self.set_meta(JOURNAL_TAILS_KEY, stored)
+        return {s: (a, b) for s, (x, y) in stored.items()
+                if (a := _timestamp(x)) is not None and (b := _timestamp(y)) is not None}
+
+    def acknowledge_journaled(self, records: list[SourceRecord], moment: float | None = None) -> int:
         """Mark the records notes account for as processed (`in_journal`), so analysis does not write the same
         work a second time; a sub-agent session counts with its parent. A noted session's records from before
         notes were on stay with analysis, and are given back to it when an earlier version (or a note) marked
@@ -287,9 +336,10 @@ class Store:
         if not sessions:
             return 0
         since = self.journal_since()
+        tails = self._find_tails(records, sessions, time.time() if moment is None else moment)
         selected, earlier = [], []
         for r in records:
-            if in_journal(r.session_id, r.lineage, r.recorded_at, sessions, since):
+            if in_journal(r.session_id, r.lineage, r.recorded_at, sessions, since, tails):
                 selected.append(r)
             elif r.session_id in sessions or (r.lineage or {}).get("parent_session_id") in sessions:
                 earlier.append(r)

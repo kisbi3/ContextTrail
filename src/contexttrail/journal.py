@@ -75,10 +75,10 @@ ACTIVITY_KEY = "journal_activity"   # per session: when it last noted and when t
 WORK_HINTS = {"edit", "commit", "test", "vcs"}
 REFUSED_REASON = ("ContextTrail stored the notes queued in this turn except these, which failed its checks; write them "
                   "again with `contexttrail note`, fixed as the reason says, or leave them out:")
-REMINDER = ("ContextTrail notes are on for this project, and this turn changed files or ran checks without a note. "
-            "Before finishing, use the ContextTrail note skill (contexttrail-note, or contexttrail:note from the plugin): record the decisions, changes and observed results of "
-            "this turn with `contexttrail note` (one call per event, quoting the tool output or message exactly). "
-            "If nothing in this turn is worth recording, just finish.")
+REMINDER = ("ContextTrail notes are on for this project, and the work since the last note changed files or ran checks "
+            "without a note. Before finishing, use the ContextTrail note skill (contexttrail-note, or contexttrail:note from "
+            "the plugin): record the decisions, changes and observed results since the last note with `contexttrail note` "
+            "(one call per event, quoting the tool output or message exactly). If none of it is worth recording, just finish.")
 # The reminder names what it is about: up to this many calls (kind and a short target, never the output), so the
 # agent sees which edits and checks have no note instead of searching its turn for them.
 REMINDER_CALLS = 5
@@ -649,16 +649,19 @@ def unnoted_work(records: list[SourceRecord], since: float,
     """Edits (also through the shell), commits, tests and Git changes recorded after `since`,
     the note calls themselves aside. With `inside`, an edit of an absolute path outside the project and a
     shell line whose every write lands outside it are not the project's work (`writes_files`)."""
-    def work(record: SourceRecord) -> bool:
-        _, target, hint = step_hint(record)
-        if hint == "vcs":
-            return _changes_git_state(_command_text(record.content.partition("\n")[2], "; "))
-        if hint == "edit" and inside is not None and target.startswith("/") and not inside(target):
-            return False
-        # Lines kept apart ("; "), so a heredoc's body can be told from the command that writes it.
-        return hint in WORK_HINTS or (hint == "run" and writes_files(_command_text(record.content.partition("\n")[2], "; "), inside))
     return [record for record in quotable(records) if record.role == "tool_call"
-            and _seconds(record.recorded_at) > since and work(record)]
+            and _seconds(record.recorded_at) > since and _is_work(record, inside)]
+
+
+def _is_work(record: SourceRecord, inside: Callable[[str], bool] | None = None) -> bool:
+    """A tool call worth a note: an edit, commit, test or Git change, or a shell line that writes a file."""
+    _, target, hint = step_hint(record)
+    if hint == "vcs":
+        return _changes_git_state(_command_text(record.content.partition("\n")[2], "; "))
+    if hint == "edit" and inside is not None and target.startswith("/") and not inside(target):
+        return False
+    # Lines kept apart ("; "), so a heredoc's body can be told from the command that writes it.
+    return hint in WORK_HINTS or (hint == "run" and writes_files(_command_text(record.content.partition("\n")[2], "; "), inside))
 
 
 def describe_work(record: SourceRecord) -> str:
@@ -671,12 +674,16 @@ def describe_work(record: SourceRecord) -> str:
 
 
 def reminder_text(work: list[SourceRecord]) -> str:
+    return reminder_lines([describe_work(record) for record in work])
+
+
+def reminder_lines(described: list[str]) -> str:
     """`REMINDER`, followed by the most recent distinct calls without a note (at most `REMINDER_CALLS`, oldest
     first) and how many more there were. The first sentence is unchanged: `model.HARNESS_TEXT` keeps the
     reminder from being taken for a person's request by that wording."""
-    calls = list(dict.fromkeys(describe_work(record) for record in work))
+    calls = list(dict.fromkeys(described))
     shown = calls[-REMINDER_CALLS:]
-    lines = [REMINDER, "", "Calls in this turn without a note:", *(f"- {call}" for call in shown)]
+    lines = [REMINDER, "", "Calls since the last note:", *(f"- {call}" for call in shown)]
     if len(calls) > len(shown):
         lines.append(f"- … and {len(calls) - len(shown)} more earlier")
     return "\n".join(lines)
@@ -740,14 +747,106 @@ def _remind(scope: Scope, store: Store, payload: dict, session_id: str, **homes:
     activity = (store.get_meta(ACTIVITY_KEY, {}) or {}).get(session_id, {})
     # A note still waiting in the queue (refused while an analysis ran) counts as written.
     waiting = [_seconds(item.get("queued_at")) for item in queued(scope, session_id)]
+    # Records analysis took back after the session went quiet (`Store.journal_tails`) are not the agent's to note.
+    given_back = store.journal_tails().get(session_id, (0.0, 0.0))[1]
     since = max(_seconds(activity.get("noted_at")), _seconds(activity.get("reminded_at")),
-                _seconds((store.get_meta(SETTINGS_KEY) or {}).get("enabled_at")), *waiting)
-    work = unnoted_work(session_records(scope, store, session_id, **homes), since,
-                        inside=lambda path: scope.worktree_for(path) is not None)
-    if not work:
+                _seconds((store.get_meta(SETTINGS_KEY) or {}).get("enabled_at")), *waiting, given_back)
+    inside = lambda path: scope.worktree_for(path) is not None  # noqa: E731
+    found = _work_since(scope, store, payload, session_id, since, inside, **homes)
+    if found is None:  # no transcript file to read new lines of (opencode): the whole session, parsed
+        records = session_records(scope, store, session_id, **homes)
+        work = unnoted_work(records, since, inside)
+        found = ([_work_item(r) for r in work], max((_seconds(r.recorded_at) for r in records), default=0.0))
+    items, latest = found
+    if not due(items, latest):
         return None
-    _mark(store, session_id, "reminded_at", max(record.recorded_at for record in work))
-    return {"decision": "block", "reason": reminder_text(work)}
+    _mark(store, session_id, "reminded_at", max(item["at"] for item in items))
+    return {"decision": "block", "reason": reminder_lines([item["call"] for item in items])}
+
+
+# The reminder waits until unnoted work piles up: this many calls, or this long after the first of them, or a
+# commit (a natural point to write down what it holds). A session that ends below that gives the rest to
+# analysis once it is quiet (`Store.journal_tails`).
+REMIND_CALLS = 10
+REMIND_AFTER_SECONDS = 30 * 60
+
+
+def due(items: list[dict], latest: float) -> bool:
+    """Whether unnoted work (`_work_item`s, oldest first) is worth sending the agent back for now."""
+    if not items:
+        return False
+    return (len(items) >= REMIND_CALLS or any(item["commit"] for item in items)
+            or latest - items[0]["at"] >= REMIND_AFTER_SECONDS)
+
+
+def _work_item(record: SourceRecord) -> dict[str, Any]:
+    return {"at": _seconds(record.recorded_at), "call": describe_work(record), "commit": step_hint(record)[2] == "commit"}
+
+
+SCAN_KEY = "scan"  # per session in ACTIVITY_KEY: where the hook stopped reading its transcript, and what it found
+SCAN_ITEMS = 200
+
+
+def _work_since(scope: Scope, store: Store, payload: dict, session_id: str, since: float,
+                inside: Callable[[str], bool], **homes: Path | None) -> tuple[list[dict], float] | None:
+    """The unnoted work after `since` and the time of the session's newest line, reading only the lines the
+    transcript gained since the last hook (`SCAN_KEY`); the whole file when it is new to the hook, was
+    replaced or shrank. None when there is no JSONL transcript (an opencode session)."""
+    path = payload.get("transcript_path")
+    path = Path(path) if isinstance(path, str) and path else None
+    if path is None or not path.is_file():
+        codex, claude, _ = source_homes(homes.get("codex_home"), homes.get("claude_home"), homes.get("opencode_home"))
+        path = next((p for p, _ in jsonl_files(codex, claude) if session_id in p.name and "subagents" not in p.parts), None)
+    if path is None:
+        return None
+    activity = store.get_meta(ACTIVITY_KEY, {}) or {}
+    entry = activity.setdefault(session_id, {})
+    state = entry.get(SCAN_KEY) or {}
+    size = path.stat().st_size
+    if state.get("path") != str(path) or size < state.get("offset", 0):
+        state = {"path": str(path), "offset": 0, "items": [], "latest": 0.0}
+    with path.open("rb") as stream:
+        stream.seek(state["offset"])
+        data = stream.read(size - state["offset"])
+    complete = data.rfind(b"\n") + 1  # a line still being written is read next time
+    items, latest = list(state["items"]), state["latest"]
+    for raw in data[:complete].splitlines():
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        at = _seconds(row.get("timestamp"))
+        latest = max(latest, at)
+        for record in _calls_in_row(row, session_id):
+            if not runs_note(record) and _is_work(record, inside):
+                items.append(_work_item(record))
+    items = [item for item in items if item["at"] > since][-SCAN_ITEMS:]
+    entry[SCAN_KEY] = {"path": str(path), "offset": state["offset"] + complete, "items": items, "latest": latest}
+    store.set_meta(ACTIVITY_KEY, activity)
+    return items, latest
+
+
+def _calls_in_row(row: dict, session_id: str) -> list[SourceRecord]:
+    """The tool calls of one transcript line, written as the parsers write them (`Tool: name` and the
+    arguments), enough for `step_hint`; only what the hook needs, not a parse of the session."""
+    stamp = row.get("timestamp") if isinstance(row.get("timestamp"), str) else None
+    found = []
+    message = row.get("message") if isinstance(row.get("message"), dict) else {}
+    if row.get("type") == "assistant" and isinstance(message.get("content"), list):  # Claude Code
+        for block in message["content"]:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                params = block.get("input", {})
+                body = json.dumps(params, ensure_ascii=False, sort_keys=True) if isinstance(params, dict) else str(params)
+                found.append(f"Tool: {block.get('name', 'unknown')}\n{body}")
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    if row.get("type") == "response_item" and payload.get("type") in {"function_call", "custom_tool_call"}:  # Codex
+        arguments = payload.get("arguments", payload.get("input", ""))
+        body = arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)
+        found.append(f"Tool: {payload.get('name') or 'unknown'}\n{body}")
+    cwd = row.get("cwd") if isinstance(row.get("cwd"), str) else None  # an edited path is named relative to it
+    return [SourceRecord("hook", "", session_id, "tool_call", text, {}, recorded_at=stamp, cwd=cwd) for text in found]
 
 
 # How a transcript says no person is at the terminal: Codex `exec` (session_meta `originator`/`source`) and Claude

@@ -13,6 +13,12 @@ from contexttrail.util import FlowError, dumps
 SESSION = "sess-note-1"
 
 
+@pytest.fixture(autouse=True)
+def remind_at_once(monkeypatch):
+    """These tests are about what a reminder says and when it repeats; how much work it waits for is tested below."""
+    monkeypatch.setattr(journal, "REMIND_CALLS", 1)
+
+
 def row(folder: Path, n: int, kind: str, content: list[dict]) -> dict:
     return {"type": kind, "uuid": f"u{n}", "parentUuid": f"u{n - 1}" if n else None, "sessionId": SESSION,
             "cwd": str(folder), "timestamp": f"2026-10-07T10:{n:02d}:00Z", "message": {"content": content}}
@@ -155,10 +161,13 @@ def test_the_cli_writes_and_lists_notes_of_the_current_session(project, monkeypa
     assert main(["note", str(folder), "--kind", "decision", "--title", "x", "--quote", "not anywhere at all"]) == 1
 
 
-def test_analysis_leaves_a_noted_session_to_the_agent(project, tmp_path):
+def test_analysis_leaves_a_noted_session_to_the_agent(project, tmp_path, monkeypatch):
+    from contexttrail import store as store_module
     from contexttrail.analysis import AnalysisConfig, Engine
     from contexttrail.demo import FixtureRunner
     from contexttrail.freshness import check
+    # The session is still going (the synthetic records are old; a quiet session gives its tail back, below).
+    monkeypatch.setattr(store_module, "TAIL_IDLE_SECONDS", 10 ** 12)
     folder, scope, store = project
     homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
     other = homes["claude_home"] / "projects" / "app" / "other-session.jsonl"
@@ -585,3 +594,61 @@ def test_writes_outside_the_project_are_not_work_to_note():
                     "python3 - <<'EOF'\nPath('a').write_text('x')\nEOF", "git apply /tmp/p.diff"]:
         assert journal.unnoted_work([call(command)], 0.0, inside), command
     assert journal.unnoted_work([call("/work/app/src/a.py", "Edit")], 0.0, inside)
+
+
+def test_the_records_after_the_last_note_go_back_to_analysis_once_the_session_is_quiet(project, tmp_path):
+    from contexttrail.analysis import AnalysisConfig, Engine
+    from contexttrail.store import _timestamp, in_journal
+    folder, scope, store = project
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    engine = Engine(scope, store, AnalysisConfig(**homes))
+    note(scope, store, kind="action", title="Lock the store", quotes=["write_atomically(path)"])
+    path = homes["claude_home"] / "projects" / "app" / f"{SESSION}.jsonl"
+    with path.open("a") as handle:
+        handle.write(dumps(row(folder, 7, "user", [{"type": "text", "text": "Now add a retry."}])) + "\n")
+    records = engine.scan().records
+    store.ingest(records)
+    after = [r for r in records if r.session_id == SESSION and "Now add a retry." in r.content]
+    last = _timestamp(after[0].recorded_at)
+    # Still going: the agent's.
+    store.acknowledge_journaled(records, moment=last + 60)
+    assert store.journal_tails() == {} and store.sources()[after[0].source_id]["processed_hash"]
+    # Quiet for an hour with no note for it: back to analysis.
+    store.acknowledge_journaled(records, moment=last + 3600)
+    start, end = store.journal_tails()[SESSION]
+    assert end == last and start < last
+    assert store.sources()[after[0].source_id]["processed_hash"] is None
+    assert not in_journal(SESSION, {}, after[0].recorded_at, store.journaled_sessions(), store.journal_since(),
+                          store.journal_tails())
+
+
+def test_the_reminder_waits_until_work_piles_up_or_a_commit(monkeypatch):
+    monkeypatch.setattr(journal, "REMIND_CALLS", 10)
+    def items(count, *, start=0.0, step=60.0, commit=False):
+        return [{"at": start + n * step, "call": f"edit f{n}.py", "commit": commit and n == count - 1} for n in range(count)]
+    assert not journal.due([], 10 ** 6)
+    assert not journal.due(items(3), latest=3 * 60.0)                    # a small fix: the turn just ends
+    assert journal.due(items(10), latest=10 * 60.0)                      # ten calls
+    assert journal.due(items(2, commit=True), latest=60.0)               # a commit
+    assert journal.due(items(2), latest=31 * 60.0)                       # half an hour since the first unnoted call
+
+
+def test_the_hook_reads_only_what_the_transcript_gained(project, tmp_path, monkeypatch):
+    folder, scope, store = project
+    homes = dict(codex_home=tmp_path / "codex", claude_home=tmp_path / "claude", opencode_home=tmp_path / "opencode")
+    store.set_meta(journal.SETTINGS_KEY, {"enabled_at": "2026-10-07T09:00:00+00:00"})
+    monkeypatch.setattr(journal, "REMIND_CALLS", 3)
+    path = homes["claude_home"] / "projects" / "app" / f"{SESSION}.jsonl"
+    assert journal.hook(hook_input(folder, transcript_path=str(path)), **homes) is None  # two calls: not yet
+    state = store.get_meta(journal.ACTIVITY_KEY)[SESSION][journal.SCAN_KEY]
+    assert state["offset"] == path.stat().st_size and len(state["items"]) == 2
+    # The next turn adds one edit; only the new line is read, and the third call is due.
+    seen = []
+    real = journal._calls_in_row
+    monkeypatch.setattr(journal, "_calls_in_row", lambda row, session: seen.append(row) or real(row, session))
+    with path.open("a") as handle:
+        handle.write(dumps(row(folder, 8, "assistant", [{"type": "tool_use", "id": "t9", "name": "Edit", "input": {
+            "file_path": str(folder / "retry.py"), "old_string": "a", "new_string": "b"}}])) + "\n")
+    decision = journal.hook(hook_input(folder, transcript_path=str(path)), **homes)
+    assert len(seen) == 1 and decision["decision"] == "block" and "edit " in decision["reason"]
+    assert "Calls since the last note:" in decision["reason"]
