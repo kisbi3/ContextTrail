@@ -97,7 +97,8 @@ def test_command_kinds_commit_test_vcs_and_plain_runs():
         # read-only or dry-run git commands are not state changes
         "git stash list": None, "git stash show -p": None, "git stash pop": "vcs", "git branch": None,
         "git branch --list": None, "git branch -D old": "vcs", "git branch topic": "vcs", "git tag --list": None,
-        "git tag v1": "vcs", "git worktree list": None, "git worktree add ../w": "vcs", "git clean -n": None,
+        "git tag v1": "vcs", "git tag --sort=-creatordate": None, "git tag -n": None, "git tag -a v2 -m x": "vcs",
+        "git branch --sort=-committerdate": None, "git branch -a": None, "git tag -d v1": "vcs", "git worktree list": None, "git worktree add ../w": "vcs", "git clean -n": None,
         "git add --dry-run .": None, "git fetch --dry-run": None, "git revert --no-commit HEAD~1": "vcs",
         "git commit-tree abc": None, "git checkout-index -a": None, "git merge-base HEAD main": None,
         # wrappers and flags before the goal

@@ -415,9 +415,17 @@ def _vcs_mutates(sub: str, rest: str) -> bool:
     if sub in {"stash", "worktree"}:
         return not (words and words[0] in {"list", "show"})
     if sub in {"branch", "tag"}:
-        listing = {"-l", "--list", "-a", "--all", "-r", "--remotes", "--show-current", "-v", "-vv",
-                   "--contains", "--merged", "--no-merged", "--points-at"}
-        return not (flags & listing) and bool(words)
+        # A name creates, or a flag changes; sorting or formatting options alone still list.
+        names = {flag.split("=", 1)[0] for flag in flags}
+        listing = {"-l", "--list", "-r", "--remotes", "--show-current", "-v", "-vv", "--contains",
+                   "--no-contains", "--merged", "--no-merged", "--points-at"}
+        listing |= {"-a", "--all"} if sub == "branch" else set()
+        if names & listing or (sub == "tag" and any(re.fullmatch(r"-n\d*", flag) for flag in flags)):
+            return False
+        changing = {"-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy", "-f", "--force",
+                    "-u", "--set-upstream-to", "--unset-upstream", "--edit-description", "-s", "--sign",
+                    "-a", "--annotate", "-F", "--file"}
+        return bool(names & changing) or any(not word.startswith("-") for word in words)
     return True
 
 

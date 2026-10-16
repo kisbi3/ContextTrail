@@ -55,7 +55,7 @@ Anything that changes what the model sees needs an evaluation on a fixture befor
 
 ## Prompts and language
 
-Prompts in `src/contexttrail/prompts/` are written in English. Validation messages returned to the model are Korean, and the repair step matches them by pattern, so change both the message and the matcher together. Titles and summaries are written in the project's detected `output_language`; quotes and identifiers stay as written.
+Prompts in `src/contexttrail/prompts/` are written in English. Validation messages returned to the model are English too (since 2026-10-06), and the repair step matches them by pattern, so change both the message and the matcher together. Titles and summaries are written in the project's detected `output_language`; quotes and identifiers stay as written.
 
 ## Reporting security issues
 
