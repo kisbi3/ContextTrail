@@ -15,6 +15,7 @@ from .opencode import opencode_data_dir, opencode_databases, parse_opencode
 # A transcript over this size is not read (it is held in memory twice while parsed). A day of Claude Code work
 # with large tool outputs passed 64 MiB, which silently dropped the session, so the limit is 256 MiB.
 MAX_FILE_BYTES = 256 * 1024 * 1024
+REREAD_CHUNK = 4 * 1024 * 1024
 MAX_LINE_BYTES = 4 * 1024 * 1024
 # Keep a single prompt-visible record below Engine.record_chars (48k by default).
 SEGMENT_CHARS = 32_000
@@ -143,8 +144,14 @@ def _jsonl(path: Path) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
             data = stream.read(before.st_size)
             after = os.fstat(stream.fileno())
             stream.seek(0)
-            again = stream.read(before.st_size)
-            if data != again or after.st_size < before.st_size:
+            # Read again in pieces, so a large file is held in memory once, not twice.
+            view, offset = memoryview(data), 0
+            while offset < len(data):
+                piece = stream.read(min(REREAD_CHUNK, len(data) - offset))
+                if not piece or view[offset:offset + len(piece)] != piece:
+                    raise FlowError("rewritten or truncated while being read")
+                offset += len(piece)
+            if after.st_size < before.st_size or len(data) < before.st_size:
                 raise FlowError("rewritten or truncated while being read")
     except (OSError, FlowError) as exc:
         # The reason stays in the limitation: a file over the size limit used to read as a bare "FlowError".

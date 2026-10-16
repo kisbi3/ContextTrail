@@ -508,3 +508,35 @@ def test_a_forked_claude_session_drops_the_copied_rows_and_keeps_where_it_came_f
     own = by_session["fork-a"][0]
     assert replace(own, fork={}).content_hash == own.content_hash  # outside the hash: no unit is sent again
     assert "fork" not in record_for_model(own)
+
+
+def test_a_log_rewritten_while_it_is_read_is_not_read(tmp_path, monkeypatch):
+    import io
+    from contexttrail.sources import local
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(b'{"a": 1}\n{"b": 2}\n')
+    real = local.os.fdopen
+
+    class Rewritten(io.BytesIO):
+        def __init__(self, stream):
+            super().__init__(stream.read())
+            stream.close()
+            self.fd = os.open(path, os.O_RDONLY)
+        def fileno(self):
+            return self.fd
+        def seek(self, *args):
+            # The second pass reads what a writer put there in between.
+            data = self.getvalue().replace(b"2", b"3")
+            super().seek(0)
+            self.write(data)
+            return super().seek(0)
+        def close(self):
+            os.close(self.fd)
+            super().close()
+
+    monkeypatch.setattr(local, "REREAD_CHUNK", 4)
+    rows, warnings, _ = local._jsonl(path)
+    assert len(rows) == 2 and warnings == []
+    monkeypatch.setattr(local.os, "fdopen", lambda fd, mode: Rewritten(real(fd, mode)))
+    rows, warnings, _ = local._jsonl(path)
+    assert rows == [] and "rewritten or truncated while being read" in warnings[0]
