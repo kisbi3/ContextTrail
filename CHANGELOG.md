@@ -4,6 +4,9 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 
 ## Unreleased
 
+### Added
+- **`scripts/compare_models.py`: the same units of a real project, analysed by several models.** A project analyses each unit once, so models could only be compared on different units. The script copies the project's state once (SQLite backup of the file opened read-only), gives each `runner:model` its own copy, runs the ordinary analysis on each (economy unless `--no-economy`; `--jobs` runs models side by side; `--usage` reads both CLIs' subscription windows before and after each model), and writes `report.md`/`report.json`: how each unit was published, calls, time, tokens, events, verified changes, titles outside the output language, and each unit's events per model. Developer tool, real model calls, `--yes` required. First check on priceimpact, one unit: Haiku 391 s, 20 events, 6/10 changes verified; Luna 142 s, 18 events, 0/8.
+
 ### Changed
 - **The default models are the light ones: Codex `gpt-luna`, Claude `haiku`.** The owner's choice (2026-10-17): ContextTrail has to work on the light model of each tool, and `gpt-sol`/`sonnet` become what it is measured against (`--model`). A project with no saved model uses the new default from its next run; finished units are not sent again. On a real project (priceimpact, 15 units, economy) Luna took 79 s and Haiku 207 s a unit, all units published, first-try validity Haiku 5/7 and Luna 2/8.
 - **The automatic analysis takes a quiet session's unnoted tail first.** It works oldest first, so the records given back after a noted session's last note (recent work in no note) would wait behind the whole backlog (192 units here, about 24 days at eight a day). With `--trigger hook`, `Engine._tails_first` plans the units holding them ahead of the rest, which keeps the oldest-first order; what they add is out of order while older records wait, as with `--recent`. A run the person starts is unchanged.

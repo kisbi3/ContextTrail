@@ -18,6 +18,7 @@ scripts/contexttrail view /tmp/contexttrail-demo/sample-project
 scripts/contexttrail scan /path/to/project       # input selection diagnostics, zero runner calls
 scripts/contexttrail eval --fixture demo --runner mock --output /tmp/pf-eval   # offline eval, writes review.html; economy like analyze (--no-economy for the full path)
 python scripts/prelive_walkthrough.py --output /tmp/pf-prelive-walkthrough
+python scripts/compare_models.py PROJECT --models claude:haiku claude:sonnet codex:gpt-luna codex:gpt-sol --units 5 --output /tmp/ct-compare --yes   # real models (needs consent): same units, one state copy per model
 ```
 
 There is no linter/formatter configured. Tests use synthetic transcripts in temp dirs, loopback HTTP, and PTYs; they never call real AI accounts. Keep it that way — do not run `analyze`, `eval --runner codex|claude`, or `doctor --smoke` against real accounts without the user's explicit consent (they send data to a model service). Write any output/demo artifacts outside the repo.
