@@ -148,6 +148,7 @@ def summarize(db_path: Path, since: str) -> dict:
         "output_language": language,
         "off_language_titles": [e["title"] for e in new if script and e.get("actor") != "user" and not script.search(e["title"])],
         # An event belongs to the analysed unit whose records it cites (the first such unit in run order).
+        "unit_summaries": {unit: entry.get("text") for unit, entry in (graph.get("unit_summaries") or {}).items() if unit in units},
         "event_titles": [{"unit": next((unit_of[src] for src in cited if unit_of.get(src) in units), None),
                           "kind": e["kind"], "status": e["status"], "title": e["title"]}
                          for e in new for cited in [[evidence.get(i) for i in e.get("evidence_ids", []) if evidence.get(i)]]],
@@ -174,6 +175,7 @@ def worker(args) -> int:
         values["extract_effort"] = args.effort
     if args.economy:
         _economy(values)
+    values["unit_summary"] = bool(args.unit_summary)
     engine = Engine(scope, store, AnalysisConfig(**values))
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     clock = time.monotonic()
@@ -247,6 +249,10 @@ def report(results: dict[str, dict], output: Path) -> str:
             u = results[s]["units"].get(unit)
             cells.append("–" if u is None else f"{u['path']} · {u['calls']} calls · {u['seconds']:.0f}s")
         lines.append(f"| `{unit[-8:]}` | " + " | ".join(cells) + " |")
+    if any(r.get("unit_summaries") for r in results.values()):
+        lines += ["", "## Unit summaries", "", "| unit | " + " | ".join(specs) + " |", "|---|" + "---|" * len(specs)]
+        for unit in units:
+            lines.append(f"| `{unit[-8:]}` | " + " | ".join((results[s].get("unit_summaries") or {}).get(unit, "–") for s in specs) + " |")
     lines += ["", "## Events of each unit", ""]
     for unit in units + [None]:
         block = []
@@ -274,6 +280,7 @@ def main(argv=None) -> int:
     parser.add_argument("--effort", help="extract reasoning effort (default: the runner's)")
     parser.add_argument("--economy", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument("--unit-summary", action="store_true", help="ask each extraction for a one-line summary of its unit")
     parser.add_argument("--yes", action="store_true", help="send the project's records to each model's service")
     parser.add_argument("--worker", help=argparse.SUPPRESS)
     parser.add_argument("--state", help=argparse.SUPPRESS)
@@ -312,7 +319,7 @@ def main(argv=None) -> int:
         before = usage_windows() if args.usage else None
         command = [sys.executable, str(Path(__file__).resolve()), str(args.project), "--worker", spec, "--state", str(state),
                    "--result", str(folder / "result.json"), "--units", str(args.units), "--timeout", str(args.timeout)]
-        command += ["--economy" if args.economy else "--no-economy"]
+        command += ["--economy" if args.economy else "--no-economy"] + (["--unit-summary"] if args.unit_summary else [])
         if args.recent:
             command += ["--recent", str(args.recent)]
         if args.effort:

@@ -328,6 +328,13 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
         beside, kind, edge = placed[key]
         stacks.setdefault(beside, []).append((kind, key, edge))
     columns = [[key for key in group if key not in placed] for group in groups]
+    # A unit's summary (`--unit-summary`) heads the first of its events drawn in the story column.
+    heads: dict[str, str] = {}
+    for summary in (graph.get("unit_summaries") or {}).values():
+        shown = [key for key in summary.get("event_ids", []) if key in ids and key not in placed]
+        if shown and summary.get("text"):
+            first = min(shown, key=when)
+            heads[first] = " / ".join(filter(None, [heads.get(first), summary["text"]]))
 
     def session_of(key: str) -> str | None:
         sessions = by_id[key].get("session_ids") or []
@@ -590,6 +597,11 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
             if previous is not None:
                 # Room below the previous box for "│ 라벨" and the arrowhead.
                 y = max(y, diagram.boxes[previous][0] + diagram.boxes[previous][2] + 2)
+            if key in heads:
+                # Beside the column's line (lx + 3), so a dotted or labelled link down it is never covered.
+                for part in _wrap(safe_text(tr("구간 · ", "stretch · ") + heads[key], multiline=False), max(12, width - lx - 6)):
+                    diagram.put(y, lx + 5, part, "heading")
+                    y += 1
             top = y
             box(top, lx, key, box_w, fold)
             if previous is not None and not joined:

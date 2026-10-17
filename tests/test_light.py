@@ -149,3 +149,22 @@ def test_an_edit_is_linked_to_a_test_only_when_the_run_names_it_or_runs_the_whol
     linked = {edge["to"] for edge in edges}
     assert len(checks) == 2 and len(linked) == 1  # the whole-suite run after edit1 links; the docs test after edit2 does not
     assert all(edge["why"] for edge in edges)
+
+
+def test_a_unit_summary_is_asked_only_when_chosen_and_kept_with_the_units_events(laboratory):
+    from contexttrail.analysis import UNIT_SUMMARY_REQUEST
+    from contexttrail.demo import CASES
+    _, store, engine, records, make = laboratory
+    records.append(make(CASES[0][0]))
+    runner = FixtureRunner()
+    assert engine.analyze(lambda: runner)["status"] == "complete"
+    assert all("unit_summary_request" not in task["data"] for task in runner.tasks)  # the default input is unchanged
+    assert "unit_summaries" not in store.graph()
+    records.append(make(CASES[1][0], key="s2"))
+    engine.config.unit_summary = True
+    runner = FixtureRunner()
+    assert engine.analyze(lambda: runner)["status"] == "complete"
+    assert runner.tasks[0]["data"]["unit_summary_request"] == UNIT_SUMMARY_REQUEST
+    (summary,) = store.graph()["unit_summaries"].values()
+    assert summary["text"] == "합성 구간: 저장 방식을 정하고 바꿈"
+    assert summary["event_ids"] and set(summary["event_ids"]) <= {e["id"] for e in store.graph()["events"]}

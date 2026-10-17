@@ -78,11 +78,12 @@ class FixtureRunner:
         self.calls += 1
         self.tasks.append(copy.deepcopy(task))
         data = task["data"]
+        summary = {"unit_summary": "합성 구간: 저장 방식을 정하고 바꿈"} if data.get("unit_summary_request") else {}
         if task["stage"] == "light":
             # The light answer: the code-built skeleton named back, no events of its own.
             return {"status": "complete", "snapshot_id": data["snapshot_id"], "unit_id": data["unit_id"],
                     "skeleton": [{"id": item["id"], "title": item["title"], "summary": ""} for item in data.get("skeleton", [])],
-                    "events": []}
+                    "events": [], **summary}
         if task["stage"] == "extract":
             candidates = []
             # An audit: the records a note already cites are not written again, as a model told to would do.
@@ -121,7 +122,7 @@ class FixtureRunner:
                                   "active": True})
             return {"status": "complete", "read_requests": [], "snapshot_id": data["snapshot_id"],
                     "unit_id": data["unit_id"], "event_candidates": candidates, "edge_candidates": edges,
-                    "existing_event_matches": [], "open_items": [], "limitations": [], "unprocessed_record_ids": []}
+                    "existing_event_matches": [], "open_items": [], "limitations": [], "unprocessed_record_ids": [], **summary}
         output = {"status": "complete", "read_requests": [], "snapshot_id": data["snapshot_id"],
                   "base_graph_version": data["base_graph_version"], "events_to_add": [], "events_to_update": [],
                   "edges_to_add": [], "edges_to_invalidate": [], "open_items_to_upsert": [],

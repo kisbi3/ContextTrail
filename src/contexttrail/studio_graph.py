@@ -854,6 +854,11 @@ def publish_result(state: StudioState) -> StudioState:
         for event in graph["events"]:
             if event["id"] not in known:
                 event["analysis"] = analysis
+    # `--unit-summary`: the line the extraction wrote about this unit, with the events it added (what it covers).
+    summary = state["extracted"]["cached"].get("unit_summary")
+    added = sorted({event["id"] for event in graph["events"]} - {event["id"] for event in base["events"]})
+    if summary and added:
+        graph.setdefault("unit_summaries", {})[state["unit_id"]] = {"text": summary, "event_ids": added}
     published = store.publish(graph, [state["unit_id"]],
                               {i: pool[i].content_hash for i in state["source_ids"]},
                               state["evidence"], expected_version=base["version"])

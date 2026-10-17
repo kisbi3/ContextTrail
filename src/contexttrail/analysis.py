@@ -46,6 +46,9 @@ class AnalysisConfig:
     # One Codex conversation per unit shared by its stages (`Engine.unit_thread`); measured a net loss in time and
     # cost on 2026-10-16 (`docs/plans/PERFORMANCE_PLAN.md` §21), so off unless asked for (`--unit-thread`).
     unit_thread: bool = False
+    # Hidden, per run (`--unit-summary`, an experiment): the extraction also writes one line saying what the unit's
+    # stretch of work was about; stored in the graph's `unit_summaries` and drawn above the stretch.
+    unit_summary: bool = False
     read_rounds: int = 2
     read_chars: int = 36_000
     runner_name: str | None = None
@@ -2070,6 +2073,20 @@ class Harness:
                 repair_count += 1
 
 
+# Asked only with `--unit-summary`; otherwise the request carries nothing of it.
+UNIT_SUMMARY_REQUEST = ("Also answer unit_summary: one line in output_language, at most 80 characters, saying what this "
+                        "stretch of work was about and where it ended, from what the records show (for example \"7-day "
+                        "results checked, moved on to a one-month run\"); null when the records show nothing to summarise.")
+
+
+def with_unit_summary(schema: dict) -> dict:
+    """`schema` with a `unit_summary` answer (a line or null), for `--unit-summary`."""
+    widened = copy.deepcopy(schema)
+    widened["properties"]["unit_summary"] = {"type": ["string", "null"], "maxLength": 200}
+    widened["required"] = [*widened["required"], "unit_summary"]
+    return widened
+
+
 # Said in a unit's limitations when the full extraction failed validation twice and the unit was read the light way.
 LIGHT_FALLBACK_LIMITATION = ("light analysis: the full extraction of this unit still failed validation after the repair "
                              "round, so the unit was read with the code-built skeleton and one light call.")
@@ -2317,7 +2334,8 @@ class Engine:
                        self.config.runner_name, self.config.base_model, self.config.extract_effort,
                        self.config.output_language, *([self.config.context_mode] if self.config.context_mode != "lean" else []),
                        *(["audit-v1", prompt("audit")] if self.config.audit else []),
-                       *(["light-v1", prompt("light")] if self._light() else [])])
+                       *(["light-v1", prompt("light")] if self._light() else []),
+                       *(["unit-summary-v1", UNIT_SUMMARY_REQUEST] if self.config.unit_summary else [])])
 
     def _light(self) -> bool:
         """Light analysis applies to ordinary units; an audit reads noted sessions with the full extraction."""
@@ -2383,6 +2401,14 @@ class Engine:
         reasons: list[str] = []
         draft = None
         light_fallback = False
+        summary: list[str | None] = [None]
+
+        def take_summary(answer: dict) -> dict:
+            # The summary leaves the answer before the checks (which know the schema without it); the last one kept.
+            if self.config.unit_summary and "unit_summary" in answer:
+                text = answer.pop("unit_summary")
+                summary[0] = " ".join(text.split()) if isinstance(text, str) and text.strip() else None
+            return answer
         output = None
         waived: list[str] = list(cached.get("waived_citations", [])) if reuse else []
         dropped: list[str] = list(cached.get("dropped_candidates", [])) if reuse else []
@@ -2420,8 +2446,12 @@ class Engine:
                 citations are cut by code, so nothing is asked again; what the checks refuse is left out."""
                 from . import light
                 items, edges = light.skeleton([pool[i] for i in unit["sources"]])
-                answer = h.task("light", light.request_data(unit, snapshot_id, data, items), light.answer_check,
-                                validator=validator, schema=light.LIGHT_SCHEMA, thread=self.unit_thread(unit["id"], h.runner))
+                request = light.request_data(unit, snapshot_id, data, items)
+                if self.config.unit_summary:
+                    request["unit_summary_request"] = UNIT_SUMMARY_REQUEST
+                answer = h.task("light", request, lambda o: light.answer_check(take_summary(o)), validator=validator,
+                                schema=with_unit_summary(light.LIGHT_SCHEMA) if self.config.unit_summary else light.LIGHT_SCHEMA,
+                                thread=self.unit_thread(unit["id"], h.runner))
                 result = light.extraction(answer, items, edges, unit, snapshot_id, h.pool, h.provided, validator)
                 try:
                     validator.check_extraction(result, unit["id"], snapshot_id, graph)
@@ -2434,8 +2464,10 @@ class Engine:
                 draft = output
             else:
                 try:
-                    output = h.task("extract", data,
-                        lambda o: validator.check_extraction(o, unit["id"], snapshot_id, graph), validator=validator,
+                    asked = {**data, "unit_summary_request": UNIT_SUMMARY_REQUEST} if self.config.unit_summary else data
+                    output = h.task("extract", asked,
+                        lambda o: validator.check_extraction(take_summary(o), unit["id"], snapshot_id, graph), validator=validator,
+                        schema=with_unit_summary(EXTRACT_SCHEMA) if self.config.unit_summary else None,
                         thread=self.unit_thread(unit["id"], h.runner))
                     draft = output
                     # Semantics are reviewed against the proposed GraphDelta. Extraction
@@ -2495,6 +2527,7 @@ class Engine:
                   "user_requests_added": requests_added, "waived_citations": waived,
                   "dropped_candidates": dropped,
                   "routing_reasons": reasons, "escalated": should_escalate, "light_fallback": light_fallback,
+                  **({"unit_summary": summary[0]} if summary[0] else {}),
                   "draft_payload": draft if should_escalate else None,
                   "extraction_graph_version": graph["version"], "read_manifest": h.read_manifest,
                   "context_selection": context.get("context_selection", {}),

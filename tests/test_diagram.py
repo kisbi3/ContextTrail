@@ -440,3 +440,17 @@ def test_a_box_beside_the_selected_step_is_not_dimmed():
     assert not any(attr & curses.A_DIM for text, attr in panels._cell_runs(hash_row) if "해시" in text)
     panels.current = "other"
     assert all(attr & curses.A_DIM for text, attr in panels._cell_runs(hash_row) if "해시" in text)
+
+
+def test_a_units_summary_heads_its_first_story_box():
+    events = timed(node("month", "decision", "adopted", "한 달 자료로 확대"),
+                   node("hash", "outcome", "observed_success", "산출물 해시 일치"),
+                   node("start", "action", "in_progress", "한 달 분석 시작"))
+    graph = {"events": events, "edges": [],
+             "unit_summaries": {"unit_1": {"text": "7일 결과를 보고 한 달 분석으로 넘어감", "event_ids": ["hash", "month", "start"]}}}
+    diagram = flow_diagram(graph, 120)
+    rows = diagram.lines()
+    head = next(n for n, row in enumerate(rows) if "구간 · 7일 결과를 보고 한 달 분석으로 넘어감" in row)
+    assert head < diagram.boxes["month"][0]  # above the stretch's first step, not above the check beside it
+    assert sum("구간 ·" in row for row in rows) == 1
+    assert not any("구간" in row for row in flow_diagram({"events": events, "edges": []}, 120).lines())
