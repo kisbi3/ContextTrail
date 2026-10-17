@@ -98,3 +98,17 @@ def test_sub_agent_work_hangs_from_the_parent_message_it_ran_under():
 
 def test_a_message_of_a_run_with_no_person_is_not_the_persons_request():
     assert not is_user_prompt(replace(record("g", "user", "review the diff"), lineage={"kind": "unattended", "agent_type": "codex exec"}))
+
+
+def test_claude_codes_hand_backs_and_limit_notices_are_not_the_persons_requests():
+    handback = ('Another Claude session sent a message: <agent-message from="a4a99636a56526dcd"> [Subagent hand-back] '
+                "The text below is the final report of a subagent this session delegated to.")
+    assert not is_user_prompt(record("h", "user", handback))
+    assert not is_user_prompt(record("u", "user", "[Usage limit reached; a short grace allowance remains, then this turn is cut off]"))
+    assert not is_user_prompt(record("e", "user", "[Earlier usage-limit notes no longer apply. Continue working normally.]"))
+    # The image note goes before the person's words; the words are still a request, titled without the note.
+    with_image = "[Image: original 2520x540, displayed at 2000x429. Multiply coordinates by 1.26 to map to original image.]\n그래프 축을 바꿔줘"
+    assert is_user_prompt(record("i", "user", with_image))
+    assert not is_user_prompt(record("j", "user", "[Image: original 800x600, displayed at 800x600.]"))
+    from contexttrail.analysis import _one_line
+    assert _one_line(with_image) == "그래프 축을 바꿔줘"

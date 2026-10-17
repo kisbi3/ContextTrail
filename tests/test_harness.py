@@ -930,3 +930,15 @@ def test_the_stages_of_one_unit_share_the_runners_conversation_and_it_closes_aft
     assert len({id(thread) for _,thread in Threaded.used})==1      # one conversation for the unit's stages
     assert len(Threaded.threads)==1 and Threaded.threads[0].closed==1  # closed once, after the unit
     assert engine.unit_threads=={}
+
+
+def test_a_citation_with_no_quote_and_lines_outside_the_record_is_refused(laboratory):
+    # A null quote is the rule; with a bad range there is nothing to look for elsewhere, so it is a refusal (repair
+    # round), never a TypeError that stops the run.
+    _, _, _, _, make = laboratory
+    record = make("first\nsecond\nthird")
+    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 3)]})
+    for start, end in ((9, 9), (3, 1)):
+        citation = {"source_id": record.source_id, "start_line": start, "end_line": end, "quote": None}
+        with pytest.raises(FlowError, match="outside the source"):
+            validator._citation_span(citation, track=True)  # where every extraction's citations are checked

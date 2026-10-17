@@ -742,7 +742,8 @@ class EvidenceValidator:
             return self._citation_span_at(citation, track=track)
         except FlowError as error:
             record = self.records.get(citation["source_id"])
-            if not record or len(citation["quote"]) < SHORT_QUOTE_CHARS:
+            # With no quote (null is the rule) there is nothing to look for elsewhere: the bad range stands.
+            if not record or not citation.get("quote") or len(citation["quote"]) < SHORT_QUOTE_CHARS:
                 self._note_mismatch(citation, error)
                 raise
             # A locator slip: the exact quote is in lines the model was shown, only not at the

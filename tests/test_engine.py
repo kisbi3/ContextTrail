@@ -1073,3 +1073,38 @@ def test_an_observed_result_with_no_change_to_verify_is_settled_in_code_without_
     assert engine2.analyze(FixtureRunner)["status"] == "complete"
     assert store2.graph()["semantic_review_audit"]["triggered"] == ["unlinked_observed_outcome"]
     assert _review_statuses(store2)[-1][0] == "reviewed" and _review_calls(store2)
+
+
+def test_an_answer_citing_lines_outside_its_record_with_no_quote_gets_the_repair_round(laboratory):
+    _, store, engine, records, make = laboratory
+    records.append(make(CASES[0][0]))
+    class OutOfRange(FixtureRunner):
+        def run(self, task, schema, cancel):
+            output = super().run(task, schema, cancel)
+            if task["stage"] == "extract" and "repair" not in task:
+                output["event_candidates"][0]["evidence"][0].update(start_line=99, end_line=99, quote=None)
+            return output
+    result = engine.analyze(OutOfRange)
+    assert result["status"] == "complete", result
+    calls = store.llm_calls()
+    assert [call["status"] for call in calls][:2] == ["validation_error", "complete"]
+    assert "outside the source" in calls[0]["details"]["error"]
+
+
+def test_a_check_that_breaks_on_an_answer_is_a_refusal_recorded_with_the_call(laboratory, monkeypatch):
+    from contexttrail.schema import EvidenceValidator
+    _, store, engine, records, make = laboratory
+    records.append(make(CASES[0][0]))
+    original = EvidenceValidator.check_extraction
+    broken = []
+    def check_extraction(self, *args, **kwargs):
+        if not broken:
+            broken.append(True)
+            raise TypeError("object of type 'NoneType' has no len()")
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(EvidenceValidator, "check_extraction", check_extraction)
+    result = engine.analyze(FixtureRunner)
+    assert result["status"] == "complete", result
+    calls = store.llm_calls()
+    assert calls[0]["status"] == "validation_error"  # recorded, not left running
+    assert calls[0]["details"]["error"].startswith("answer check failed in code (TypeError)")

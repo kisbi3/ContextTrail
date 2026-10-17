@@ -20,7 +20,7 @@ from .freshness import INDEX_KEY, build_index
 from .git_context import Scope, collect_git, git
 from .i18n import tr
 from .langsmith_trace import LangSmithTracer
-from .model import Snapshot, SourceRecord, is_user_prompt
+from .model import IMAGE_NOTE, Snapshot, SourceRecord, is_user_prompt
 from .routing import ROUTING_VERSION, RunnerPool, TaskValidationError
 from .runners.cli_runner import EFFORTS
 from .schema import (DELTA_SCHEMA, EDIT_TOOL_NAMES, EXTRACT_SCHEMA, EvidenceValidator, delta_schema, docs_only,
@@ -996,7 +996,8 @@ def audit_guard(delta: dict, graph: dict) -> None:
 
 
 def _one_line(text: str, limit: int = 240) -> str:
-    text = " ".join(text.split())
+    # A request titled by its words, not by the image note Claude Code puts before an attached image.
+    text = " ".join(IMAGE_NOTE.sub("", text).split()) or " ".join(text.split())
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
@@ -1987,7 +1988,11 @@ class Harness:
                     "output_quote_chars": quote_chars,
                 }, submitted)
                 return output
-            except FlowError as exc:
+            except Exception as exc:
+                if not isinstance(exc, FlowError):
+                    # A check that breaks on an answer is that answer failing the checks, not a reason to stop the
+                    # run with the call left open: it is recorded and gets the repair round like any other refusal.
+                    exc = FlowError(f"answer check failed in code ({type(exc).__name__}): {exc}")
                 # If needs_evidence was already finalized, retain that observable state; the
                 # subsequent bounded-read failure is recorded by the next call/run error path.
                 if not response_finalized:

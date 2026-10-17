@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
@@ -86,7 +87,14 @@ HARNESS_TEXT = ("<task-notification>", "<command-name>", "<command-message>", "<
                 # The project memory a session-start hook gives the agent (opencode posts it as a user message).
                 SESSION_CONTEXT_HEAD,
                 # A skill's body, which Claude Code puts in the user role when the agent invokes the skill.
-                "Base directory for this skill:")
+                "Base directory for this skill:",
+                # Claude Code (2.1.x): a sub-agent's or another session's report handed back to the session, and the
+                # notices about the account's usage limit.
+                "Another Claude session sent a message:", "[Usage limit reached;", "[Earlier usage-limit notes")
+
+# The note Claude Code puts before an image the person attached ("[Image: original 2520x540, displayed at …]");
+# the person's own words, if any, follow it.
+IMAGE_NOTE = re.compile(r"\A(?:\s*\[Image: original [^\]\n]*\])+\s*")
 
 
 def is_user_prompt(record: SourceRecord) -> bool:
@@ -98,7 +106,7 @@ def is_user_prompt(record: SourceRecord) -> bool:
     # message counts once, at its first fragment.
     if lineage.get("kind") or (lineage.get("fragment_index") or 1) > 1:
         return False
-    text = record.content.strip()
+    text = IMAGE_NOTE.sub("", record.content).strip()
     return bool(text) and not text.startswith(HARNESS_TEXT)
 
 
