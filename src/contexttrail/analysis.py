@@ -536,6 +536,23 @@ def tool_steps(assigned: list[SourceRecord]) -> list[dict]:
     return steps
 
 
+def mark_steps(records: list[SourceRecord]) -> None:
+    """Set `SourceRecord.step` on every tool call and its result: what `tool_steps` makes of the call. Run at
+    scan, per session, so the flow can tell a check or a documentation edit from the records an event cites
+    (`schema.fill_steps`) instead of from its title."""
+    sessions: dict[str | None, list[SourceRecord]] = {}
+    for record in records:
+        if record.role in ("tool_call", "tool_result"):
+            sessions.setdefault(record.session_id, []).append(record)
+    by_id = {record.source_id: record for record in records}
+    for session in sessions.values():
+        for step in tool_steps(session):
+            mark = {"hint": step["hint"], **({"doc": True} if step.get("doc") else {})}
+            for key in (step["call"], step["result"]):
+                if key in by_id:
+                    by_id[key].step = mark
+
+
 # A long tool result, injected instruction or summary is shown as its head and tail; the lines
 # between are listed as omitted and read with read_records on request. What the person typed,
 # the assistant's words and tool calls (patches included) are always shown whole.
@@ -644,7 +661,7 @@ def unit_cost(record: SourceRecord) -> int:
 # off the cited record itself), and the folder and worktree are the project's. Event provenance is derived from
 # the citations (`event_provenance_from_evidence`). About 40% of a shown record on a Codex-heavy project.
 HIDDEN_RECORD_FIELDS = ("locator", "content_hash", "source_version", "native_record_id", "parent_record_id",
-                        "worktree_id", "cwd", "authoring", "fork")
+                        "worktree_id", "cwd", "authoring", "fork", "step")
 
 
 def record_for_model(record: SourceRecord) -> dict:
@@ -1262,7 +1279,7 @@ def _rehydrate(pool: dict[str, SourceRecord], provided: dict[str, list[tuple[int
             recorded_at=source.get("recorded_at"), cwd=source.get("cwd"), worktree_id=source.get("worktree_id"),
             tool_call_id=source.get("tool_call_id"), derivation=source.get("derivation", "original"),
             git=source.get("git", {}), lineage=source.get("lineage", {}), authoring=source.get("authoring", {}),
-            fork=source.get("fork", {}), pinned_hash=items[0]["content_hash"])
+            fork=source.get("fork", {}), step=source.get("step", {}), pinned_hash=items[0]["content_hash"])
         provided[source_id] = [(i["start_line"], i["end_line"]) for i in items]
 
 
@@ -1749,7 +1766,7 @@ class Harness:
                                 recorded_at=source.get("recorded_at"), cwd=source.get("cwd"),
                                 worktree_id=source.get("worktree_id"), derivation=source.get("derivation", "original"),
                                 lineage=source.get("lineage", {}), authoring=source.get("authoring", {}),
-                                fork=source.get("fork", {}))
+                                fork=source.get("fork", {}), step=source.get("step", {}))
                             snippets.append({**self.provide(alias), "context_only": True})
                     outputs.append({"event": event, "evidence_records": snippets})
                 elif request["kind"] == "read_file_at_revision":
@@ -2239,6 +2256,7 @@ class Engine:
         # What this scan saw, so `status` and `find` can count what changed since without parsing everything.
         self.store.set_meta(INDEX_KEY, build_index(source_scope, logs, codex_home=self.config.codex_home,
                                                    claude_home=self.config.claude_home, opencode_home=self.config.opencode_home))
+        mark_steps(logs.records)
         return Snapshot(logs.records + artifacts.records, list(dict.fromkeys(logs.limitations + artifacts.limitations)), logs.files)
 
     def resolve_language(self, snapshot: Snapshot) -> str:

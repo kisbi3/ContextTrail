@@ -108,3 +108,26 @@ def test_a_check_fails_by_its_exit_status_else_by_a_failure_count():
     assert check_failed("Error: Exit code 1\nboom", True)
     assert check_failed("=== 1 failed, 2 passed in 0.1s ===", False) and not check_failed("3 passed", False)
     assert not check_failed("0 failed", False)
+
+
+def test_a_scan_marks_what_each_tool_call_did_and_an_event_reads_it_off_its_citations(laboratory):
+    from contexttrail.analysis import mark_steps
+    from contexttrail.schema import step_of
+    _, _, _, _, make = laboratory
+    found = records(make)
+    doc = replace(make("Tool: Edit\n" + json.dumps({"file_path": "/work/app/README.md", "old_string": "a", "new_string": "b"}),
+                       key="readme", role="tool_call"), tool_call_id="c5")
+    found.append(doc)
+    mark_steps(found)
+    step = {record.source_id: record.step for record in found}
+    assert step["test1"] == step["test1-out"] == {"hint": "test"}
+    assert step["edit1"] == {"hint": "edit"} and step["readme"] == {"hint": "edit", "doc": True}
+    assert step["ask"] == {} and step["said"] == {}  # only tool records are marked
+    meta = {record.source_id: record.metadata() for record in found}
+    outcome = {"kind": "outcome", "status": "observed_success"}
+    change = {"kind": "action", "status": "applied"}
+    assert step_of(outcome, [meta["test2-out"], meta["said"]]) == "check"  # the words around a run do not count
+    assert step_of(outcome, [meta["test2-out"], meta["edit2"]]) is None
+    assert step_of(change, [meta["readme"]]) == "doc" and step_of(change, [meta["edit1"], meta["readme"]]) is None
+    assert step_of(outcome, [{**meta["test2-out"], "step": {}}]) is None  # a record read before `step` says nothing
+    assert "step" not in __import__("contexttrail.analysis", fromlist=["record_for_model"]).record_for_model(found[3])

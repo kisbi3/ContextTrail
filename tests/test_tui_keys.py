@@ -139,7 +139,7 @@ def test_english_screen_language_renders_help_titles_and_footer():
     text = drawn(panels).text()
     assert "Event flow" in text and "Selected event" in text
     boxes = "\n".join(flow_diagram(story(), 110).lines())
-    assert "[04] ↑ up" in boxes and "no linked events" in boxes.split("[07]")[1]
+    assert "─verifies──▶" in boxes and "→ [04] verifies" in boxes and "no linked events" not in boxes
     assert ui.keys().startswith("↑↓←→ move") and "verified" in ui.legend()
     panels.handle("?")
     text = drawn(panels).text()
@@ -179,8 +179,10 @@ def test_mouse_selects_boxes_follows_labels_and_scrolls(monkeypatch):
     click(monkeypatch, panels, *at(screen, "문서 갱신"))
     assert panels.current == "docs"
     screen = drawn(panels, rows=60, cols=160)
-    click(monkeypatch, panels, *at(screen, "[03] 수정 ▶"))
-    assert panels.current == "script" and panels.history == ["docs"]  # the label names where the rail left
+    click(monkeypatch, panels, *at(screen, "[01] 답변 ▶"))
+    assert panels.current == "q" and panels.history == ["docs"]  # the label names where the rail left
+    screen = drawn(panels, rows=60, cols=160)
+    click(monkeypatch, panels, *at(screen, "install.sh 추가"))
     screen = drawn(panels, rows=60, cols=160)
     x, y = at(screen, "검증한 결과")
     click(monkeypatch, panels, x + 4, y + 1)  # the numbered check under that heading

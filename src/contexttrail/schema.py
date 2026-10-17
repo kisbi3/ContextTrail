@@ -1728,6 +1728,31 @@ def folded_view(graph: dict) -> dict:
     return view
 
 
+def step_of(event: dict, sources: list[dict]) -> str | None:
+    """What kind of step an event is, from the tool records it cites (`SourceRecord.step`), for the flow's lanes:
+    `check` for a result resting only on test runs, `doc` for a change resting only on documentation edits.
+    None when the records do not say (a claim in words, a code change, a record read before `step` existed)."""
+    steps = [source.get("step") or {} for source in sources if source.get("role") in ("tool_call", "tool_result")]
+    if not steps or any(not step for step in steps):
+        return None
+    if event["kind"] == "outcome" and all(step.get("hint") == "test" for step in steps):
+        return "check"
+    edits = [step for step in steps if step.get("hint") == "edit"]
+    if event["kind"] in CHANGE_KINDS and edits and all(step.get("doc") for step in edits):
+        return "doc"
+    return None
+
+
+def fill_steps(graph: dict, source_of: Callable[[str], dict | None]) -> None:
+    """Set every event's `step` (`step_of`) from the records its evidence cites, when a graph is published."""
+    for event in graph["events"]:
+        found = step_of(event, [source for source in (source_of(i) for i in event.get("evidence_ids", [])) if source])
+        if found:
+            event["step"] = found
+        else:
+            event.pop("step", None)
+
+
 def fill_authoring(graph: dict, source_of: Callable[[str], dict | None]) -> None:
     """Set every event's `authoring` from the records its evidence cites (`source_of(evidence_id)` gives the
     record's metadata, or None). Run when a graph is published, so it reads the records as stored then: an

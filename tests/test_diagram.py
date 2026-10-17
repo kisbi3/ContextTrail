@@ -33,16 +33,18 @@ def test_boxes_and_labelled_arrows_show_each_relation_once():
     text = "\n".join(diagram.lines())
     assert set(diagram.boxes) == {event["id"] for event in graph["events"]}
     left = {key for key, (_, x, _, _) in diagram.boxes.items() if x == diagram.boxes["q"][1]}
-    # Only a result that leads nowhere sits on the right; the failure that motivated the fix stays in the story.
-    assert left == {"q", "plan", "script", "fail", "fix", "docs", "answer"}
-    assert "│ 답변" in text  # q → plan: consecutive boxes, arrow down the column
-    assert "│ 검증" in text and "│ 동기" in text  # script → fail → fix reads down the column
-    # Two verifies links into the run: beside script, and fix → run pointing back up at [04].
-    assert text.count("─검증──▶") == 2 and "[04] ↑ 위" in text
+    # The story is the left lane; the checks of the change (the run and the failure) stand beside it on the right.
+    assert left == {"q", "plan", "script", "fix", "docs", "answer"}
+    assert diagram.boxes["run"][1] == diagram.boxes["fail"][1] > diagram.boxes["q"][1]
+    assert diagram.beside == {"run": "script", "fail": "script"}
+    assert "│ 답변" in text and "│ 동기" in text and "│ 수정" in text  # q → plan → script → fix down the column
+    # Both checks leave the change on labelled lines; their other links are written in both boxes.
+    assert text.count("─검증──▶") == 2 and "→ [06] 동기" in text and "← [05] 동기" in text
+    assert "→ [04] 검증" in text and "← [06] 검증" in text
     # Links that skip boxes run on margin rails and arrive under the number of the box they left.
-    assert "[03] 수정 ▶" in text and "[01] 답변 ▶" in text
+    assert "[01] 답변 ▶" in text
     assert "흐름" not in text  # one session, one flow: no heading
-    assert "연결된 사건 없음" in text.split("[07]")[1]  # docs has no relation at all, and says so
+    assert "연결된 사건 없음" not in text  # that is the detail pane's to say
     assert flow_diagram(graph, 60) is None  # too narrow to read: callers fall back to the text list
 
 
@@ -133,10 +135,11 @@ def test_each_line_cell_knows_the_links_it_draws():
     graph = story()
     diagram = flow_diagram(graph, 110)
     top = diagram.boxes["fix"][0]
-    arrival = [cell for cell in diagram.rows[top + 1] if cell.char == "▶"]
-    assert arrival and arrival[0].edges == {"script-fix"}  # the rail from [03] into the fix
     spine = {cell.char: cell.edges for row in diagram.rows[top - 2:top] for cell in row if cell.char in "│▼"}
-    assert spine["▼"] == {"fail-fix"}
+    assert spine["▼"] == {"script-fix"}  # the change and its fix are neighbours in the story now
+    run_top, run_left, _, _ = diagram.boxes["run"]
+    head = [cell for cell in diagram.rows[run_top + 1][:run_left] if cell.char == "▶"]
+    assert head and head[0].edges == {"script-run"}  # the line beside the change carries the check's link
 
 
 def conversation():
@@ -196,9 +199,11 @@ def test_selected_box_lights_its_links_and_dims_unrelated_boxes():
     panels = FlowPanels(story(), lambda _: None)
     diagram = panels.diagram(110)
     panels.current = "fix"
-    arrival = diagram.rows[diagram.boxes["fix"][0] + 1]
-    lit = [attr for text, attr in panels._cell_runs(arrival) if "수정" in text]
-    assert lit and lit[0] & curses.A_BOLD and not lit[0] & curses.A_DIM  # the rail from [03] into the fix
+    script_top, _, script_height, _ = diagram.boxes["script"]
+    label = next(row for row in diagram.rows[script_top + script_height:diagram.boxes["fix"][0]]
+                 if "수정" in "".join(cell.char for cell in row))
+    lit = [attr for text, attr in panels._cell_runs(label) if "수정" in text]
+    assert lit and lit[0] & curses.A_BOLD and not lit[0] & curses.A_DIM  # the line from [03] into the fix
     docs = diagram.rows[diagram.boxes["docs"][0] + 1]
     assert all(attr & curses.A_DIM for text, attr in panels._cell_runs(docs) if "문서" in text)
     plan = diagram.rows[diagram.boxes["plan"][0] + 1]
@@ -230,19 +235,12 @@ def test_story_boxes_with_no_link_between_them_are_joined_in_order_by_an_unlabel
     assert ":" in "\n".join(flow_diagram(story(), 110, ascii_only=True).lines())
 
 
-def test_a_box_names_the_agent_that_did_the_step_and_a_persons_box_only_the_tool():
+def test_a_box_keeps_who_did_the_step_for_the_detail_pane_not_the_flow():
     graph = story()
     for event in graph["events"]:
         event["authoring"] = [{"tool": "codex", "model": "gpt-6.1-sol", "effort": "high"}]
-    graph["events"][0]["actor"] = "user"
-    diagram = flow_diagram(graph, 110)
-    rows = diagram.lines()
-    assert "codex · gpt-6.1-sol · high" in "\n".join(rows)
-    top, _, height, _ = diagram.boxes["q"]
-    question = rows[top:top + height]
-    assert any("codex" in row for row in question) and not any("gpt-6.1-sol" in row for row in question)
-    plain = "\n".join(flow_diagram(story(), 110).lines())
-    assert "codex" not in plain  # an older graph without the field draws as before
+    text = "\n".join(flow_diagram(graph, 110).lines())
+    assert "gpt-6.1-sol" not in text  # the agent line is noise in the flow; `render.event_detail` keeps it
 
 
 def test_a_sub_agents_box_says_so_in_its_header_and_has_its_own_border_colour():
@@ -255,11 +253,11 @@ def test_a_sub_agents_box_says_so_in_its_header_and_has_its_own_border_colour():
     diagram = flow_diagram(graph, 110)
     text = "\n".join(diagram.lines())
     assert "결과 · 하위 Explore " in text and "변경 · codex exec " in text
-    assert "claude › Explore · sonnet-5-5 · high" in text and "codex exec · 사람 없음 · gpt-6.1-sol" in text
     def border_style(key):
         top, left, height, _ = diagram.boxes[key]
         return {diagram.rows[top][left].style, diagram.rows[top + height - 1][left].style}
-    assert border_style("run") == {"sub"} and border_style("docs") == {"sub"}
+    # A sub-agent is magenta; a run of another model (codex exec, claude -p) has a colour of its own.
+    assert border_style("run") == {"sub"} and border_style("docs") == {"llm"}
     assert "sub" not in border_style("fix")  # the session's own agent keeps the status-coloured border
 
 
@@ -304,7 +302,7 @@ def forked():
     events = [node("q1", "question", "asked", "문서 정리까지 해줘", session="A"),
               node("docs", "action", "applied", "문서 갱신", session="A"),
               node("ex", "outcome", "reported_complete", "로그 조사", session="A"),
-              node("evals", "outcome", "observed_success", "evals 13/18", session="A"),
+              node("evals", "action", "applied", "evals 기준 갱신", session="A"),
               node("q2", "question", "asked", "이어서 slash command", session="B"),
               node("cmd", "action", "applied", "설치 명령 추가", session="B"),
               node("t", "outcome", "observed_success", "pytest 496 passed", session="B"),
@@ -366,3 +364,79 @@ def test_a_sub_agents_boxes_stand_beside_the_step_that_followed_them_in_time_not
     diagram = flow_diagram(graph, 120)
     assert diagram.boxes["s"][0] >= diagram.boxes["script"][0]
     assert diagram.boxes["s"][0] < diagram.boxes["fail"][0] + diagram.boxes["fail"][2]
+
+
+def lanes(events, edges):
+    diagram = flow_diagram({"events": events, "edges": edges}, 120)
+    left = min(box[1] for box in diagram.boxes.values())
+    return diagram, {key for key, box in diagram.boxes.items() if box[1] == left}
+
+
+def timed(*events):
+    for n, event in enumerate(events):
+        event["recorded_at"] = f"2026-10-12T04:{n:02d}:00Z"
+    return list(events)
+
+
+def test_a_result_that_led_to_a_decision_stands_beside_it_as_its_cause():
+    events = timed(node("bad", "outcome", "observed_failure", "7일 블록 bootstrap 퇴화"),
+                   node("month", "decision", "adopted", "한 달 자료로 확대"),
+                   node("start", "action", "in_progress", "한 달 분석 시작"))
+    diagram, left = lanes(events, [link("bad", "month", "motivates")])
+    assert left == {"month", "start"} and diagram.beside == {"bad": "month"}
+    row = diagram.lines()[diagram.boxes["bad"][0] + 1]
+    assert "◀" in row and "동기" in row  # the cause feeds into the decision, named by its relation
+
+
+def test_a_check_with_no_relation_stands_beside_the_step_before_it_on_a_plain_line():
+    events = timed(node("month", "decision", "adopted", "한 달 자료로 확대"),
+                   node("hash", "outcome", "observed_success", "산출물 해시 일치"),
+                   node("start", "action", "in_progress", "한 달 분석 시작"))
+    diagram, left = lanes(events, [])
+    assert left == {"month", "start"} and diagram.beside == {"hash": "month"}
+    top, x, _, _ = diagram.boxes["hash"]
+    line = diagram.rows[top + 1][diagram.boxes["month"][1] + diagram.boxes["month"][3]:x]
+    text = "".join(cell.char for cell in line)
+    assert "▶" not in text and "◀" not in text and "검증" not in text  # beside, never caused by
+    assert not any(cell.edges for cell in line)  # a layout line carries no link
+
+
+def test_documentation_edits_and_test_runs_known_from_their_records_stand_on_the_right():
+    events = timed(node("ask", "question", "asked", "문서도 고쳐 줘"),
+                   node("code", "action", "applied", "수집기 수정"),
+                   dict(node("readme", "action", "applied", "README 기록"), step="doc"),
+                   dict(node("tests", "outcome", "reported_complete", "pytest 105건 통과 보고"), step="check"),
+                   node("claim", "outcome", "reported_complete", "내부 최댓값 가설 미지지"),
+                   node("broke", "outcome", "observed_failure", "다운로드 실패"))
+    events[0]["actor"] = "user"
+    diagram, left = lanes(events, [])
+    # A claim in words and a failure with no relation stay in the story; so does every code change.
+    assert left == {"ask", "code", "claim", "broke"}
+    assert diagram.beside == {"readme": "code", "tests": "code"}
+    assert "! 완료 보고·미검증" in "\n".join(diagram.lines())  # a reported pass keeps its warning on the right
+
+
+def test_a_flow_of_only_checks_stays_one_column_and_time_placement_keeps_to_the_session():
+    events = timed(node("a", "outcome", "observed_success", "검사 A"), node("b", "outcome", "observed_success", "검사 B"))
+    diagram, left = lanes(events, [])
+    assert left == {"a", "b"} and diagram.beside == {}
+    events = timed(node("s1", "action", "applied", "세션 1 변경", session="one"),
+                   node("s2", "action", "applied", "세션 2 변경", session="two"),
+                   node("c1", "outcome", "observed_success", "세션 1 검사", session="one"))
+    diagram, _ = lanes(events, [link("s1", "s2", "motivates")])
+    assert diagram.beside == {"c1": "s1"}  # not the later step of the other session
+
+
+def test_a_box_beside_the_selected_step_is_not_dimmed():
+    import curses
+    from contexttrail.ui import FlowPanels
+    graph = {"events": timed(node("month", "decision", "adopted", "한 달 자료로 확대"),
+                             node("hash", "outcome", "observed_success", "산출물 해시 일치"),
+                             node("other", "decision", "adopted", "재현 분리")), "edges": []}
+    panels = FlowPanels(graph, lambda _: None)
+    panels._drawn = diagram = panels.diagram(120)
+    panels.current = "month"
+    hash_row = diagram.rows[diagram.boxes["hash"][0] + 1]
+    assert not any(attr & curses.A_DIM for text, attr in panels._cell_runs(hash_row) if "해시" in text)
+    panels.current = "other"
+    assert all(attr & curses.A_DIM for text, attr in panels._cell_runs(hash_row) if "해시" in text)

@@ -224,8 +224,11 @@ def session_records(scope: Scope, store: Store | None, session_id: str, *, codex
         for path in opencode_databases(opencode_home):
             snapshot = parse_opencode(path, scope, session=session_id)
             found.update((r.source_id, r) for r in snapshot.records if r.session_id == session_id)
-    return sorted(found.values(), key=lambda r: (r.recorded_at or "", r.locator.get("line", 0),
-                                                 r.locator.get("fragment_index", 0), r.source_id))
+    records = sorted(found.values(), key=lambda r: (r.recorded_at or "", r.locator.get("line", 0),
+                                                    r.locator.get("fragment_index", 0), r.source_id))
+    from .analysis import mark_steps  # what a scan marks on tool records, so a note's event gets it too
+    mark_steps(records)
+    return records
 
 
 def runs_note(record: SourceRecord) -> bool:

@@ -99,7 +99,7 @@ def _shorten(text: str, width: int) -> str:
 def _styles(color: bool) -> dict[str, int]:
     """curses attributes per detail style. Tones keep their glyph (✓ ! ✗) without color."""
     styles = {"": 0, "plain": 0, "title": curses.A_BOLD, "heading": curses.A_BOLD, "dim": curses.A_DIM,
-              "ok": 0, "warn": curses.A_BOLD, "fail": curses.A_BOLD, "frame": 0, "sub": 0}
+              "ok": 0, "warn": curses.A_BOLD, "fail": curses.A_BOLD, "frame": 0, "sub": 0, "llm": 0}
     if not color or os.environ.get("NO_COLOR"):
         return styles
     try:
@@ -107,10 +107,11 @@ def _styles(color: bool) -> dict[str, int]:
             return styles
         curses.start_color()
         curses.use_default_colors()
-        # `sub` is the border of a sub-agent's box (or a run another call started): magenta, whatever its status.
+        # `sub` is the border of a sub-agent's box: magenta, whatever its status; `llm` a run of another model a call
+        # started (`codex exec`, `claude -p`): blue, since cyan already marks frames and the selected box's links.
         for number, (name, value) in enumerate((("frame", curses.COLOR_CYAN), ("ok", curses.COLOR_GREEN),
                                                 ("warn", curses.COLOR_YELLOW), ("fail", curses.COLOR_RED),
-                                                ("sub", curses.COLOR_MAGENTA)), 1):
+                                                ("sub", curses.COLOR_MAGENTA), ("llm", curses.COLOR_BLUE)), 1):
             curses.init_pair(number, value, -1)
             styles[name] |= curses.color_pair(number)
         styles["heading"] |= curses.color_pair(1)
@@ -347,6 +348,12 @@ class FlowPanels:
         to are dimmed. Titles of search matches are underlined.
         """
         near_edges, near_events = self._near_links() if self.current is not None else (set(), set())
+        beside = getattr(self._drawn, "beside", {}) if self.current is not None else {}
+        if beside:
+            # A box standing beside the selected step (or the step the selected box stands beside) is part of it,
+            # though no link joins them: it is not dimmed.
+            near_events = near_events | {key for key, main in beside.items() if main == self.current}
+            near_events |= {beside[self.current]} if self.current in beside else set()
         found = set(self.matches)
         runs: list[tuple[str, int]] = []
         for cell in cells:

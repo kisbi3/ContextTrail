@@ -33,6 +33,10 @@ class SourceRecord:
     # the new file): `from_session_id` and `point_at`, the time of the last copied row. Set on the fork's own
     # records by `_drop_forked_copies`; outside the content hash and hidden from the model, like `authoring`.
     fork: dict[str, Any] = field(default_factory=dict)
+    # What code makes of a tool call or its result (`analysis.mark_steps` at scan): the call's `hint` (edit, read,
+    # run, test, commit, vcs, delegate, poll) and `doc` for an edit of documentation only. Outside the content hash
+    # and hidden from the model, like `authoring`; the flow reads it off the cited records (`schema.fill_steps`).
+    step: dict[str, Any] = field(default_factory=dict)
 
     pinned_hash: str | None = None  # host-only reconstruction of preserved excerpt ranges
 

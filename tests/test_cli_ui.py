@@ -128,8 +128,9 @@ def test_graph_command_shows_project_and_eval_in_terminal(tmp_path, capsys):
     assert main(['graph',str(folder)])==0
     project_output=capsys.readouterr().out
     assert '사건' in project_output and '┌─ [01] 결정' in project_output
-    # labelled arrows between boxes; the failed check leads to the fix, so it stays in the story column
-    assert '│ 검증' in project_output and '│ 동기' in project_output and '[01] 후속 ▶' in project_output
+    # labelled arrows between boxes; the failed check stands beside the change it checked, its link to the fix written in
+    assert '─검증──▶' in project_output and '│ 후속' in project_output and '[01] 후속 ▶' in project_output
+    assert '→ [05] 동기' in project_output and '← [04] 동기' in project_output
     assert 'AI 호출 없음' in project_output
 
     evaluation=tmp_path/'eval'
