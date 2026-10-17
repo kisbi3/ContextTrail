@@ -244,3 +244,23 @@ def test_an_output_whose_end_cannot_be_shown_is_sent_whole():
     from contexttrail.analysis import _view
     one_line_json = "Chunk ID: 1\nWall time: 2s\nExit code: 0\nOutput:\n" + '{"output":"' + "x" * 5_400 + '"}'
     assert _view(SourceRecord("r", "codex", "s", "tool_result", one_line_json, {})) is None
+
+
+def test_a_command_after_a_heredoc_is_classified_and_the_heredoc_body_is_data():
+    from contexttrail.analysis import command_kind, drop_heredoc_bodies
+    # Codex Desktop writes a test file with a heredoc and runs it in one call; the body's words are data.
+    line = "cat > tests/test_bootstrap.py <<'PY'; import pytest; def test_x():; assert 1; PY; .venv/bin/python -m pytest tests/test_bootstrap.py -q"
+    assert command_kind(line) == "test"
+    assert "import pytest" not in drop_heredoc_bodies(line) and "pytest tests/test_bootstrap.py" in drop_heredoc_bodies(line)
+    assert command_kind("cat > notes.md <<'EOF'\nrun pytest later\nEOF") is None
+    assert command_kind("cat > a.txt <<EOF\nno end") is None  # an unterminated heredoc takes the rest of the line
+    assert command_kind("git commit -m x <<EOF\nbody\nEOF\n") == "commit"
+
+
+def test_a_long_line_shows_its_head_and_its_tail():
+    from contexttrail.analysis import LINE_CHARS, LINE_TAIL_CHARS, shown_line
+    line = "cat > t.py <<'PY'\\n" + "x = 1\\n" * 600 + "PY\\n.venv/bin/python -m pytest t.py -q"
+    shown = shown_line(line)
+    assert shown.startswith("cat > t.py") and shown.endswith("pytest t.py -q")  # what it ran is not cut away
+    assert "[cut:" in shown and len(shown) < LINE_CHARS + 120
+    assert shown.endswith(line[-LINE_TAIL_CHARS:]) and shown_line("short") == "short"

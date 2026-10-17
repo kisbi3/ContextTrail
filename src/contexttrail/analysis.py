@@ -386,6 +386,22 @@ _SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|\n]")
 _SHELL_C = re.compile(r"^(?:bash|sh|zsh)\s+-l?c\s+[\"']?")
 _SHELL_FILE = re.compile(r"^(?:bash|sh|zsh)\s+(?=[^-\s])")
 _HEREDOC = re.compile(r"<<-?\s*[\"']?\w+")
+_HEREDOC_TAG = re.compile(r"<<-?\s*([\"']?)(\w+)\1")
+
+
+def drop_heredoc_bodies(text: str) -> str:
+    """The command line without the data of its heredocs: `cat > t.py <<'PY' … PY; pytest t.py` keeps
+    `cat > t.py` and `pytest t.py` (the body's words are data, never commands). A heredoc with no terminator
+    takes the rest of the line."""
+    out, position = [], 0
+    while (found := _HEREDOC_TAG.search(text, position)) is not None:
+        out.append(text[position:found.start()])
+        end = re.compile(rf"(?:^|[;\n])\s*{re.escape(found.group(2))}\s*(?=$|[;\n])").search(text, found.end())
+        if end is None:
+            return "".join(out)
+        out.append(";")
+        position = end.end()
+    return "".join(out) + text[position:]
 _INTERPRETER = re.compile(r"^(?:\S*/)?python3?\s+-m\s+")
 _ENV_PREFIX = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+")
 _WRAPPERS = re.compile(
@@ -432,7 +448,7 @@ def _vcs_mutates(sub: str, rest: str) -> bool:
 def _command_segments(text: str) -> list[str]:
     """Each command of a compound line without env assignments, wrappers or interpreter prefix."""
     segments = []
-    for raw in _SEGMENT_SPLIT.split(_HEREDOC.split(text)[0]):
+    for raw in _SEGMENT_SPLIT.split(drop_heredoc_bodies(text)):
         segment = raw.strip().lstrip("(").strip()
         for _ in range(4):
             segment = _SHELL_FILE.sub("", _SHELL_C.sub("", segment))
@@ -561,6 +577,7 @@ VIEW_HEAD_CHARS, VIEW_TAIL_CHARS = 2_000, 1_000
 # slips past the head/tail view whole); what is cut is readable by line range, and a quote from the
 # shown part is still an exact substring of the line.
 LINE_CHARS = 1_500
+LINE_TAIL_CHARS = 400  # of those, kept from the end of the line
 # A record that is only context (the turn before, a commit near in time) is shown head and tail, whatever
 # its role: one 39,000-character commit record was going into four units whole as "nearby" context.
 CONTEXT_HEAD_CHARS, CONTEXT_TAIL_CHARS = 1_500, 500
@@ -597,10 +614,14 @@ def _view(record: SourceRecord, head_chars: int = VIEW_HEAD_CHARS,
 
 
 def shown_line(text: str) -> str:
-    """A record line as the model sees it: whole up to LINE_CHARS, then cut with a note."""
+    """A record line as the model sees it: whole up to LINE_CHARS, else its head and its tail with a note between.
+    The tail matters: Codex Desktop writes a whole command on one line, and what it ran comes last (a heredoc that
+    writes a test file, then the `pytest` that runs it)."""
     if len(text) <= LINE_CHARS:
         return text
-    return text[:LINE_CHARS] + f" [cut: {len(text) - LINE_CHARS} more characters on this line; the quote must come from the part shown]"
+    head = LINE_CHARS - LINE_TAIL_CHARS
+    return (text[:head] + f" [cut: {len(text) - LINE_CHARS} characters here; a quote must come from a part shown] "
+            + text[-LINE_TAIL_CHARS:])
 
 
 def shown_quote(quote: str, focus: list[list[int]] | None) -> str:

@@ -15,7 +15,8 @@ def test_a_long_line_is_cut_with_a_note_and_the_cost_follows():
     line = "x" * 10_000
     assert shown_line("short") == "short"
     cut = shown_line(line)
-    assert cut.startswith("x" * LINE_CHARS) and "8500 more characters" in cut and len(cut) < LINE_CHARS + 120
+    assert cut.startswith("x" * 1_000) and cut.endswith("x" * 400) and "8500 characters here" in cut
+    assert len(cut) < LINE_CHARS + 120
     one_line = record(line)
     assert unit_cost(one_line) < LINE_CHARS + 200  # not 10,000
     assert unit_cost(record("a\nb\nc")) == 6
