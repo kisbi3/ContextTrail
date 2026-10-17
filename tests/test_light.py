@@ -48,7 +48,7 @@ def test_the_skeleton_follows_the_tool_steps(laboratory):
         ("action", "applied"), ("outcome", "observed_failure"), ("action", "applied"), ("outcome", "observed_success")]
     assert items[0]["title"] == "Edit calc.py" and items[0]["sources"] == ["edit1", "edit1-out"]
     assert items[1]["sources"][0] == "test1-out"  # the result first: an observed status rests on it
-    assert edges == [{"from": "K1", "to": "K2"}, {"from": "K3", "to": "K4"}]
+    assert [(e["from"], e["to"]) for e in edges] == [("K1", "K2"), ("K3", "K4")]
 
 
 def test_the_same_check_run_again_with_nothing_changed_between_is_one_result(laboratory):
@@ -68,7 +68,7 @@ def test_the_same_check_run_again_with_nothing_changed_between_is_one_result(lab
         ("outcome", "observed_success")]
     assert items[1]["sources"] == ["test1b-out", "test1b", "test1-out", "test1"]
     assert items[4]["title"] == "Check passed: ruff check ."
-    assert edges == [{"from": "K1", "to": "K2"}, {"from": "K3", "to": "K4"}, {"from": "K3", "to": "K5"}]
+    assert [(e["from"], e["to"]) for e in edges] == [("K1", "K2"), ("K3", "K4"), ("K3", "K5")]  # lint of the tree
 
 
 def test_a_light_run_is_one_call_per_unit_and_cites_records_by_code(laboratory):
@@ -131,3 +131,21 @@ def test_a_scan_marks_what_each_tool_call_did_and_an_event_reads_it_off_its_cita
     assert step_of(change, [meta["readme"]]) == "doc" and step_of(change, [meta["edit1"], meta["readme"]]) is None
     assert step_of(outcome, [{**meta["test2-out"], "step": {}}]) is None  # a record read before `step` says nothing
     assert "step" not in __import__("contexttrail.analysis", fromlist=["record_for_model"]).record_for_model(found[3])
+
+
+def test_an_edit_is_linked_to_a_test_only_when_the_run_names_it_or_runs_the_whole_suite(laboratory):
+    from contexttrail.light import covers
+    _, _, _, _, make = laboratory
+    assert covers("python -m pytest -q", ["src/calc.py"]).startswith("The whole test suite")
+    assert "calc.py" in covers("pytest tests/test_calc.py -q", ["/work/app/src/calc.py"])
+    assert covers("pytest tests/test_docs.py -q", ["src/payment.py"]) is None  # other tests, however close in time
+    assert covers("ls -la", ["a.py"]) is None
+    found = records(make)
+    found[5] = replace(found[5], content=found[5].content)  # edit2 (calc.py)
+    other = "Tool: Bash\n" + json.dumps({"command": "python -m pytest tests/test_docs.py -q"})
+    found[7] = replace(found[7], content=other)
+    items, edges = skeleton(found)
+    checks = {item["id"] for item in items if item["kind"] == "outcome"}
+    linked = {edge["to"] for edge in edges}
+    assert len(checks) == 2 and len(linked) == 1  # the whole-suite run after edit1 links; the docs test after edit2 does not
+    assert all(edge["why"] for edge in edges)

@@ -68,6 +68,27 @@ def _files(target: str) -> list[str]:
     return [PurePosixPath(name).name for name in names] or [target]
 
 
+def covers(command: str, files: list[str]) -> str | None:
+    """Why a test run counts as a check of edited files, or None: the run names one of them (its path, or its module
+    as in `tests/test_calc.py` for `calc.py`), or it runs the whole suite (no test path or id given). A run of
+    other, named tests is not a check of these edits, however close in time (`docs/DECISIONS.md` 2026-10-18)."""
+    from .analysis import TEST_COMMAND, _command_segments
+    runs = [segment for segment in _command_segments(command) if TEST_COMMAND.match(segment)]
+    if not runs:
+        return None
+    for run in runs:
+        named = next((f for f in files if f.rsplit("/", 1)[-1] in run
+                      or len(f.rsplit("/", 1)[-1].rsplit(".", 1)[0]) > 2 and f.rsplit("/", 1)[-1].rsplit(".", 1)[0] in run), None)
+        if named:
+            return f"The test run names the edited {named.rsplit('/', 1)[-1]} (the file or its module)."
+    for run in runs:
+        targets = [word for word in run.split()[1:] if not word.startswith("-") and word not in ("./...", ".")
+                   and any(mark in word for mark in ("/", ".", "::"))]
+        if not targets:
+            return "The whole test suite ran after this edit in the same turn."
+    return None
+
+
 def skeleton(assigned: list[SourceRecord]) -> tuple[list[dict], list[dict]]:
     """Events and `verifies` relations the tool steps show, with the records each rests on (call first)."""
     from .analysis import tool_steps
@@ -104,8 +125,12 @@ def skeleton(assigned: list[SourceRecord]) -> tuple[list[dict], list[dict]]:
                 previous.update(status=item["status"], title=item["title"], sources=item["sources"] + previous["sources"])
                 continue
             items.append(item)
-            if turn in last_edit:
-                edges.append({"from": last_edit[turn]["id"], "to": item["id"]})
+            # The whole command line (the outline's target is cut short), with its lines kept apart for heredocs.
+            from .analysis import _command_text
+            command = _command_text(content.get(step["call"], "").partition("\n")[2], "; ")
+            why = covers(command, last_edit[turn]["files"]) if turn in last_edit else None
+            if why:
+                edges.append({"from": last_edit[turn]["id"], "to": item["id"], "why": why})
         elif step["hint"] == "commit" and step["result"] and not step["failed"]:
             items.append({"id": f"K{len(items) + 1}", "kind": "action", "status": "applied", "turn": turn,
                           "sources": sources, "title": "Commit: " + step["target"][:60]})
@@ -209,7 +234,7 @@ def extraction(answer: dict, items: list[dict], edges: list[dict], unit: dict, s
             outcome = next(c for c in candidates if c["id"] == target)
             relations.append({"id": f"tmp:V{number}", "from_event_id": source, "to_event_id": target,
                               "relation": "verifies", "basis": "structural", "evidence": outcome["evidence"][:1],
-                              "rationale": "A test ran after this edit in the same turn.", "active": True})
+                              "rationale": edge.get("why") or "A test ran after this edit in the same turn.", "active": True})
     limitations = [f"light analysis: no evidence left for {', '.join(dropped)}."] if dropped else []
     return {"status": "complete", "read_requests": [], "snapshot_id": snapshot_id, "unit_id": unit["id"],
             "event_candidates": candidates, "edge_candidates": relations, "existing_event_matches": [],
