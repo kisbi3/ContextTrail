@@ -22,10 +22,11 @@ ADAPTER_VERSION = "cli-platform-sandbox-v4-codex-resume"
 MAX_OUTPUT = 8 * 1024 * 1024
 # A run always names its model: the sandbox hides the user's CLI config, so without this
 # the CLI's own default (which can change between releases) would silently decide.
-DEFAULT_MODELS = {"codex": "gpt-sol", "claude": "sonnet"}
-# Codex takes only versioned names. A name without a version (`gpt-sol`) asks for the newest model of
+# The light models of each tool (2026-10-17): the larger ones (`gpt-sol`, `sonnet`) are what they are measured against.
+DEFAULT_MODELS = {"codex": "gpt-luna", "claude": "haiku"}
+# Codex takes only versioned names. A name without a version (`gpt-luna`) asks for the newest model of
 # that family in the catalog shipped with the installed Codex; preflight resolves it, and calls record
-# the resolved name. Claude resolves its own aliases (`sonnet`) and reports the model that answered.
+# the resolved name. Claude resolves its own aliases (`haiku`) and reports the model that answered.
 FAMILY_NAME = re.compile(r"gpt-([a-z]+)")
 
 
