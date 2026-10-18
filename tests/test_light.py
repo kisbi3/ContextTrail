@@ -14,11 +14,11 @@ def records(make):
     return [
         make("add()가 틀려요. 고쳐 주세요.", key="ask"),
         tool("edit1", "tool_call", patch, "c1"), tool("edit1-out", "tool_result", "The file has been updated.", "c1"),
-        tool("test1", "tool_call", "Tool: Bash\n" + json.dumps({"command": "python -m pytest -q"}), "c2"),
+        tool("test1", "tool_call", "Tool: Bash\n" + json.dumps({"command": "python -m pytest tests/test_calc.py -q"}), "c2"),
         tool("test1-out", "tool_result", "1 failed, 2 passed\nExit code: 1", "c2"),
         tool("edit2", "tool_call", patch.replace("a + b", "a + b  # fixed"), "c3"),
         tool("edit2-out", "tool_result", "The file has been updated.", "c3"),
-        tool("test2", "tool_call", "Tool: Bash\n" + json.dumps({"command": "python -m pytest -q"}), "c4"),
+        tool("test2", "tool_call", "Tool: Bash\n" + json.dumps({"command": "python -m pytest tests/test_calc.py -q"}), "c4"),
         tool("test2-out", "tool_result", "3 passed", "c4"),
         make("부호가 반대였습니다. 빼기 대신 더하기로 바꿨고, 테스트가 통과합니다.", key="said", role="assistant"),
     ]
@@ -56,7 +56,7 @@ def test_the_same_check_run_again_with_nothing_changed_between_is_one_result(lab
     recs = records(make)
     def tool(key, role, text, call_id):
         return replace(make(text, key=key, role=role), tool_call_id=call_id)
-    rerun = [tool("test1b", "tool_call", "Tool: Bash\n" + json.dumps({"command": "python -m pytest -q"}), "c2b"),
+    rerun = [tool("test1b", "tool_call", "Tool: Bash\n" + json.dumps({"command": "python -m pytest tests/test_calc.py -q"}), "c2b"),
              tool("test1b-out", "tool_result", "1 failed, 2 passed\nExit code: 1", "c2b")]
     other = [tool("lint", "tool_call", "Tool: Bash\n" + json.dumps({"command": "ruff check ."}), "c5"),
              tool("lint-out", "tool_result", "All checks passed!", "c5")]
@@ -68,7 +68,7 @@ def test_the_same_check_run_again_with_nothing_changed_between_is_one_result(lab
         ("outcome", "observed_success")]
     assert items[1]["sources"] == ["test1b-out", "test1b", "test1-out", "test1"]
     assert items[4]["title"] == "Check passed: ruff check ."
-    assert [(e["from"], e["to"]) for e in edges] == [("K1", "K2"), ("K3", "K4"), ("K3", "K5")]  # lint of the tree
+    assert [(e["from"], e["to"]) for e in edges] == [("K1", "K2"), ("K3", "K4")]  # a lint of the whole tree names no file
 
 
 def test_a_light_run_is_one_call_per_unit_and_cites_records_by_code(laboratory):
@@ -133,22 +133,25 @@ def test_a_scan_marks_what_each_tool_call_did_and_an_event_reads_it_off_its_cita
     assert "step" not in __import__("contexttrail.analysis", fromlist=["record_for_model"]).record_for_model(found[3])
 
 
-def test_an_edit_is_linked_to_a_test_only_when_the_run_names_it_or_runs_the_whole_suite(laboratory):
+def test_an_edit_is_linked_to_a_test_only_when_the_run_names_every_edited_file(laboratory):
     from contexttrail.light import covers
     _, _, _, _, make = laboratory
-    assert covers("python -m pytest -q", ["src/calc.py"]).startswith("The whole test suite")
     assert "calc.py" in covers("pytest tests/test_calc.py -q", ["/work/app/src/calc.py"])
-    assert covers("pytest tests/test_docs.py -q", ["src/payment.py"]) is None  # other tests, however close in time
+    assert covers("python -m pytest -q", ["src/calc.py"]) is None  # the whole suite: what it covered is unknown
+    assert covers("pytest -k smoke", ["payment.py"]) is None  # a selection is not the whole suite either
+    assert covers("pytest tests/test_database.py", ["base.py"]) is None  # names compared whole, never a substring
+    assert covers("pytest tests/test_parser.py", ["parser.py", "writer.py"]) is None  # only some of the files
+    assert covers("pytest tests/test_parser.py tests/test_writer.py", ["parser.py", "writer.py"])
     assert covers("ls -la", ["a.py"]) is None
     found = records(make)
-    found[5] = replace(found[5], content=found[5].content)  # edit2 (calc.py)
     other = "Tool: Bash\n" + json.dumps({"command": "python -m pytest tests/test_docs.py -q"})
     found[7] = replace(found[7], content=other)
     items, edges = skeleton(found)
     checks = {item["id"] for item in items if item["kind"] == "outcome"}
     linked = {edge["to"] for edge in edges}
-    assert len(checks) == 2 and len(linked) == 1  # the whole-suite run after edit1 links; the docs test after edit2 does not
+    assert len(checks) == 2 and len(linked) == 1  # the run naming calc.py links; the docs test after edit2 does not
     assert all(edge["why"] for edge in edges)
+
 
 
 def test_a_unit_summary_is_asked_only_when_chosen_and_kept_with_the_units_events(laboratory):

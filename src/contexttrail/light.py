@@ -68,24 +68,38 @@ def _files(target: str) -> list[str]:
     return [PurePosixPath(name).name for name in names] or [target]
 
 
+# How a test file names the module it tests: `test_calc.py`, `calc_test.go`, `calc.test.ts`, `calc.spec.js`, ...
+_TEST_NAMES = ("test_{stem}.py", "{stem}_test.py", "tests_{stem}.py", "{stem}_test.go", "{stem}.test.ts", "{stem}.test.tsx",
+               "{stem}.test.js", "{stem}.spec.ts", "{stem}.spec.js", "{stem}_spec.rb", "{stem}Test.java", "{stem}Tests.swift")
+
+
+def _named(edited: str, targets: list[str]) -> bool:
+    """Whether a test run's targets name an edited file: the file itself, or its module's test file, compared as
+    whole file names (never a substring: `base.py` is not `test_database.py`)."""
+    name = edited.rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0]
+    tests = {pattern.format(stem=stem) for pattern in _TEST_NAMES}
+    for target in targets:
+        base = target.split("::", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+        if base == name or base in tests:
+            return True
+    return False
+
+
 def covers(command: str, files: list[str]) -> str | None:
-    """Why a test run counts as a check of edited files, or None: the run names one of them (its path, or its module
-    as in `tests/test_calc.py` for `calc.py`), or it runs the whole suite (no test path or id given). A run of
-    other, named tests is not a check of these edits, however close in time (`docs/DECISIONS.md` 2026-10-18)."""
+    """Why a test run counts as a check of every one of the edited files, or None. The run must name each file, or
+    its module's test file, among its targets (`_named`). A run of the whole suite, of a selection (`-k`, `-m`), or
+    of tests that name only some of the files is not a check of these edits: code cannot tell what it covered, so it
+    is left to the records and the model, never inferred from time (`docs/DECISIONS.md` 2026-10-18)."""
     from .analysis import TEST_COMMAND, _command_segments
-    runs = [segment for segment in _command_segments(command) if TEST_COMMAND.match(segment)]
-    if not runs:
+    if not files:
         return None
-    for run in runs:
-        named = next((f for f in files if f.rsplit("/", 1)[-1] in run
-                      or len(f.rsplit("/", 1)[-1].rsplit(".", 1)[0]) > 2 and f.rsplit("/", 1)[-1].rsplit(".", 1)[0] in run), None)
-        if named:
-            return f"The test run names the edited {named.rsplit('/', 1)[-1]} (the file or its module)."
-    for run in runs:
-        targets = [word for word in run.split()[1:] if not word.startswith("-") and word not in ("./...", ".")
+    for run in (segment for segment in _command_segments(command) if TEST_COMMAND.match(segment)):
+        targets = [word.strip("'\"") for word in run.split()[1:] if not word.startswith("-")
                    and any(mark in word for mark in ("/", ".", "::"))]
-        if not targets:
-            return "The whole test suite ran after this edit in the same turn."
+        if targets and all(_named(f, targets) for f in files):
+            shown = ", ".join(f.rsplit("/", 1)[-1] for f in files)
+            return f"The test run names the edited {shown} (each file or its module's test file)."
     return None
 
 
