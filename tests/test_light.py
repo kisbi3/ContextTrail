@@ -220,3 +220,29 @@ def test_a_v2_run_publishes_the_code_found_work_and_the_turn_summary(laboratory)
     assert any(event["status"] == "observed_failure" for event in graph["events"])  # the failed check, found by code
     assert list(graph["unit_summaries"].values())[0]["text"] == "합성 구간: 작업 기록만"
     assert engine.config.integrate_output == "draft_only" and not engine.config.semantic_review  # no integrate, no review
+
+
+def test_v2_keeps_a_run_only_when_the_story_points_at_it_and_names_unnamed_work_in_korean(laboratory):
+    from contexttrail.light import run_items, skeleton, story_extraction, written_blocks
+    from contexttrail.schema import EvidenceValidator
+    _, _, _, _, make = laboratory
+    found = records(make)
+    start = replace(make("Tool: Bash\n" + json.dumps({"command": "python scripts/run_pipeline.py start"}), key="job", role="tool_call"), tool_call_id="c9")
+    out = replace(make("started pid 41965\nExit code: 0", key="job-out", role="tool_result"), tool_call_id="c9")
+    other = replace(make("Tool: Bash\n" + json.dumps({"command": "ps -o pid -p 41965"}), key="ps", role="tool_call"), tool_call_id="c10")
+    found += [start, out, other]
+    runs = run_items(found)
+    assert [(r["id"], r["status"]) for r in runs] == [("R1", "passed"), ("R2", "unknown")]
+    items, edges = skeleton(found)
+    blocks = written_blocks(found)
+    answer = {"work": [], "links": [], "turn_summary": None,
+              "story": [{"id": "N1", "kind": "decision", "status": "adopted", "actor": "assistant", "title": "분석 실행",
+                         "why": None, "summary": "", "blocks": [blocks[1]["id"]], "work": ["R1"]}]}
+    pool = {r.source_id: r for r in found}
+    provided = {r.source_id: [(1, len(r.content.splitlines()))] for r in found}
+    output, _ = story_extraction(answer, items, edges, {"id": "u", "sources": list(pool)}, "snap", pool, provided,
+                                 EvidenceValidator(pool, provided), blocks, runs, "Korean")
+    titles = [c["title"] for c in output["event_candidates"]]
+    assert "실행: python scripts/run_pipeline.py start" in titles and not any("ps -o" in t for t in titles)
+    assert any(t.startswith("수정: calc.py") for t in titles) and any(t.startswith("검사 실패: ") for t in titles)
+    assert any(e["relation"] == "motivates" and e["to_event_id"] == "tmp:R1" for e in output["edge_candidates"])

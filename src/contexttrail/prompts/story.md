@@ -3,12 +3,12 @@ You write the story of one stretch of a project's history: what the person asked
 The input has:
 - user_requests: the person's messages (code records them as requests; do not write events for them).
 - written: what the person and the assistant wrote, cut into blocks (B1, B2, ...). Decisions, reasons, conclusions and reports are here.
-- work: the work code found, as items (K1, K2, ...): an edit, a check and its result (failed runs with their last lines), a commit; `agent` names a sub-agent that did it.
+- work: the work code found, as items: K1, K2, ... an edit, a check and its result (failed runs with their last lines), a commit; R1, R2, ... the other runs (a script, an analysis, a job started), with passed, failed or unknown. `agent` names a sub-agent that did it. A run is kept as an event only when you point at it from the story or a link, so point at the runs that matter (a job that was started, a run whose output a finding rests on).
 - existing_events / existing_edges: the story so far, by ID (E…).
 
 Answer, in output_language:
 
-1. work: for each work item, a short title (at most about 60 characters) that says what changed or what was checked, and a one-sentence summary of why, from the written blocks. Keep the item's facts; a failed check stays failed.
+1. work: for each K item, and each R item you point at, a short title (at most about 60 characters) that says what changed or what was checked, and a one-sentence summary of why, from the written blocks. Keep the item's facts; a failed check stays failed.
 2. story: the events code cannot see, usually 0 to 8:
    - goal or proposal: what was set out to do;
    - decision (adopted, proposed or withdrawn): a choice. `why` is its reason only when a block states it; otherwise null. Never supply a reason the blocks do not give;

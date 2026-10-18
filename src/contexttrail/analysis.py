@@ -2485,7 +2485,8 @@ class Engine:
                 assigned = [pool[i] for i in unit["sources"]]
                 items, edges = light.skeleton(assigned)
                 blocks = light.written_blocks(assigned)
-                request = light.story_request(unit, snapshot_id, data, items, assigned, blocks)
+                runs = light.run_items(assigned)
+                request = light.story_request(unit, snapshot_id, data, items, assigned, blocks, runs)
                 try:
                     answer = h.task("story", request, light.story_check, validator=validator, schema=light.STORY_SCHEMA,
                                     thread=self.unit_thread(unit["id"], h.runner))
@@ -2493,7 +2494,7 @@ class Engine:
                 except TaskValidationError:
                     answer, failed = {"work": [], "story": [], "links": [], "turn_summary": None}, True
                 result, learned = light.story_extraction(answer, items, edges, unit, snapshot_id, h.pool, h.provided,
-                                                         validator, blocks)
+                                                         validator, blocks, runs, self.config.output_language)
                 if failed:
                     result["limitations"].append(light.STORY_FALLBACK_LIMITATION)
                 text = learned.get("turn_summary")

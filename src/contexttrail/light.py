@@ -281,6 +281,43 @@ STORY_FALLBACK_LIMITATION = ("story not written: the story call for this unit fa
                              "code found (edits, checks, commits) was kept.")
 
 
+def run_items(assigned: list[SourceRecord]) -> list[dict]:
+    """The other runs of these records (scripts, analyses, jobs started), as work items `R1`, `R2`, … for the story's
+    outline. A run becomes an event only when the story points at it, so a slice of many runs stays readable."""
+    from .analysis import tool_steps
+    content = {r.source_id: r.content for r in assigned}
+    found = []
+    for step in tool_steps(assigned):
+        if step["hint"] != "run":
+            continue
+        text = content.get(step["result"], "") if step["result"] else ""
+        codes = EXIT_CODE.findall(text)
+        status = ("failed" if step["result"] and check_failed(text, step["failed"])
+                  else "passed" if codes and all(int(code) == 0 for code in codes) else "unknown")
+        found.append({"id": f"R{len(found) + 1}", "kind": "run", "run": True, "status": status, "target": step["target"],
+                      "title": "Run: " + step["target"][:80],
+                      "sources": [step["call"]] + ([step["result"]] if step["result"] else [])})
+    return found
+
+
+def code_title(item: dict, language: str | None) -> str:
+    """A work item's title as code writes it into the graph, in the output language when it is Korean (the model's
+    own name for the item replaces it when given)."""
+    if language != "Korean":
+        return item["title"]
+    if item.get("edit"):
+        shown = item["files"][:TITLE_FILES]
+        more = len(item["files"]) - len(shown)
+        return "수정: " + ", ".join(shown) + (f" 외 {more}개" if more > 0 else "")
+    if item.get("check"):
+        return ("검사 실패: " if item["status"] == "observed_failure" else "검사 통과: ") + item["check"][:60]
+    if item["title"].startswith("Commit: "):
+        return "커밋: " + item["title"].removeprefix("Commit: ")
+    if item.get("run"):
+        return "실행: " + item.get("target", "")[:80]
+    return item["title"]
+
+
 def written_blocks(assigned: list[SourceRecord]) -> list[dict]:
     """The evidence blocks of what the person and the assistant wrote in these records (harness text left out)."""
     from .blocks import number_blocks
@@ -294,7 +331,7 @@ def _failure_tail(text: str) -> list[str]:
 
 
 def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], assigned: list[SourceRecord],
-                  blocks: list[dict]) -> dict:
+                  blocks: list[dict], runs: list[dict] | None = None) -> dict:
     """What the story call reads: no tool output, only the written blocks, the work outline and failed runs' tails."""
     from .analysis import shown_line
     by_id = {r.source_id: r for r in assigned}
@@ -306,6 +343,13 @@ def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], a
             entry["agent"] = lineage.get("agent_type") or lineage.get("agent_nickname") or "sub-agent"
         if item["status"] == "observed_failure":
             result = next((by_id[s] for s in item["sources"] if s in by_id and by_id[s].role == "tool_result"), None)
+            if result is not None:
+                entry["failure_tail"] = _failure_tail(result.content)
+        work.append(entry)
+    for run in runs or []:
+        entry = {"id": run["id"], "kind": "run", "status": run["status"], "title": run["title"]}
+        if run["status"] == "failed":
+            result = next((by_id[s] for s in run["sources"] if s in by_id and by_id[s].role == "tool_result"), None)
             if result is not None:
                 entry["failure_tail"] = _failure_tail(result.content)
         work.append(entry)
@@ -325,16 +369,25 @@ def story_check(answer: dict) -> Any:
 
 def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: dict, snapshot_id: str,
                      pool: dict[str, SourceRecord], provided: dict[str, list[tuple[int, int]]], validator,
-                     blocks: list[dict]) -> tuple[dict, dict]:
+                     blocks: list[dict], runs: list[dict] | None = None, language: str | None = None) -> tuple[dict, dict]:
     """The story answer and the skeleton as an ordinary extraction output, and what code learned about it
     (`unclaimed`: the assistant's blocks no story event rests on; `turn_summary`)."""
     from .blocks import citations as block_citations
-    base = extraction({"skeleton": answer.get("work", []), "events": []}, items, edges, unit, snapshot_id,
+    runs = runs or []
+    named = {entry["id"]: entry for entry in answer.get("work", [])}
+    # The runs the story points at become results of their own; the rest stay in the records.
+    pointed = {w for entry in answer.get("story", []) for w in entry.get("work", [])} | {
+        end for link in answer.get("links", []) for end in (link["from"], link["to"])}
+    shown_runs = [{**run, "kind": "outcome", "status": {"failed": "observed_failure", "passed": "observed_success"}.get(run["status"], "unknown")}
+                  for run in runs if run["id"] in pointed]
+    work_names = [{"id": item["id"], "title": (named.get(item["id"]) or {}).get("title") or code_title(item, language),
+                   "summary": (named.get(item["id"]) or {}).get("summary") or ""} for item in items + shown_runs]
+    base = extraction({"skeleton": work_names, "events": []}, items + shown_runs, edges, unit, snapshot_id,
                       pool, provided, validator)
     candidates, relations = base["event_candidates"], base["edge_candidates"]
     present = {c["id"] for c in candidates}
     dropped, cited = [], set()
-    item_sources = {item["id"]: item["sources"] for item in items}
+    item_sources = {item["id"]: item["sources"] for item in items + runs}
 
     def blocks_cited(block_ids: list[str]) -> list[dict]:
         # A block is cut by code like any light citation: its lines as shown, the quote kept by code.
