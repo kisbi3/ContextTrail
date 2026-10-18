@@ -81,7 +81,8 @@ def unit_path(calls: list[dict], status: str | None) -> str:
         return "skipped"
     if any(c["stage"] == "light" and c["status"] == "complete" for c in calls):
         return "light"
-    extract = [c["status"] for c in calls if c["stage"] == "extract" and c["status"] not in ("cancelled", "running")]
+    # The extracting call of the unit: `extract`, or the story call of pipeline v2.
+    extract = [c["status"] for c in calls if c["stage"] in ("extract", "story") and c["status"] not in ("cancelled", "running")]
     if extract and extract[0] == "complete":
         return "first"
     return "repair" if "complete" in extract else "salvage"
