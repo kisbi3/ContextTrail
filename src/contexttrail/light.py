@@ -103,8 +103,10 @@ def covers(command: str, files: list[str]) -> str | None:
     return None
 
 
-def skeleton(assigned: list[SourceRecord]) -> tuple[list[dict], list[dict]]:
-    """Events and `verifies` relations the tool steps show, with the records each rests on (call first)."""
+def skeleton(assigned: list[SourceRecord], split_at_runs: bool = False) -> tuple[list[dict], list[dict]]:
+    """Events and `verifies` relations the tool steps show, with the records each rests on (call first).
+    `split_at_runs` (pipeline v2) ends a run of edits at any other run in between, so the edits a run could have
+    tried are a change of their own, the one a story's claimed check can name."""
     from .analysis import tool_steps
     turns = _turns(assigned)
     content = {record.source_id: record.content for record in assigned}
@@ -149,6 +151,8 @@ def skeleton(assigned: list[SourceRecord]) -> tuple[list[dict], list[dict]]:
             items.append({"id": f"K{len(items) + 1}", "kind": "action", "status": "applied", "turn": turn,
                           "sources": sources, "title": "Commit: " + step["target"][:60]})
         else:
+            if split_at_runs and step["hint"] == "run" and previous is not None and previous.get("edit"):
+                previous = None
             continue
         previous = items[-1]
     for item in items:
@@ -266,7 +270,7 @@ def answer_check(answer: dict) -> Any:
 # reads only what people and the assistant wrote (as evidence blocks), the work outline and failed runs' last lines,
 # and writes the story: goals, decisions and their recorded reasons, findings, changes of course, and the links.
 STORY_KINDS = ["goal", "decision", "proposal", "outcome", "revision"]
-STORY_RELATIONS = ["motivates", "answers", "revises", "produces"]
+STORY_RELATIONS = ["motivates", "answers", "revises", "produces", "verifies"]
 _NULLSTR = {"type": ["string", "null"]}
 STORY_SCHEMA = obj({
     "status": enum(["complete"]), "snapshot_id": STR, "unit_id": STR,
@@ -281,19 +285,35 @@ STORY_FALLBACK_LIMITATION = ("story not written: the story call for this unit fa
                              "code found (edits, checks, commits) was kept.")
 
 
+BACKGROUND = re.compile(r'"run_in_background"\s*:\s*true|running in background|(?<!&)&\s*(?:"|$)', re.MULTILINE)
+
+
+def run_status(call: SourceRecord | None, result: SourceRecord | None, tool_error: bool) -> str:
+    """passed, failed or unknown, by the run's exit status. Codex writes one for every run; Claude Code writes one
+    only when the command failed, so a finished Claude Code run with no failure passed. A run left in the
+    background (or with no result) is unknown: its status says only that it started."""
+    if result is None or call is None:
+        return "unknown"
+    if BACKGROUND.search(call.content) or BACKGROUND.search(result.content[:400]):
+        return "unknown"
+    if check_failed(result.content, tool_error):
+        return "failed"
+    codes = EXIT_CODE.findall(result.content)
+    if codes:
+        return "passed" if all(int(code) == 0 for code in codes) else "failed"
+    return "passed" if result.provider == "claude" else "unknown"
+
+
 def run_items(assigned: list[SourceRecord]) -> list[dict]:
     """The other runs of these records (scripts, analyses, jobs started), as work items `R1`, `R2`, … for the story's
     outline. A run becomes an event only when the story points at it, so a slice of many runs stays readable."""
     from .analysis import tool_steps
-    content = {r.source_id: r.content for r in assigned}
+    by_id = {r.source_id: r for r in assigned}
     found = []
     for step in tool_steps(assigned):
         if step["hint"] != "run":
             continue
-        text = content.get(step["result"], "") if step["result"] else ""
-        codes = EXIT_CODE.findall(text)
-        status = ("failed" if step["result"] and check_failed(text, step["failed"])
-                  else "passed" if codes and all(int(code) == 0 for code in codes) else "unknown")
+        status = run_status(by_id.get(step["call"]), by_id.get(step["result"]), step["failed"])
         found.append({"id": f"R{len(found) + 1}", "kind": "run", "run": True, "status": status, "target": step["target"],
                       "title": "Run: " + step["target"][:80],
                       "sources": [step["call"]] + ([step["result"]] if step["result"] else [])})
@@ -330,6 +350,27 @@ def _failure_tail(text: str) -> list[str]:
     return [line[:300] for line in lines[-FAILURE_TAIL_LINES:]]
 
 
+# The runs and checks right after a run of edits show their last lines, so the story can tell which one tried them.
+RUNS_AFTER_EDIT = 3
+
+
+def _runs_after_edits(items: list[dict], runs: list[dict], position: dict[str, int]) -> set[str]:
+    """The IDs of the first RUNS_AFTER_EDIT runs and checks after each edit item, in record order, same session."""
+    def at(entry):
+        return min((position[s] for s in entry["sources"] if s in position), default=-1)
+    steps = sorted([e for e in items if e.get("check")] + list(runs), key=at)
+    chosen = set()
+    for edit in (e for e in items if e.get("edit")):
+        end = max((position[s] for s in edit["sources"] if s in position), default=-1)
+        chosen |= {e["id"] for e in [e for e in steps if at(e) > end][:RUNS_AFTER_EDIT]}
+    return chosen
+
+
+def _output_tail(entry: dict, by_id: dict[str, SourceRecord]) -> list[str]:
+    result = next((by_id[s] for s in entry["sources"] if s in by_id and by_id[s].role == "tool_result"), None)
+    return _failure_tail(result.content) if result is not None else []
+
+
 def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], assigned: list[SourceRecord],
                   blocks: list[dict], runs: list[dict] | None = None) -> dict:
     """What the story call reads: no tool output, only the written blocks, the work outline and failed runs' tails."""
@@ -346,12 +387,19 @@ def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], a
             if result is not None:
                 entry["failure_tail"] = _failure_tail(result.content)
         work.append(entry)
+    position = {r.source_id: n for n, r in enumerate(assigned)}
+    after_edit = _runs_after_edits(items, runs or [], position)
+    for item, entry in zip(items, work):
+        if item.get("check") and item["status"] == "observed_success" and item["id"] in after_edit:
+            entry["output_tail"] = _output_tail(item, by_id)
     for run in runs or []:
         entry = {"id": run["id"], "kind": "run", "status": run["status"], "title": run["title"]}
         if run["status"] == "failed":
             result = next((by_id[s] for s in run["sources"] if s in by_id and by_id[s].role == "tool_result"), None)
             if result is not None:
                 entry["failure_tail"] = _failure_tail(result.content)
+        elif run["status"] == "passed" and run["id"] in after_edit:
+            entry["output_tail"] = _output_tail(run, by_id)
         work.append(entry)
     return {"unit_id": unit["id"], "snapshot_id": snapshot_id, "user_requests": data["user_requests"],
             "written": [{"block": b["id"], "source_id": b["source_id"],
@@ -367,6 +415,34 @@ def story_check(answer: dict) -> Any:
     return None
 
 
+def claimed_check(link: dict, work: dict[str, dict], blocks: list[dict], pool: dict[str, SourceRecord]) -> str | None:
+    """Why a `verifies` the story claims from an edit to a run is not kept, or None to keep it. The story reads no
+    tool output, so the claim rests on the assistant's own report of what the run showed; code keeps it only when
+    the facts it can see agree: an edit item and a run or check with a known result (exit status), the run after
+    the edit's last record in the same session, and a cited block the assistant wrote after the run."""
+    edit, run = work.get(link["from"]), work.get(link["to"])
+    if edit is None or not edit.get("edit"):
+        return "not from an edit"
+    if run is None or not (run.get("check") or run.get("run")):
+        return "not to a run"
+    if run["status"] not in ("passed", "failed", "observed_success", "observed_failure"):
+        return "the run's result is unknown"
+    edited = [pool[s] for s in edit["sources"] if s in pool]
+    ran = [pool[s] for s in run["sources"] if s in pool]
+    if not edited or not ran or {r.session_id for r in edited} != {r.session_id for r in ran}:
+        return "not in the edit's session"
+    edited_at = max(r.recorded_at or "" for r in edited)
+    call = next((r for r in ran if r.role == "tool_call"), ran[0])
+    if (call.recorded_at or "") < edited_at:
+        return "the run came before the edit"
+    finished = max(r.recorded_at or "" for r in ran)
+    by_id = {b["id"]: b for b in blocks}
+    reports = [pool[by_id[b]["source_id"]] for b in link.get("blocks", []) if b in by_id and by_id[b]["source_id"] in pool]
+    if not any(r.role == "assistant" and (r.recorded_at or "") >= finished for r in reports):
+        return "no block where the assistant reports the run"
+    return None
+
+
 def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: dict, snapshot_id: str,
                      pool: dict[str, SourceRecord], provided: dict[str, list[tuple[int, int]]], validator,
                      blocks: list[dict], runs: list[dict] | None = None, language: str | None = None) -> tuple[dict, dict]:
@@ -376,8 +452,12 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
     runs = runs or []
     named = {entry["id"]: entry for entry in answer.get("work", [])}
     # The runs the story points at become results of their own; the rest stay in the records.
+    work_items = {item["id"]: item for item in items + runs}
+    # A check the story claims and code refuses names no run: the refused claim keeps no event alive.
+    refusals = {n: claimed_check(link, work_items, blocks, pool) for n, link in enumerate(answer.get("links", []))
+                if link["relation"] == "verifies"}
     pointed = {w for entry in answer.get("story", []) for w in entry.get("work", [])} | {
-        end for link in answer.get("links", []) for end in (link["from"], link["to"])}
+        end for n, link in enumerate(answer.get("links", [])) if not refusals.get(n) for end in (link["from"], link["to"])}
     shown_runs = [{**run, "kind": "outcome", "status": {"failed": "observed_failure", "passed": "observed_success"}.get(run["status"], "unknown")}
                   for run in runs if run["id"] in pointed]
     work_names = [{"id": item["id"], "title": (named.get(item["id"]) or {}).get("title") or code_title(item, language),
@@ -428,9 +508,29 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
                               "to_event_id": target if leads else key, "relation": "motivates" if leads else "produces",
                               "basis": "inferred", "evidence": evidence[:1], "active": True,
                               "rationale": "The story names this work as what the event led to or rests on."})
-    for link in answer.get("links", []):
+    refused = []
+    for n, link in enumerate(answer.get("links", [])):
         source = f"tmp:{link['from']}" if f"tmp:{link['from']}" in present else link["from"]
         target = f"tmp:{link['to']}" if f"tmp:{link['to']}" in present else link["to"]
+        if link["relation"] == "verifies":
+            why = refusals[n]
+            if why:
+                refused.append(f"{link['from']} → {link['to']} ({why})")
+                continue
+            ran = [cite(pool[s], provided.get(s, [])) for s in work_items[link["to"]]["sources"]
+                   if s in pool and pool[s].role == "tool_result"]
+            evidence = _checked([c for c in blocks_cited(link["blocks"]) + ran if c], validator)
+            if not any(pool[c["source_id"]].role == "assistant" for c in evidence):
+                refused.append(f"{link['from']} → {link['to']} (its report block was not kept)")
+                continue
+            if any((r["from_event_id"], r["to_event_id"], r["relation"]) == (source, target, "verifies") for r in relations):
+                continue  # code already proved it
+            cited |= set(link["blocks"])
+            relations.append({"id": f"tmp:L{len(relations) + 1}", "from_event_id": source, "to_event_id": target,
+                              "relation": "verifies", "basis": "explicit", "evidence": evidence, "active": True,
+                              "rationale": "The assistant reports what this run showed about the edit; the run came "
+                                           "after the edit in the same session, and its exit status gives the result."})
+            continue
         evidence = _checked([c for c in blocks_cited(link.get("blocks", [])) if c], validator)
         if not evidence:
             ends = [c for c in candidates if c["id"] in (source, target)]
@@ -440,7 +540,7 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
         same = next((r for r in relations if (r["from_event_id"], r["to_event_id"], r["relation"]) == (source, target, link["relation"])), None)
         if same is not None:
             # The story named this work for the event and linked them as well: one relation, shown by its blocks if any.
-            if link.get("blocks"):
+            if link.get("blocks") and same["basis"] == "inferred":
                 same.update(basis="explicit", evidence=evidence, rationale="Linked by the story; its evidence blocks show the link.")
             continue
         relations.append({"id": f"tmp:L{len(relations) + 1}", "from_event_id": source, "to_event_id": target,
@@ -450,6 +550,8 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
                           else "Linked by the story without a block that shows it."})
     if dropped:
         base["limitations"] = base["limitations"] + [f"story: no evidence left for {', '.join(dropped)}."]
+    if refused:
+        base["limitations"] = base["limitations"] + [f"story: check not kept: {'; '.join(refused)}."]
     unclaimed = [b["id"] for b in blocks if b["id"] not in cited and pool[b["source_id"]].role == "assistant"]
     return base, {"unclaimed_blocks": [(b["source_id"], b["start_line"], b["end_line"]) for b in blocks if b["id"] in unclaimed],
                   "turn_summary": answer.get("turn_summary")}

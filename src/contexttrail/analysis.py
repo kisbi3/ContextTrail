@@ -2483,7 +2483,7 @@ class Engine:
                 call fails its checks, the work code found is kept on its own and the unit says so."""
                 from . import light
                 assigned = [pool[i] for i in unit["sources"]]
-                items, edges = light.skeleton(assigned)
+                items, edges = light.skeleton(assigned, split_at_runs=True)
                 blocks = light.written_blocks(assigned)
                 runs = light.run_items(assigned)
                 request = light.story_request(unit, snapshot_id, data, items, assigned, blocks, runs)

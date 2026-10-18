@@ -183,7 +183,8 @@ def test_pipeline_v2_keeps_the_work_code_found_and_the_story_cites_written_block
     assert [b["source_id"] for b in blocks] == ["ask", "said"]  # only what the person and the assistant wrote
     unit = {"id": "unit_1", "sources": [r.source_id for r in found]}
     request = story_request(unit, "snap", {"user_requests": [], "existing_events": []}, items, found, blocks)
-    assert "new_records" not in request and "3 passed" not in json.dumps(request)  # no tool output is sent
+    assert "new_records" not in request  # no tool output is sent but the last lines of a run right after an edit
+    assert [w.get("output_tail") for w in request["work"] if w.get("output_tail")] == [["3 passed"]]
     failed = next(w for w in request["work"] if w["status"] == "observed_failure")
     assert failed["failure_tail"][-1] == "Exit code: 1"  # but a failed run's last lines are
     answer = {"status": "complete", "snapshot_id": "snap", "unit_id": "unit_1",
@@ -266,3 +267,66 @@ def test_v2_draws_one_relation_when_the_story_names_the_work_and_links_it_too(la
                                  EvidenceValidator(pool, provided), blocks, run_items(found), "Korean")
     linked = [e for e in output["edge_candidates"] if (e["from_event_id"], e["to_event_id"], e["relation"]) == ("tmp:N1", f"tmp:{work}", "motivates")]
     assert len(linked) == 1 and linked[0]["basis"] == "explicit"
+
+
+def test_v2_keeps_a_check_the_story_claims_only_when_the_run_followed_the_edit_and_the_assistant_reported_it(laboratory):
+    from contexttrail.light import run_items, skeleton, story_extraction, written_blocks
+    from contexttrail.schema import EvidenceValidator
+    _, _, _, _, make = laboratory
+
+    def at(record, minute, call=None):
+        return replace(record, recorded_at=f"2026-09-22T10:{minute:02d}:00Z", tool_call_id=call)
+    patch = "Tool: Edit\n" + json.dumps({"file_path": "/work/app/scripts/build.py", "old_string": "a", "new_string": "b"})
+    found = [
+        at(make("보고서를 고쳐 주세요.", key="ask"), 0),
+        at(make("빌드 스크립트를 고친 뒤 빌드하겠습니다.", key="plan", role="assistant"), 1),
+        at(make("Tool: Bash\n" + json.dumps({"command": "python scripts/old.py"}), key="early", role="tool_call"), 2, "c0"),
+        at(make("done\nExit code: 0", key="early-out", role="tool_result"), 2, "c0"),
+        at(make(patch, key="edit", role="tool_call"), 3, "c1"), at(make("updated", key="edit-out", role="tool_result"), 3, "c1"),
+        at(make("Tool: Bash\n" + json.dumps({"command": "python scripts/build.py"}), key="build", role="tool_call"), 4, "c2"),
+        at(make("wrote report.pdf (2 pages)", key="build-out", role="tool_result"), 4, "c2"),
+        at(make("Tool: Bash\n" + json.dumps({"command": "nohup python scripts/job.py > log 2>&1 &"}), key="job", role="tool_call"), 5, "c3"),
+        at(make("", key="job-out", role="tool_result"), 5, "c3"),
+        at(make("빌드가 통과해 2쪽 PDF가 나온 것을 확인했습니다.", key="said", role="assistant"), 6),
+    ]
+    items, edges = skeleton(found)
+    runs = run_items(found)
+    assert [(r["id"], r["status"]) for r in runs] == [("R1", "passed"), ("R2", "passed"), ("R3", "unknown")]
+    blocks = written_blocks(found)
+    plan, report = (next(b["id"] for b in blocks if b["source_id"] == key) for key in ("plan", "said"))
+    edit = next(i["id"] for i in items if i.get("edit"))
+    pool = {r.source_id: r for r in found}
+    provided = {r.source_id: [(1, max(1, len(r.content.splitlines())))] for r in found}
+
+    def kept(*links):
+        answer = {"work": [], "story": [], "turn_summary": None,
+                  "links": [{"from": a, "to": b, "relation": "verifies", "blocks": [block]} for a, b, block in links]}
+        output, _ = story_extraction(answer, items, edges, {"id": "u", "sources": list(pool)}, "snap", pool, provided,
+                                     EvidenceValidator(pool, provided), blocks, runs, "Korean")
+        return output
+    output = kept((edit, "R2", report))
+    check = [e for e in output["edge_candidates"] if e["relation"] == "verifies"]
+    assert len(check) == 1 and check[0]["basis"] == "explicit"
+    assert {c["source_id"] for c in check[0]["evidence"]} == {"said", "build-out"}  # the report and the run's result
+    EvidenceValidator(pool, provided).check_extraction(output, "u", "snap", {"events": [], "edges": []})
+    output = kept((edit, "R2", plan), (edit, "R1", report), (edit, "R3", report))
+    assert not [e for e in output["edge_candidates"] if e["relation"] == "verifies"]
+    assert not any(c["id"] in ("tmp:R1", "tmp:R3") for c in output["event_candidates"])  # refused claims keep no run
+    refused = next(text for text in output["limitations"] if text.startswith("story: check not kept"))
+    assert "no block where the assistant reports the run" in refused and "the run came before the edit" in refused
+    assert "the run's result is unknown" in refused
+
+
+def test_v2_ends_a_run_of_edits_at_a_run_between_them(laboratory):
+    _, _, _, _, make = laboratory
+
+    def tool(key, role, text, call_id):
+        return replace(make(text, key=key, role=role), tool_call_id=call_id)
+    patch = "Tool: Edit\n" + json.dumps({"file_path": "/work/app/scripts/build.py", "old_string": "a", "new_string": "b"})
+    found = [make("고쳐 주세요.", key="ask"),
+             tool("e1", "tool_call", patch, "c1"), tool("e1-out", "tool_result", "updated", "c1"),
+             tool("r", "tool_call", "Tool: Bash\n" + json.dumps({"command": "python scripts/build.py"}), "c2"),
+             tool("r-out", "tool_result", "ok\nExit code: 0", "c2"),
+             tool("e2", "tool_call", patch.replace('"b"', '"c"'), "c3"), tool("e2-out", "tool_result", "updated", "c3")]
+    assert len([i for i in skeleton(found)[0] if i.get("edit")]) == 1
+    assert [i["sources"][0] for i in skeleton(found, split_at_runs=True)[0] if i.get("edit")] == ["e1", "e2"]

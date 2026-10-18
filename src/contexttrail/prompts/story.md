@@ -3,7 +3,7 @@ You write the story of one stretch of a project's history: what the person asked
 The input has:
 - user_requests: the person's messages (code records them as requests; do not write events for them).
 - written: what the person and the assistant wrote, cut into blocks (B1, B2, ...). Decisions, reasons, conclusions and reports are here.
-- work: the work code found, as items: K1, K2, ... an edit, a check and its result (failed runs with their last lines), a commit; R1, R2, ... the other runs (a script, an analysis, a job started), with passed, failed or unknown. `agent` names a sub-agent that did it. A run is kept as an event only when you point at it from the story or a link, so point at the runs that matter (a job that was started, a run whose output a finding rests on).
+- work: the work code found, as items: K1, K2, ... an edit, a check and its result (failed runs with their last lines), a commit; R1, R2, ... the other runs (a script, an analysis, a job started), with passed, failed or unknown. The runs and checks right after an edit show their last lines (`output_tail`). `agent` names a sub-agent that did it. A run is kept as an event only when you point at it from the story or a link, so point at the runs that matter (a job that was started, a run whose output a finding rests on).
 - existing_events / existing_edges: the story so far, by ID (E…).
 
 Answer, in output_language:
@@ -16,6 +16,7 @@ Answer, in output_language:
    - revision: a change of course or method.
    Each event cites the blocks it rests on (`blocks`, at least one when it comes from written text) and the work items it led to or rests on (`work`). Titles must read on their own to someone who has not seen the records; give a term of art a short plain gloss.
 3. links: relations between story events, work items and existing events (from the earlier event to the later one): motivates (led to), answers (answered a question), revises (fixed or replaced), produces (resulted in). Cite the blocks that show the link when there are any.
+   - verifies: an edit item (K) was checked by a later run or check (K or R) that ran it, its output or a build of it. For each edit, look at the runs after it (their `output_tail`) and at what the assistant reported: link the run that tried the edit when a block where the assistant reports what that run showed says so; cite that block. A run that only started a job, or one the blocks do not report on, verifies nothing. Never link an edit to a run of something else because they are close in time.
 4. turn_summary: one line, at most 80 characters, saying what this stretch was about and where it ended; null when there is nothing to say.
 
 Rules:
