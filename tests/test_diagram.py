@@ -395,10 +395,9 @@ def test_a_check_with_no_relation_stands_beside_the_step_before_it_on_a_plain_li
     diagram, left = lanes(events, [])
     assert left == {"month", "start"} and diagram.beside == {"hash": "month"}
     top, x, _, _ = diagram.boxes["hash"]
-    line = diagram.rows[top + 1][diagram.boxes["month"][1] + diagram.boxes["month"][3]:x]
-    text = "".join(cell.char for cell in line)
-    assert "▶" not in text and "◀" not in text and "검증" not in text  # beside, never caused by
-    assert not any(cell.edges for cell in line)  # a layout line carries no link
+    assert "같은 무렵 · 이어진 관계 없음" in diagram.lines()[top - 1]  # set apart under a caption
+    between = diagram.rows[top + 1][diagram.boxes["month"][1] + diagram.boxes["month"][3]:x]
+    assert not "".join(cell.char for cell in between).strip()  # joined by no line: beside, never belonging to it
 
 
 def test_documentation_edits_and_test_runs_known_from_their_records_stand_on_the_right():
@@ -454,3 +453,13 @@ def test_a_units_summary_heads_its_first_story_box():
     assert head < diagram.boxes["month"][0]  # above the stretch's first step, not above the check beside it
     assert sum("구간 ·" in row for row in rows) == 1
     assert not any("구간" in row for row in flow_diagram({"events": events, "edges": []}, 120).lines())
+
+
+def test_a_decision_box_shows_why_it_was_made():
+    events = timed(dict(node("month", "decision", "adopted", "한 달 자료로 확대"),
+                        summary="7일 자료로는 불확실성을 잴 수 없어서 한 달로 늘렸다. 전처리를 먼저 한다."),
+                   node("start", "action", "in_progress", "한 달 분석 시작"))
+    text = "\n".join(flow_diagram({"events": events, "edges": []}, 120).lines())
+    flat = " ".join(row.strip("│ ") for row in text.splitlines())
+    assert "7일 자료로는 불확실성을 잴 수 없어서" in flat and "한 달로 늘렸다." in flat  # wrapped, never cut
+    assert "전처리를 먼저" not in flat

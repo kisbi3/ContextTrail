@@ -152,7 +152,7 @@ def test_labels_show_what_checked_a_change_and_whether_a_question_was_answered()
     assert labels["ok"] == "관측 성공" and labels["a"] == "완료 보고·미검증"
     # A single check is named so its strength is visible; a result nothing leads to is flagged.
     assert labels["c4"] == "변경 적용 · 검증: 수정본 구문 검사 통과"
-    assert labels["loose"] == "관측 성공 · 확인 대상 미연결"
+    assert labels["loose"] == "관측 성공 · 무엇을 검사했는지 연결 없음"
     assert "|검증|" in mermaid(graph) and "|답변|" in mermaid(graph)
 
 

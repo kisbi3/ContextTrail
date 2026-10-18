@@ -69,6 +69,13 @@ def _detail(event: dict) -> bool:
     return event["kind"] in ("action", "revision") and event.get("step") == "doc"
 
 
+def _first_sentence(text: str) -> str:
+    """The first sentence of a summary (wrapped by the box, never cut)."""
+    import re
+    found = re.match(r"(.+?[.!?。])(\s|$)", text)
+    return (found.group(1) if found else text).strip()
+
+
 def _edge_label(edge: dict) -> str:
     """What a line is called: its relation, or `갈라짐` for the follows that joins a forked session's first
     request to the parent's conversation (`schema.link_forks`)."""
@@ -322,9 +329,9 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
             else:
                 before = [s for s in own if when(s) <= when(key)]
                 placed[key] = (before[-1] if before else own[0], "near", None)
-    # The boxes beside each main step, in the order they happened.
+    # The boxes beside each main step: those joined to it first, then those only from around then, each in time order.
     stacks: dict[str, list[tuple[str, str, dict | None]]] = {}
-    for key in sorted(placed, key=when):
+    for key in sorted(placed, key=lambda key: (placed[key][1] == "near", when(key))):
         beside, kind, edge = placed[key]
         stacks.setdefault(beside, []).append((kind, key, edge))
     columns = [[key for key in group if key not in placed] for group in groups]
@@ -515,6 +522,11 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
             inner = box_w - 4
             none = frozenset()
             lines = [(part, "title", none) for part in _wrap(safe_text(by_id[key]["title"], multiline=False), inner)]
+            if by_id[key]["kind"] == "decision" and by_id[key].get("summary") and key not in placed:
+                # A decision says why it was made: the first sentence of its summary, which the prompts ask to start
+                # with the reason (`common.md`).
+                reason = _first_sentence(safe_text(by_id[key]["summary"], multiline=False))
+                lines += [(part, "dim", none) for part in _wrap(reason, inner)]
             status = _segments(safe_text(labels[key], multiline=False), inner - 2)
             lines += [(f"{marks[tones[key]] if n == 0 else ' '} {part}", tones[key], none)
                       for n, part in enumerate(status)]
@@ -624,10 +636,19 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
             previous = key
             items = [] if fold or key in placed else stacks.get(key, [])
             row, arrows = top, []  # (row, kind, label, link id or None, the right-hand box)
+            captioned = False
             for kind, item, edge in items:
+                if kind == "near" and not captioned:
+                    # Boxes with no recorded link to this step: from around then, set apart and joined by no line,
+                    # so they are not read as belonging to the step.
+                    for part in _wrap(tr("┄ 같은 무렵 · 이어진 관계 없음", "┄ around then · no recorded link"), box_w):
+                        diagram.put(row, rx, part, "dim")
+                        row += 1
+                    captioned = True
                 box(row, rx, item, box_w)
-                label = _sub_label(by_id[item]) if kind == "sub" else _edge_label(edge) if edge else ""
-                arrows.append((row + 1, kind, label, edge["id"] if edge else None, item))
+                if kind != "near":
+                    label = _sub_label(by_id[item]) if kind == "sub" else _edge_label(edge) if edge else ""
+                    arrows.append((row + 1, kind, label, edge["id"] if edge else None, item))
                 row += height(item, box_w, False) + 1
             if arrows:
                 joint = lx + box_w + 2

@@ -109,7 +109,7 @@ def status_labels(graph: dict) -> dict[str, str]:
                          + ([tr(f"검증 실패 {failed}건", f"{failed} checks failed")] if failed else []))
                 labels[event["id"]] = base + " · " + (" · ".join(parts) or tr("미검증", "unverified"))
         elif event["id"] in unlinked:
-            labels[event["id"]] = STATUS.get(status, status) + tr(" · 확인 대상 미연결", " · not linked to what it checked")
+            labels[event["id"]] = STATUS.get(status, status) + tr(" · 무엇을 검사했는지 연결 없음", " · not linked to what it checked")
         else:
             labels[event["id"]] = STATUS.get(status, status)
     return labels
