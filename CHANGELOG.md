@@ -4,6 +4,9 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 
 ## Unreleased
 
+### Changed
+- **The flow reads better, measured by a reader.** A model given only the flow text answered five questions about one priceimpact stretch (why the data grew to a month, what runs confirmed, whether the month's analysis finished, why the reproduction was split, which hypothesis failed). From that: a right-hand box with no recorded link to a step no longer hangs on it — it stands after the linked boxes under `┄ 같은 무렵 · 이어진 관계 없음`, joined by no line; a decision box shows the first sentence of its summary, so the "why" questions got answered; and `확인 대상 미연결`, which every reader asked about, reads `무엇을 검사했는지 연결 없음`. The hypothesis question stayed unanswered: no model extracted that conclusion, a matter for the prompts (being measured on the `flow-readability` branch).
+
 ### Added
 - **`--unit-summary` (hidden, per run, an experiment): a one-line summary of each unit's stretch of work.** Asked for in the extraction (or the light reading) only when chosen — `UNIT_SUMMARY_REQUEST` in the request and a `unit_summary` string or null in the answer schema (`with_unit_summary`), taken out before the checks; the default input is unchanged and the routing signature differs only with the option. Publishing keeps it in the graph's `unit_summaries` with the events the unit added, and the flow draws `구간 · …` above the first of them in the story column. `scripts/compare_models.py --unit-summary` measures it on the same units.
 
