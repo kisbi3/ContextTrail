@@ -4,6 +4,9 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 
 ## Unreleased
 
+### Added
+- **`--pipeline v2` (hidden, per run, an experiment): code records the work, the model writes the story.** From `docs/plans/PIPELINE_V2.md`, reviewed by Gemini 4 Argon and gpt-6-astra. Code keeps what it found in the tool calls (edits, checks with their results, commits, and a check's `verifies` only when it names every edited file); one call per unit reads no tool output, only what the person and the assistant wrote cut into evidence blocks (`blocks.py`: on priceimpact that writing is 0.5–7.6% of a unit), the work outline and failed runs' last lines, and answers with the story (goals, decisions with a reason only where one is written, findings and conclusions, changes of course), citing block IDs that code turns into exact lines. When the story call fails, the work is published alone. Graph schema unchanged; `scripts/compare_models.py --pipeline v2` measures it.
+
 ### Changed
 - **The flow reads better, measured by a reader.** A model given only the flow text answered five questions about one priceimpact stretch (why the data grew to a month, what runs confirmed, whether the month's analysis finished, why the reproduction was split, which hypothesis failed). From that: a right-hand box with no recorded link to a step no longer hangs on it — it stands after the linked boxes under `┄ 같은 무렵 · 이어진 관계 없음`, joined by no line; a decision box shows the first sentence of its summary, so the "why" questions got answered; and `확인 대상 미연결`, which every reader asked about, reads `무엇을 검사했는지 연결 없음`. The hypothesis question stayed unanswered: no model extracted that conclusion, a matter for the prompts (being measured on the `flow-readability` branch).
 

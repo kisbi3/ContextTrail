@@ -77,7 +77,7 @@ def test_a_light_run_is_one_call_per_unit_and_cites_records_by_code(laboratory):
     engine.config = replace(engine.config, analysis_mode="light", semantic_review=False, integrate_output="draft_only")
     LightRunner.calls = []
     result = engine.analyze(LightRunner)
-    assert result["status"] == "complete", result
+    assert result["status"] == "complete", {k: result.get(k) for k in ("stop_reason", "error", "limitations", "unit_failures")} | {"stages": [t["stage"] for t in runner.tasks]}
     [task] = LightRunner.calls
     assert task["system"].startswith("You write the project history") and "quote" not in json.dumps(task["data"]["skeleton"])
     graph = store.graph()
@@ -171,3 +171,52 @@ def test_a_unit_summary_is_asked_only_when_chosen_and_kept_with_the_units_events
     (summary,) = store.graph()["unit_summaries"].values()
     assert summary["text"] == "합성 구간: 저장 방식을 정하고 바꿈"
     assert summary["event_ids"] and set(summary["event_ids"]) <= {e["id"] for e in store.graph()["events"]}
+
+
+def test_pipeline_v2_keeps_the_work_code_found_and_the_story_cites_written_blocks(laboratory):
+    from contexttrail.light import STORY_SCHEMA, skeleton, story_extraction, story_request, written_blocks
+    from contexttrail.schema import EvidenceValidator, validate_shape
+    _, _, _, _, make = laboratory
+    found = records(make)
+    items, edges = skeleton(found)
+    blocks = written_blocks(found)
+    assert [b["source_id"] for b in blocks] == ["ask", "said"]  # only what the person and the assistant wrote
+    unit = {"id": "unit_1", "sources": [r.source_id for r in found]}
+    request = story_request(unit, "snap", {"user_requests": [], "existing_events": []}, items, found, blocks)
+    assert "new_records" not in request and "3 passed" not in json.dumps(request)  # no tool output is sent
+    failed = next(w for w in request["work"] if w["status"] == "observed_failure")
+    assert failed["failure_tail"][-1] == "Exit code: 1"  # but a failed run's last lines are
+    answer = {"status": "complete", "snapshot_id": "snap", "unit_id": "unit_1",
+              "work": [{"id": item["id"], "title": "이름", "summary": ""} for item in items],
+              "story": [{"id": "N1", "kind": "outcome", "status": "reported_complete", "actor": "assistant",
+                         "title": "부호가 반대였음", "why": None, "summary": "", "blocks": [blocks[1]["id"]], "work": []},
+                        {"id": "N2", "kind": "decision", "status": "adopted", "actor": "assistant", "title": "근거 없음",
+                         "why": None, "summary": "", "blocks": ["B99"], "work": []}],
+              "links": [], "turn_summary": "add() 부호 수정"}
+    validate_shape(answer, STORY_SCHEMA)
+    pool = {r.source_id: r for r in found}
+    provided = {r.source_id: [(1, len(r.content.splitlines()))] for r in found}
+    output, learned = story_extraction(answer, items, edges, unit, "snap", pool, provided,
+                                       EvidenceValidator(pool, provided), blocks)
+    titles = {c["title"] for c in output["event_candidates"]}
+    assert "부호가 반대였음" in titles and "근거 없음" not in titles  # a story event with no block left is dropped
+    assert "story: no evidence left for N2." in output["limitations"]
+    assert any(e["relation"] == "verifies" for e in output["edge_candidates"])  # the code's check link stays
+    assert learned["turn_summary"] == "add() 부호 수정" and learned["unclaimed_blocks"] == []
+
+
+def test_a_v2_run_publishes_the_code_found_work_and_the_turn_summary(laboratory):
+    from contexttrail.demo import CASES
+    _, store, engine, records_, make = laboratory
+    records_.extend(records(make))
+    import dataclasses
+    engine.config = dataclasses.replace(engine.config, pipeline="v2")
+    engine.config.validate()  # what Engine() does with the config it is given
+    runner = FixtureRunner()
+    result = engine.analyze(lambda: runner)
+    assert result["status"] == "complete", {k: result.get(k) for k in ("stop_reason", "error", "limitations", "unit_failures")} | {"stages": [t["stage"] for t in runner.tasks]}
+    assert [task["stage"] for task in runner.tasks] == ["story"]
+    graph = store.graph()
+    assert any(event["status"] == "observed_failure" for event in graph["events"])  # the failed check, found by code
+    assert list(graph["unit_summaries"].values())[0]["text"] == "합성 구간: 작업 기록만"
+    assert engine.config.integrate_output == "draft_only" and not engine.config.semantic_review  # no integrate, no review

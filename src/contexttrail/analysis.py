@@ -49,6 +49,9 @@ class AnalysisConfig:
     # Hidden, per run (`--unit-summary`, an experiment): the extraction also writes one line saying what the unit's
     # stretch of work was about; stored in the graph's `unit_summaries` and drawn above the stretch.
     unit_summary: bool = False
+    # Hidden, per run (`--pipeline v2`, an experiment, `docs/plans/PIPELINE_V2.md`): code keeps the work it found, the
+    # model writes only the story from what was written (evidence blocks) and the work outline.
+    pipeline: str = "v1"
     read_rounds: int = 2
     read_chars: int = 36_000
     runner_name: str | None = None
@@ -149,6 +152,11 @@ class AnalysisConfig:
                                "integrate_evidence must be full or reuse."))
         if self.review_output not in {"full", "patch"}:
             raise FlowError(tr("review_output은 full 또는 patch이어야 합니다.", "review_output must be full or patch."))
+        if self.pipeline not in {"v1", "v2"}:
+            raise FlowError(tr("pipeline은 v1 또는 v2이어야 합니다.", "pipeline must be v1 or v2."))
+        if self.pipeline == "v2":
+            # The story is published as written: no integrate call and no review (as with --light).
+            self.integrate_output, self.semantic_review = "draft_only", False
         if self.analysis_mode not in {"full", "light"}:
             raise FlowError(tr("analysis_mode는 full 또는 light이어야 합니다.", "analysis_mode must be full or light."))
         if self.integrate_output not in {"full", "patch", "draft", "draft_only"}:
@@ -204,6 +212,11 @@ EVIDENCE_POLICY_REUSE = (
 
 def build_task(stage: str, data: dict, language: str | None = None) -> dict:
     """One source of truth for the Runner request and the local input preview."""
+    if stage == "story":
+        return {"system": prompt("story"), "stage": stage, "instructions": "", "data": data,
+                "output_language": language or DEFAULT_LANGUAGE,
+                "wire_contract": "Use the IDs shown in the input (B1 blocks, K1 work items, E3 events, your own N1 for "
+                                 "new story events). Every field of the schema is present; why and turn_summary may be null."}
     if stage == "light":
         return {"system": prompt("light"), "stage": stage, "instructions": "", "data": data,
                 "output_language": language or DEFAULT_LANGUAGE,
@@ -2335,7 +2348,12 @@ class Engine:
                        self.config.output_language, *([self.config.context_mode] if self.config.context_mode != "lean" else []),
                        *(["audit-v1", prompt("audit")] if self.config.audit else []),
                        *(["light-v1", prompt("light")] if self._light() else []),
-                       *(["unit-summary-v1", UNIT_SUMMARY_REQUEST] if self.config.unit_summary else [])])
+                       *(["unit-summary-v1", UNIT_SUMMARY_REQUEST] if self.config.unit_summary else []),
+                       *(["story-v1", prompt("story")] if self._story() else [])])
+
+    def _story(self) -> bool:
+        """Pipeline v2 applies to ordinary units; an audit reads noted sessions with the full extraction."""
+        return self.config.pipeline == "v2" and not self.config.audit
 
     def _light(self) -> bool:
         """Light analysis applies to ordinary units; an audit reads noted sessions with the full extraction."""
@@ -2402,6 +2420,7 @@ class Engine:
         draft = None
         light_fallback = False
         summary: list[str | None] = [None]
+        story_notes: dict = {}
 
         def take_summary(answer: dict) -> dict:
             # The summary leaves the answer before the checks (which know the schema without it); the last one kept.
@@ -2459,7 +2478,37 @@ class Engine:
                 except FlowError:
                     return validator.salvage_extraction(result, unit["id"], snapshot_id, graph)
 
-            if self._light():
+            def read_story() -> tuple[dict, list[str], list[str]]:
+                """Pipeline v2: the skeleton is the record of the work; one call writes the story over it. When the
+                call fails its checks, the work code found is kept on its own and the unit says so."""
+                from . import light
+                assigned = [pool[i] for i in unit["sources"]]
+                items, edges = light.skeleton(assigned)
+                blocks = light.written_blocks(assigned)
+                request = light.story_request(unit, snapshot_id, data, items, assigned, blocks)
+                try:
+                    answer = h.task("story", request, light.story_check, validator=validator, schema=light.STORY_SCHEMA,
+                                    thread=self.unit_thread(unit["id"], h.runner))
+                    failed = False
+                except TaskValidationError:
+                    answer, failed = {"work": [], "story": [], "links": [], "turn_summary": None}, True
+                result, learned = light.story_extraction(answer, items, edges, unit, snapshot_id, h.pool, h.provided,
+                                                         validator, blocks)
+                if failed:
+                    result["limitations"].append(light.STORY_FALLBACK_LIMITATION)
+                text = learned.get("turn_summary")
+                summary[0] = " ".join(text.split()) if isinstance(text, str) and text.strip() else None
+                story_notes["unclaimed_blocks"] = learned["unclaimed_blocks"]
+                try:
+                    validator.check_extraction(result, unit["id"], snapshot_id, graph)
+                    return result, [], []
+                except FlowError:
+                    return validator.salvage_extraction(result, unit["id"], snapshot_id, graph)
+
+            if self._story():
+                output, waived, dropped = read_story()
+                draft = output
+            elif self._light():
                 output, waived, dropped = read_light()
                 draft = output
             else:
@@ -2528,6 +2577,7 @@ class Engine:
                   "dropped_candidates": dropped,
                   "routing_reasons": reasons, "escalated": should_escalate, "light_fallback": light_fallback,
                   **({"unit_summary": summary[0]} if summary[0] else {}),
+                  **story_notes,
                   "draft_payload": draft if should_escalate else None,
                   "extraction_graph_version": graph["version"], "read_manifest": h.read_manifest,
                   "context_selection": context.get("context_selection", {}),

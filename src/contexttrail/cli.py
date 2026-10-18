@@ -109,6 +109,7 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--context-mode", choices=["full", "lean"], help=argparse.SUPPRESS)
         sub.add_argument("--unit-thread", action="store_const", const=True, default=None, help=argparse.SUPPRESS)
         sub.add_argument("--unit-summary", action="store_true", help=argparse.SUPPRESS)
+        sub.add_argument("--pipeline", choices=["v1", "v2"], default="v1", help=argparse.SUPPRESS)
         sub.add_argument("--trigger", choices=["hook"], help=argparse.SUPPRESS)
         sub.add_argument("--integrate-evidence", choices=["full", "reuse"], help=argparse.SUPPRESS)
         sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
@@ -409,6 +410,7 @@ def _options(args, store: Store) -> AnalysisConfig:
     values["audit"] = bool(getattr(args, "audit", False))
     values["retry_failed"] = bool(getattr(args, "retry_failed", False))
     values["unit_summary"] = bool(getattr(args, "unit_summary", False))  # an experiment, per run, never saved
+    values["pipeline"] = getattr(args, "pipeline", None) or "v1"  # pipeline v2 is an experiment, per run
     values["runner_name"], values["base_model"] = options.get("runner"), options.get("model")
     values["semantic_review"] = getattr(args, "semantic_review", True)
     if options.get("light"):

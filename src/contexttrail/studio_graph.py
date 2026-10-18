@@ -859,6 +859,10 @@ def publish_result(state: StudioState) -> StudioState:
     added = sorted({event["id"] for event in graph["events"]} - {event["id"] for event in base["events"]})
     if summary and added:
         graph.setdefault("unit_summaries", {})[state["unit_id"]] = {"text": summary, "event_ids": added}
+    # Pipeline v2: the assistant's report blocks no story event rests on (`docs/plans/PIPELINE_V2.md`), as source lines.
+    unclaimed = state["extracted"]["cached"].get("unclaimed_blocks")
+    if unclaimed:
+        graph.setdefault("unclaimed_reports", {})[state["unit_id"]] = unclaimed
     published = store.publish(graph, [state["unit_id"]],
                               {i: pool[i].content_hash for i in state["source_ids"]},
                               state["evidence"], expected_version=base["version"])

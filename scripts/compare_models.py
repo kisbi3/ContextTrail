@@ -176,6 +176,7 @@ def worker(args) -> int:
     if args.economy:
         _economy(values)
     values["unit_summary"] = bool(args.unit_summary)
+    values["pipeline"] = args.pipeline
     engine = Engine(scope, store, AnalysisConfig(**values))
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     clock = time.monotonic()
@@ -281,6 +282,7 @@ def main(argv=None) -> int:
     parser.add_argument("--economy", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--unit-summary", action="store_true", help="ask each extraction for a one-line summary of its unit")
+    parser.add_argument("--pipeline", choices=["v1", "v2"], default="v1", help="v2: code keeps the work, the model writes the story")
     parser.add_argument("--yes", action="store_true", help="send the project's records to each model's service")
     parser.add_argument("--worker", help=argparse.SUPPRESS)
     parser.add_argument("--state", help=argparse.SUPPRESS)
@@ -319,7 +321,7 @@ def main(argv=None) -> int:
         before = usage_windows() if args.usage else None
         command = [sys.executable, str(Path(__file__).resolve()), str(args.project), "--worker", spec, "--state", str(state),
                    "--result", str(folder / "result.json"), "--units", str(args.units), "--timeout", str(args.timeout)]
-        command += ["--economy" if args.economy else "--no-economy"] + (["--unit-summary"] if args.unit_summary else [])
+        command += ["--economy" if args.economy else "--no-economy"] + (["--unit-summary"] if args.unit_summary else []) + ["--pipeline", args.pipeline]
         if args.recent:
             command += ["--recent", str(args.recent)]
         if args.effort:

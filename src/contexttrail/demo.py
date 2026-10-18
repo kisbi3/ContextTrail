@@ -79,6 +79,11 @@ class FixtureRunner:
         self.tasks.append(copy.deepcopy(task))
         data = task["data"]
         summary = {"unit_summary": "합성 구간: 저장 방식을 정하고 바꿈"} if data.get("unit_summary_request") else {}
+        if task["stage"] == "story":
+            # The story answer: the work named back, no story of its own (the fixture has no written blocks to read).
+            return {"status": "complete", "snapshot_id": data["snapshot_id"], "unit_id": data["unit_id"],
+                    "work": [{"id": item["id"], "title": item["title"], "summary": ""} for item in data.get("work", [])],
+                    "story": [], "links": [], "turn_summary": "합성 구간: 작업 기록만"}
         if task["stage"] == "light":
             # The light answer: the code-built skeleton named back, no events of its own.
             return {"status": "complete", "snapshot_id": data["snapshot_id"], "unit_id": data["unit_id"],

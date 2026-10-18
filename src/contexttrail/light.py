@@ -260,3 +260,137 @@ def answer_check(answer: dict) -> Any:
     from .schema import validate_shape
     validate_shape(answer, LIGHT_SCHEMA)
     return None
+
+
+# ---- Pipeline v2: the story (docs/plans/PIPELINE_V2.md). Code keeps the skeleton as the record of the work; the model
+# reads only what people and the assistant wrote (as evidence blocks), the work outline and failed runs' last lines,
+# and writes the story: goals, decisions and their recorded reasons, findings, changes of course, and the links.
+STORY_KINDS = ["goal", "decision", "proposal", "outcome", "revision"]
+STORY_RELATIONS = ["motivates", "answers", "revises", "produces"]
+_NULLSTR = {"type": ["string", "null"]}
+STORY_SCHEMA = obj({
+    "status": enum(["complete"]), "snapshot_id": STR, "unit_id": STR,
+    "work": arr(obj({"id": STR, "title": STR, "summary": STR})),
+    "story": arr(obj({"id": STR, "kind": enum(STORY_KINDS), "status": enum(STATUSES), "actor": enum(["assistant", "user"]),
+                      "title": STR, "why": _NULLSTR, "summary": STR, "blocks": arr(STR), "work": arr(STR)})),
+    "links": arr(obj({"from": STR, "to": STR, "relation": enum(STORY_RELATIONS), "blocks": arr(STR)})),
+    "turn_summary": _NULLSTR,
+})
+FAILURE_TAIL_LINES = 8
+STORY_FALLBACK_LIMITATION = ("story not written: the story call for this unit failed its checks, so only the work "
+                             "code found (edits, checks, commits) was kept.")
+
+
+def written_blocks(assigned: list[SourceRecord]) -> list[dict]:
+    """The evidence blocks of what the person and the assistant wrote in these records (harness text left out)."""
+    from .blocks import number_blocks
+    written = [r for r in assigned if r.role == "assistant" or is_user_prompt(r)]
+    return number_blocks(written)
+
+
+def _failure_tail(text: str) -> list[str]:
+    lines = [line for line in text.splitlines() if line.strip()]
+    return [line[:300] for line in lines[-FAILURE_TAIL_LINES:]]
+
+
+def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], assigned: list[SourceRecord],
+                  blocks: list[dict]) -> dict:
+    """What the story call reads: no tool output, only the written blocks, the work outline and failed runs' tails."""
+    from .analysis import shown_line
+    by_id = {r.source_id: r for r in assigned}
+    work = []
+    for item in items:
+        entry = {"id": item["id"], "kind": item["kind"], "status": item["status"], "title": item["title"]}
+        lineage = next(((by_id[s].lineage or {}) for s in item["sources"] if s in by_id), {})
+        if lineage.get("kind") == "subagent":
+            entry["agent"] = lineage.get("agent_type") or lineage.get("agent_nickname") or "sub-agent"
+        if item["status"] == "observed_failure":
+            result = next((by_id[s] for s in item["sources"] if s in by_id and by_id[s].role == "tool_result"), None)
+            if result is not None:
+                entry["failure_tail"] = _failure_tail(result.content)
+        work.append(entry)
+    return {"unit_id": unit["id"], "snapshot_id": snapshot_id, "user_requests": data["user_requests"],
+            "written": [{"block": b["id"], "source_id": b["source_id"],
+                         "role": by_id[b["source_id"]].role, "recorded_at": by_id[b["source_id"]].recorded_at,
+                         "text": "\n".join(shown_line(line) for line in b["text"].splitlines())} for b in blocks],
+            "work": work, "existing_events": data.get("existing_events", []),
+            "existing_edges": data.get("existing_edges", [])}
+
+
+def story_check(answer: dict) -> Any:
+    from .schema import validate_shape
+    validate_shape(answer, STORY_SCHEMA)
+    return None
+
+
+def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: dict, snapshot_id: str,
+                     pool: dict[str, SourceRecord], provided: dict[str, list[tuple[int, int]]], validator,
+                     blocks: list[dict]) -> tuple[dict, dict]:
+    """The story answer and the skeleton as an ordinary extraction output, and what code learned about it
+    (`unclaimed`: the assistant's blocks no story event rests on; `turn_summary`)."""
+    from .blocks import citations as block_citations
+    base = extraction({"skeleton": answer.get("work", []), "events": []}, items, edges, unit, snapshot_id,
+                      pool, provided, validator)
+    candidates, relations = base["event_candidates"], base["edge_candidates"]
+    present = {c["id"] for c in candidates}
+    dropped, cited = [], set()
+    item_sources = {item["id"]: item["sources"] for item in items}
+
+    def blocks_cited(block_ids: list[str]) -> list[dict]:
+        # A block is cut by code like any light citation: its lines as shown, the quote kept by code.
+        return [cite(pool[c["source_id"]], provided.get(c["source_id"], []), c["start_line"], c["end_line"])
+                for c in block_citations(block_ids, blocks) if c["source_id"] in pool]
+
+    def evidence_of(block_ids: list[str], work_ids: list[str]) -> list[dict]:
+        found = blocks_cited(block_ids)
+        if not found:
+            found = [cite(pool[s], provided.get(s, [])) for w in work_ids for s in item_sources.get(w, []) if s in pool]
+        return _checked([c for c in found if c], validator)
+
+    by_tmp = {}
+    for entry in answer.get("story", []):
+        key = f"tmp:{entry['id']}"
+        evidence = evidence_of(entry.get("blocks", []), entry.get("work", []))
+        if not evidence or key in present:
+            dropped.append(entry["id"])
+            continue
+        cited |= set(entry.get("blocks", []))
+        records = [pool[c["source_id"]] for c in evidence]
+        summary = " ".join(part for part in (entry.get("why") or "", entry.get("summary") or "") if part.strip())
+        candidate = {"id": key, "kind": entry["kind"], "title": entry["title"][:240] or entry["kind"],
+                     "summary": summary[:4000], "actor": entry["actor"], "status": entry["status"],
+                     "basis": "tool_record" if any(r.role in {"tool_call", "tool_result"} for r in records) else "explicit_statement",
+                     "session_ids": [], "worktree_ids": [], "occurred_at": None,
+                     "recorded_at": next((r.recorded_at for r in records if r.recorded_at), None), "evidence": evidence}
+        candidates.append(candidate)
+        present.add(key)
+        by_tmp[key] = candidate
+        # What the story event says about the work: a decision or goal led to it, a finding rests on it.
+        for work in entry.get("work", []):
+            target = f"tmp:{work}"
+            if target not in present:
+                continue
+            leads = entry["kind"] != "outcome"
+            relations.append({"id": f"tmp:W{len(relations) + 1}", "from_event_id": key if leads else target,
+                              "to_event_id": target if leads else key, "relation": "motivates" if leads else "produces",
+                              "basis": "inferred", "evidence": evidence[:1], "active": True,
+                              "rationale": "The story names this work as what the event led to or rests on."})
+    for link in answer.get("links", []):
+        source = f"tmp:{link['from']}" if f"tmp:{link['from']}" in present else link["from"]
+        target = f"tmp:{link['to']}" if f"tmp:{link['to']}" in present else link["to"]
+        evidence = _checked([c for c in blocks_cited(link.get("blocks", [])) if c], validator)
+        if not evidence:
+            ends = [c for c in candidates if c["id"] in (source, target)]
+            evidence = ends[0]["evidence"][:1] if ends else []
+        if not evidence:
+            continue
+        relations.append({"id": f"tmp:L{len(relations) + 1}", "from_event_id": source, "to_event_id": target,
+                          "relation": link["relation"], "basis": "explicit" if link.get("blocks") else "inferred",
+                          "evidence": evidence, "active": True,
+                          "rationale": "Linked by the story; its evidence blocks show the link." if link.get("blocks")
+                          else "Linked by the story without a block that shows it."})
+    if dropped:
+        base["limitations"] = base["limitations"] + [f"story: no evidence left for {', '.join(dropped)}."]
+    unclaimed = [b["id"] for b in blocks if b["id"] not in cited and pool[b["source_id"]].role == "assistant"]
+    return base, {"unclaimed_blocks": [(b["source_id"], b["start_line"], b["end_line"]) for b in blocks if b["id"] in unclaimed],
+                  "turn_summary": answer.get("turn_summary")}
