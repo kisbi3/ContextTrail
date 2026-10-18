@@ -463,3 +463,15 @@ def test_a_decision_box_shows_why_it_was_made():
     flat = " ".join(row.strip("│ ") for row in text.splitlines())
     assert "7일 자료로는 불확실성을 잴 수 없어서" in flat and "한 달로 늘렸다." in flat  # wrapped, never cut
     assert "전처리를 먼저" not in flat
+
+
+def test_a_result_in_the_story_shows_what_was_found_and_a_check_beside_it_does_not():
+    events = timed(node("fit", "action", "applied", "δ 추정 추가"),
+                   dict(node("found", "outcome", "reported_complete", "δ가 0.5와 멂"),
+                        summary="BTC 현물 −0.010, ETH 현물 0.155로 0.5와 멀었다. 기각은 아니다."),
+                   dict(node("tests", "outcome", "observed_success", "테스트 통과", ), step="check",
+                        summary="10개 테스트가 통과했다."))
+    text = "\n".join(flow_diagram({"events": events, "edges": [link("fit", "tests", "verifies")]}, 120).lines())
+    flat = " ".join(row.strip("│ ") for row in text.splitlines())
+    assert "BTC 현물 −0.010" in flat and "기각은 아니다" not in flat
+    assert "10개 테스트가 통과했다" not in flat  # the check beside its step keeps to its title

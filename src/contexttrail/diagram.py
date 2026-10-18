@@ -522,9 +522,10 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
             inner = box_w - 4
             none = frozenset()
             lines = [(part, "title", none) for part in _wrap(safe_text(by_id[key]["title"], multiline=False), inner)]
-            if by_id[key]["kind"] == "decision" and by_id[key].get("summary") and key not in placed:
-                # A decision says why it was made: the first sentence of its summary, which the prompts ask to start
-                # with the reason (`common.md`).
+            if by_id[key]["kind"] in ("decision", "outcome") and by_id[key].get("summary") and key not in placed:
+                # A decision says why it was made, a result in the story what was found: the first sentence of its
+                # summary (the prompts ask a decision's to start with the reason, `common.md`). A title alone left
+                # readers without the numbers and conclusions (holdout reader test, `PIPELINE_V2.md`).
                 reason = _first_sentence(safe_text(by_id[key]["summary"], multiline=False))
                 lines += [(part, "dim", none) for part in _wrap(reason, inner)]
             status = _segments(safe_text(labels[key], multiline=False), inner - 2)

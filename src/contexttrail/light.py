@@ -437,6 +437,12 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
             evidence = ends[0]["evidence"][:1] if ends else []
         if not evidence:
             continue
+        same = next((r for r in relations if (r["from_event_id"], r["to_event_id"], r["relation"]) == (source, target, link["relation"])), None)
+        if same is not None:
+            # The story named this work for the event and linked them as well: one relation, shown by its blocks if any.
+            if link.get("blocks"):
+                same.update(basis="explicit", evidence=evidence, rationale="Linked by the story; its evidence blocks show the link.")
+            continue
         relations.append({"id": f"tmp:L{len(relations) + 1}", "from_event_id": source, "to_event_id": target,
                           "relation": link["relation"], "basis": "explicit" if link.get("blocks") else "inferred",
                           "evidence": evidence, "active": True,

@@ -37,3 +37,10 @@ def test_the_comparison_needs_consent_and_names_runner_and_model(tmp_path):
     with pytest.raises(SystemExit):
         compare_models.parse_spec("haiku")
     assert compare_models.parse_spec("codex:gpt-luna") == ("codex", "gpt-luna")
+
+
+def test_a_missing_base_state_is_refused_before_any_run(tmp_path):
+    with pytest.raises(SystemExit):
+        compare_models.main([str(tmp_path), "--models", "claude:haiku", "--output", str(tmp_path / "o"), "--yes",
+                             "--base", str(tmp_path / "none.sqlite")])
+    assert not (tmp_path / "o" / "claude-haiku").exists()

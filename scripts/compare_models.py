@@ -275,6 +275,7 @@ def main(argv=None) -> int:
     parser.add_argument("project", type=Path)
     parser.add_argument("--models", nargs="+", metavar="RUNNER:MODEL")
     parser.add_argument("--units", type=int, default=5)
+    parser.add_argument("--base", type=Path, help="start every model from a copy of this state file instead of the project's own")
     parser.add_argument("--recent", type=int, help="take the N most recent sessions instead of the oldest units")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--jobs", type=int, default=1, help="models analysed side by side (keep 1 with --usage)")
@@ -304,7 +305,9 @@ def main(argv=None) -> int:
     output = args.output.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     os.chmod(output, 0o700)
-    own = Path(scope.state_dir) / "state.sqlite"
+    own = args.base.expanduser().resolve() if args.base else Path(scope.state_dir) / "state.sqlite"
+    if args.base and not own.is_file():
+        parser.error(f"--base: no state file at {own}")
     base = output / "base" / "state.sqlite"
     if own.is_file():
         copy_state(own, base)

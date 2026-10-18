@@ -246,3 +246,23 @@ def test_v2_keeps_a_run_only_when_the_story_points_at_it_and_names_unnamed_work_
     assert "실행: python scripts/run_pipeline.py start" in titles and not any("ps -o" in t for t in titles)
     assert any(t.startswith("수정: calc.py") for t in titles) and any(t.startswith("검사 실패: ") for t in titles)
     assert any(e["relation"] == "motivates" and e["to_event_id"] == "tmp:R1" for e in output["edge_candidates"])
+
+
+def test_v2_draws_one_relation_when_the_story_names_the_work_and_links_it_too(laboratory):
+    from contexttrail.light import run_items, skeleton, story_extraction, written_blocks
+    from contexttrail.schema import EvidenceValidator
+    _, _, _, _, make = laboratory
+    found = records(make)
+    items, edges = skeleton(found)
+    blocks = written_blocks(found)
+    work = items[0]["id"]
+    answer = {"work": [], "turn_summary": None,
+              "story": [{"id": "N1", "kind": "decision", "status": "adopted", "actor": "assistant", "title": "고치기로 함",
+                         "why": None, "summary": "", "blocks": [blocks[1]["id"]], "work": [work]}],
+              "links": [{"from": "N1", "to": work, "relation": "motivates", "blocks": [blocks[1]["id"]]}]}
+    pool = {r.source_id: r for r in found}
+    provided = {r.source_id: [(1, len(r.content.splitlines()))] for r in found}
+    output, _ = story_extraction(answer, items, edges, {"id": "u", "sources": list(pool)}, "snap", pool, provided,
+                                 EvidenceValidator(pool, provided), blocks, run_items(found), "Korean")
+    linked = [e for e in output["edge_candidates"] if (e["from_event_id"], e["to_event_id"], e["relation"]) == ("tmp:N1", f"tmp:{work}", "motivates")]
+    assert len(linked) == 1 and linked[0]["basis"] == "explicit"
