@@ -216,8 +216,8 @@ def build_task(stage: str, data: dict, language: str | None = None) -> dict:
     if stage == "story":
         return {"system": prompt("story"), "stage": stage, "instructions": "", "data": data,
                 "output_language": language or DEFAULT_LANGUAGE,
-                "wire_contract": "Use the IDs shown in the input (B1 blocks, K1 work items, E3 events, your own N1 for "
-                                 "new story events). Every field of the schema is present; why and turn_summary may be null."}
+                "wire_contract": "Use the IDs shown in the input (B1 blocks, Q1 requests, K1 work items, R1 runs, "
+                                 "E3 events and open requests, your own N1 for new story events). Every field of the schema is present; why and turn_summary may be null."}
     if stage == "light":
         return {"system": prompt("light"), "stage": stage, "instructions": "", "data": data,
                 "output_language": language or DEFAULT_LANGUAGE,

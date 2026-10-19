@@ -315,6 +315,16 @@ def test_v2_keeps_a_check_the_story_claims_only_when_the_run_followed_the_edit_a
     refused = next(text for text in output["limitations"] if text.startswith("story: link not kept"))
     assert "no block where the assistant reports the run" in refused and "the run came before the edit" in refused
     assert "the run's result is unknown" in refused
+    output = kept(("R2", edit, report))  # written from the run to the edit: read the other way, then checked
+    assert [(e["from_event_id"], e["to_event_id"]) for e in output["edge_candidates"] if e["relation"] == "verifies"] \
+        == [(f"tmp:{edit}", "tmp:R2")]
+    assert f"story: link written in reverse, read the other way: R2 → {edit}." in output["limitations"]
+    answer = {"work": [], "story": [], "turn_summary": None,
+              "links": [{"from": edit, "to": "R2", "relation": "verifies", "blocks": [plan, report]}]}
+    output, _ = story_extraction(answer, items, edges, {"id": "u", "sources": list(pool)}, "snap", pool, provided,
+                                 EvidenceValidator(pool, provided), blocks, runs, "Korean")
+    (check,) = [e for e in output["edge_candidates"] if e["relation"] == "verifies"]
+    assert {c["source_id"] for c in check["evidence"]} == {"said", "build-out"}  # the block before the run is not kept
 
 
 def test_v2_ends_a_run_of_edits_at_a_run_between_them(laboratory):
@@ -372,6 +382,8 @@ def test_v2_answers_a_request_by_its_id_only_with_a_reply_after_it_in_its_sessio
     for why in ("no reply after the request in its session", "not to an event of this stretch", "not from a request",
                 "no block of the assistant's reply"):
         assert why in refused
+    assert "story: event not kept, its ID names a request, work item, block or earlier event: Q2, ev_old." \
+        in output["limitations"]
     assert add_user_requests(output, found, validator) == []  # the requests are made once
     validator.check_extraction(output, "u", "snap", {"events": [], "edges": []})
 
@@ -388,3 +400,26 @@ def test_v2_answers_a_request_by_its_id_only_with_a_reply_after_it_in_its_sessio
              "edges": [{"from_event_id": "ev_done", "to_event_id": "x", "relation": "answers", "active": True}]}
     source = {"a": {"provider": "claude", "session_id": "session-1"}, "b": {"provider": "claude", "session_id": "session-1"}}
     assert open_requests(graph, found, source.get) == {"ev_old": {"provider": "claude", "session_id": "session-1"}}
+
+
+def test_v2_reads_an_answer_written_to_the_request_the_other_way_and_keeps_only_the_reply_after_it(laboratory):
+    from contexttrail.light import skeleton, story_extraction, written_blocks
+    from contexttrail.schema import EvidenceValidator
+    _, _, _, _, make = laboratory
+    found = records(make) + [make("문서도 고쳐 줘", key="ask2"), make("문서를 고쳤습니다.", key="later", role="assistant")]
+    items, edges = skeleton(found)
+    blocks = written_blocks(found)
+    block = {b["source_id"]: b["id"] for b in blocks}
+    pool = {r.source_id: r for r in found}
+    provided = {r.source_id: [(1, max(1, len(r.content.splitlines())))] for r in found}
+    story = [{"id": "N1", "kind": "outcome", "status": "reported_complete", "title": "문서 고침", "why": None,
+              "summary": "", "blocks": [block["later"]], "work": []}]
+    # From the event to the request, citing a reply written before the request and one after it.
+    links = [{"from": "N1", "to": "Q2", "relation": "answers", "blocks": [block["said"], block["later"]]}]
+    output, _ = story_extraction({"work": [], "story": story, "links": links, "turn_summary": None}, items, edges,
+                                 {"id": "u", "sources": list(pool)}, "snap", pool, provided,
+                                 EvidenceValidator(pool, provided), blocks, [], "Korean")
+    (answer,) = [e for e in output["edge_candidates"] if e["relation"] == "answers"]
+    assert (answer["from_event_id"], answer["to_event_id"]) == ("tmp:Q2", "tmp:N1")
+    assert [c["source_id"] for c in answer["evidence"]] == ["later"]
+    assert "story: link written in reverse, read the other way: N1 → Q2." in output["limitations"]

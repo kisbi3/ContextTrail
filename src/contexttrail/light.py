@@ -467,12 +467,55 @@ def claimed_check(link: dict, work: dict[str, dict], blocks: list[dict], pool: d
     call = next((r for r in ran if r.role == "tool_call"), ran[0])
     if position[call.source_id] < max(position[r.source_id] for r in edited):
         return "the run came before the edit"
-    finished = max(position[r.source_id] for r in ran)
-    by_id = {b["id"]: b for b in blocks}
-    reports = [pool[by_id[b]["source_id"]] for b in link.get("blocks", []) if b in by_id and by_id[b]["source_id"] in position]
-    if not any(r.role == "assistant" and position[r.source_id] > finished for r in reports):
+    if not report_blocks(link, work, blocks, pool, position):
         return "no block where the assistant reports the run"
     return None
+
+
+def report_blocks(link: dict, work: dict[str, dict], blocks: list[dict], pool: dict[str, SourceRecord],
+                  position: dict[str, int]) -> list[str]:
+    """The cited blocks of a claimed check that the assistant wrote after the run finished: the only ones kept as its
+    evidence."""
+    finished = max((position[s] for s in work[link["to"]]["sources"] if s in position), default=None)
+    if finished is None:
+        return []
+    by_id = {b["id"]: b for b in blocks}
+    return [b for b in link.get("blocks", []) if b in by_id and by_id[b]["source_id"] in position
+            and pool[by_id[b]["source_id"]].role == "assistant" and position[by_id[b]["source_id"]] > finished]
+
+
+def reply_blocks(link: dict, requests: dict[str, SourceRecord], earlier: dict[str, dict], blocks: list[dict],
+                 pool: dict[str, SourceRecord], position: dict[str, int]) -> list[str]:
+    """The cited blocks of a claimed answer that the assistant wrote in the request's session, after the request when
+    it is in this stretch: the only ones kept as its evidence."""
+    if link["from"] in requests:
+        asked = requests[link["from"]]
+        session, after = (asked.provider, asked.session_id), position[asked.source_id]
+    elif link["from"] in earlier:
+        session, after = (earlier[link["from"]]["provider"], earlier[link["from"]]["session_id"]), -1
+    else:
+        return []
+    by_id = {b["id"]: b for b in blocks}
+    kept = []
+    for block in link.get("blocks", []):
+        record = pool.get(by_id[block]["source_id"]) if block in by_id else None
+        if record is not None and record.source_id in position and record.role == "assistant" \
+                and (record.provider, record.session_id) == session and position[record.source_id] > after:
+            kept.append(block)
+    return kept
+
+
+def reversed_link(link: dict, work: dict[str, dict], requests: dict, earlier: dict) -> bool:
+    """A claimed `verifies` from a run or check to an edit, or an `answers` to a request from something that is not
+    one, has one reading: the other way round (as `schema.orient_relation` reads a written-in-reverse relation)."""
+    if link["relation"] == "verifies":
+        source, target = work.get(link["from"]), work.get(link["to"])
+        return bool(source and target and not source.get("edit") and (source.get("check") or source.get("run"))
+                    and target.get("edit"))
+    if link["relation"] == "answers":
+        asks = set(requests) | set(earlier)
+        return link["to"] in asks and link["from"] not in asks
+    return False
 
 
 def claimed_answer(link: dict, requests: dict[str, SourceRecord], earlier: dict[str, dict], present: set[str],
@@ -523,16 +566,22 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
     # The runs the story points at become results of their own; the rest stay in the records.
     work_items = {item["id"]: item for item in items + runs}
     story_ids = {f"tmp:{entry['id']}" for entry in answer.get("story", []) if not entry["id"].startswith("ev_")}
+    links, turned = [], []
+    for link in answer.get("links", []):
+        if reversed_link(link, work_items, requests, earlier):
+            turned.append(f"{link['from']} → {link['to']}")
+            link = {**link, "from": link["to"], "to": link["from"]}
+        links.append(link)
     # A check or an answer the story claims and code refuses names no run: the refused claim keeps no event alive.
     refusals = {}
-    for n, link in enumerate(answer.get("links", [])):
+    for n, link in enumerate(links):
         if link["relation"] == "verifies":
             refusals[n] = claimed_check(link, work_items, blocks, pool, position)
         elif link["relation"] == "answers":
             refusals[n] = claimed_answer(link, requests, earlier, story_ids | {f"tmp:{w}" for w in work_items},
                                          blocks, pool, position)
     pointed = {w for entry in answer.get("story", []) for w in entry.get("work", [])} | {
-        end for n, link in enumerate(answer.get("links", [])) if not refusals.get(n) for end in (link["from"], link["to"])}
+        end for n, link in enumerate(links) if not refusals.get(n) for end in (link["from"], link["to"])}
     shown_runs = [{**run, "kind": "outcome", "status": {"failed": "observed_failure", "passed": "observed_success"}.get(run["status"], "unknown")}
                   for run in runs if run["id"] in pointed]
     work_names = [{"id": item["id"], "title": (named.get(item["id"]) or {}).get("title") or code_title(item, language),
@@ -551,7 +600,7 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
                                          "quote": evidence["quote"]}]})
     present = {c["id"] for c in candidates}
     reserved = set(requests) | set(work_items) | {b["id"] for b in blocks}
-    dropped, cited = [], set()
+    dropped, taken, cited = [], [], set()
     item_sources = {item["id"]: item["sources"] for item in items + runs}
 
     def blocks_cited(block_ids: list[str]) -> list[dict]:
@@ -568,10 +617,13 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
     by_tmp = {}
     for entry in answer.get("story", []):
         key = f"tmp:{entry['id']}"
-        evidence = evidence_of(entry.get("blocks", []), entry.get("work", []))
         # A story event's ID is its own: one that names a request, a work item, a block or an existing event (E…, which
         # the reply's aliases turn into `ev_…`) would be taken for that and is refused.
-        if not evidence or key in present or entry["id"] in reserved or entry["id"].startswith("ev_"):
+        if key in present or entry["id"] in reserved or entry["id"].startswith("ev_"):
+            taken.append(entry["id"])
+            continue
+        evidence = evidence_of(entry.get("blocks", []), entry.get("work", []))
+        if not evidence:
             dropped.append(entry["id"])
             continue
         cited |= set(entry.get("blocks", []))
@@ -596,7 +648,7 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
                               "basis": "inferred", "evidence": evidence[:1], "active": True,
                               "rationale": "The story names this work as what the event led to or rests on."})
     refused = []
-    for n, link in enumerate(answer.get("links", [])):
+    for n, link in enumerate(links):
         source = f"tmp:{link['from']}" if f"tmp:{link['from']}" in present else link["from"]
         target = f"tmp:{link['to']}" if f"tmp:{link['to']}" in present else link["to"]
         if link["relation"] == "verifies":
@@ -606,7 +658,8 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
                 continue
             ran = [cite(pool[s], provided.get(s, [])) for s in work_items[link["to"]]["sources"]
                    if s in pool and pool[s].role == "tool_result"]
-            evidence = _checked([c for c in blocks_cited(link["blocks"]) + ran if c], validator)
+            evidence = _checked([c for c in blocks_cited(report_blocks(link, work_items, blocks, pool, position)) + ran if c],
+                                validator)
             if not any(pool[c["source_id"]].role == "assistant" for c in evidence):
                 refused.append(f"{link['from']} → {link['to']} (its report block was not kept)")
                 continue
@@ -621,7 +674,8 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
         if link["relation"] == "answers":
             why = refusals[n] or (None if target in present or target in earlier else "its answer was not kept")
             # An answer rests on the reply's blocks alone, never on its ends' evidence.
-            evidence = [] if why else _checked([c for c in blocks_cited(link["blocks"]) if c], validator)
+            evidence = [] if why else _checked(
+                [c for c in blocks_cited(reply_blocks(link, requests, earlier, blocks, pool, position)) if c], validator)
             if not any(pool[c["source_id"]].role == "assistant" for c in evidence):
                 refused.append(f"{link['from']} → {link['to']} ({why or 'its reply block was not kept'})")
                 continue
@@ -647,8 +701,13 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
                           "evidence": evidence, "active": True,
                           "rationale": "Linked by the story; its evidence blocks show the link." if link.get("blocks")
                           else "Linked by the story without a block that shows it."})
+    if taken:
+        base["limitations"] = base["limitations"] + [
+            f"story: event not kept, its ID names a request, work item, block or earlier event: {', '.join(taken)}."]
     if dropped:
         base["limitations"] = base["limitations"] + [f"story: no evidence left for {', '.join(dropped)}."]
+    if turned:
+        base["limitations"] = base["limitations"] + [f"story: link written in reverse, read the other way: {'; '.join(turned)}."]
     if refused:
         base["limitations"] = base["limitations"] + [f"story: link not kept: {'; '.join(refused)}."]
     unclaimed = [b["id"] for b in blocks if b["id"] not in cited and pool[b["source_id"]].role == "assistant"]
