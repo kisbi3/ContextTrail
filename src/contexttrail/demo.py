@@ -82,7 +82,8 @@ class FixtureRunner:
         if task["stage"] == "story":
             # The story answer: the work named back, no story of its own (the fixture has no written blocks to read).
             return {"status": "complete", "snapshot_id": data["snapshot_id"], "unit_id": data["unit_id"],
-                    "work": [{"id": item["id"], "title": item["title"], "summary": ""} for item in data.get("work", [])],
+                    "work": [{"id": item["id"], "title": item["title"], "summary": "", "checked_by": []}
+                             for item in data.get("work", [])],
                     "story": [], "links": [], "turn_summary": "합성 구간: 작업 기록만"}
         if task["stage"] == "light":
             # The light answer: the code-built skeleton named back, no events of its own.

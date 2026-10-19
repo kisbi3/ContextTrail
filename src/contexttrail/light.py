@@ -17,6 +17,7 @@ the code cuts the quoted lines itself, so a citation is always real source text 
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import PurePosixPath
 from typing import Any
@@ -104,6 +105,20 @@ def covers(command: str, files: list[str]) -> str | None:
     return None
 
 
+# A Codex `exec` call can patch files and then run a command in one script: `tools.apply_patch(…)` before
+# `tools.exec_command({cmd: "…"})`. Its result holds what the command printed (a test run right after the patch).
+_INLINE_PATCH = re.compile(r"tools\.apply_patch\(")
+_INLINE_RUN = re.compile(r'tools\.exec_command\(\s*\{\s*"?cmd"?\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def inline_run(call: str) -> str | None:
+    """The command a call runs right after patching files in the same call (Codex `exec`), or None."""
+    patch, run = _INLINE_PATCH.search(call), _INLINE_RUN.search(call)
+    if patch is None or run is None or run.start() < patch.start():
+        return None
+    return " ".join(run.group(1).replace("\\n", " ").replace('\\"', '"').split())
+
+
 def skeleton(assigned: list[SourceRecord], split_at_runs: bool = False) -> tuple[list[dict], list[dict]]:
     """Events and `verifies` relations the tool steps show, with the records each rests on (call first).
     `split_at_runs` (pipeline v2) ends a run of edits at any other run in between, so the edits a run could have
@@ -129,6 +144,8 @@ def skeleton(assigned: list[SourceRecord], split_at_runs: bool = False) -> tuple
                 items.append(previous)
             if not previous["doc"]:
                 last_edit[turn] = previous
+            if split_at_runs and inline_run(content.get(step["call"], "")):
+                previous = None  # the call ran a command after its patch: the edits up to it are a change of their own
             continue
         if step["hint"] == "test" and step["result"]:
             failed = check_failed(content.get(step["result"], ""), step["failed"])
@@ -275,7 +292,10 @@ STORY_RELATIONS = ["motivates", "answers", "revises", "produces", "verifies"]
 _NULLSTR = {"type": ["string", "null"]}
 STORY_SCHEMA = obj({
     "status": enum(["complete"]), "snapshot_id": STR, "unit_id": STR,
-    "work": arr(obj({"id": STR, "title": STR, "summary": STR})),
+    # `checked_by`: for an edit item, the later runs or checks that tried it, each with the block reporting what it
+    # showed; asked of every item so each edit gets a decision, read by code as claimed `verifies` (`claimed_check`).
+    "work": arr(obj({"id": STR, "title": STR, "summary": STR,
+                     "checked_by": arr(obj({"run": STR, "blocks": arr(STR)}))})),
     # Every story event is the assistant's: the person's requests and choices are made by code (`request_items`).
     "story": arr(obj({"id": STR, "kind": enum(STORY_KINDS), "status": enum(STATUSES),
                       "title": STR, "why": _NULLSTR, "summary": STR, "blocks": arr(STR), "work": arr(STR)})),
@@ -306,19 +326,54 @@ def run_status(call: SourceRecord | None, result: SourceRecord | None, tool_erro
     return "passed" if result.provider == "claude" else "unknown"
 
 
+# Codex returns a command still running after its wait as a session (`"session_id": 31341` and no exit code); what it
+# printed and how it ended come in later `write_stdin({session_id: 31341, …})` polls of that session.
+_RUNNING = re.compile(r'"session_id"\s*:\s*(\d+)')
+_POLLED = re.compile(r'write_stdin\(\s*\{\s*"?session_id"?\s*:\s*(\d+)')
+
+
+def _follow_polls(run: dict, steps: list[dict], by_id: dict[str, SourceRecord]) -> None:
+    """A run Codex left running: its later polls join its records, and the last one with an exit status settles it."""
+    result = by_id.get(run["sources"][-1]) if len(run["sources"]) > 1 else None
+    if result is None or run["status"] != "unknown" or EXIT_CODE.search(result.content):
+        return
+    running = _RUNNING.findall(result.content)
+    if not running:
+        return
+    later = False
+    for step in steps:
+        if step["call"] == run["sources"][0]:
+            later = True
+            continue
+        call = by_id.get(step["call"])
+        if not later or step["hint"] != "poll" or call is None or running[-1] not in _POLLED.findall(call.content):
+            continue
+        run["sources"] += [step["call"]] + ([step["result"]] if step["result"] else [])
+        polled = by_id.get(step["result"])
+        if polled is not None and EXIT_CODE.search(polled.content):
+            run["status"] = run_status(call, polled, step["failed"])
+            break
+
+
 def run_items(assigned: list[SourceRecord]) -> list[dict]:
     """The other runs of these records (scripts, analyses, jobs started), as work items `R1`, `R2`, … for the story's
     outline. A run becomes an event only when the story points at it, so a slice of many runs stays readable."""
     from .analysis import tool_steps
     by_id = {r.source_id: r for r in assigned}
     found = []
-    for step in tool_steps(assigned):
-        if step["hint"] != "run":
+    steps = tool_steps(assigned)
+    for step in steps:
+        call = by_id.get(step["call"])
+        inline = inline_run(call.content) if step["hint"] == "edit" and not step["failed"] and call is not None else None
+        if step["hint"] != "run" and not inline:
             continue
-        status = run_status(by_id.get(step["call"]), by_id.get(step["result"]), step["failed"])
-        found.append({"id": f"R{len(found) + 1}", "kind": "run", "run": True, "status": status, "target": step["target"],
-                      "title": "Run: " + step["target"][:80],
-                      "sources": [step["call"]] + ([step["result"]] if step["result"] else [])})
+        status = run_status(call, by_id.get(step["result"]), step["failed"] and not inline)
+        target = inline or step["target"]
+        found.append({"id": f"R{len(found) + 1}", "kind": "run", "run": True, "status": status, "target": target,
+                      "title": "Run: " + target[:80], "sources": [step["call"]] + ([step["result"]] if step["result"] else []),
+                      # Run by the same call right after its patch (the call's edit item ends with it).
+                      **({"inline": True} if inline else {})})
+        _follow_polls(found[-1], steps, by_id)
     return found
 
 
@@ -379,9 +434,31 @@ def written_blocks(assigned: list[SourceRecord]) -> list[dict]:
     return number_blocks(written)
 
 
+def readable_output(text: str) -> list[str]:
+    """A run's result as lines a reader can use: a line that is a JSON object carrying the command's `output` (Codex
+    wraps what a command printed as `{"chunk_id": …, "exit_code": 0, "output": "…"}` on one line) is replaced by the
+    lines of that output, so its last lines are what the command printed, not the wrapper's head."""
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("{") and '"output"' in stripped:
+            try:
+                wrapped = json.loads(stripped)
+            except ValueError:
+                wrapped = None
+            if isinstance(wrapped, dict) and isinstance(wrapped.get("output"), str):
+                lines.extend(wrapped["output"].splitlines())
+                continue
+        lines.append(line)
+    return [line for line in lines if line.strip()]
+
+
 def _failure_tail(text: str) -> list[str]:
-    lines = [line for line in text.splitlines() if line.strip()]
-    return [line[:300] for line in lines[-FAILURE_TAIL_LINES:]]
+    return [line[:300] for line in readable_output(text)[-FAILURE_TAIL_LINES:]]
+
+
+# How much of a run's command the story sees beside its last lines (one line; an inline script shows what it reads).
+COMMAND_CHARS = 400
 
 
 # The runs and checks right after a run of edits show their last lines, so the story can tell which one tried them.
@@ -396,12 +473,28 @@ def _runs_after_edits(items: list[dict], runs: list[dict], position: dict[str, i
     chosen = set()
     for edit in (e for e in items if e.get("edit")):
         end = max((position[s] for s in edit["sources"] if s in position), default=-1)
-        chosen |= {e["id"] for e in [e for e in steps if at(e) > end][:RUNS_AFTER_EDIT]}
+        # A run in the edit's own last call (after its patch) comes first.
+        chosen |= {e["id"] for e in [e for e in steps if at(e) > end or (e.get("inline") and e["sources"][0] in edit["sources"])]
+                   [:RUNS_AFTER_EDIT]}
     return chosen
 
 
+def _command(entry: dict, by_id: dict[str, SourceRecord]) -> str:
+    """The run's whole command on one line, read from its call (the outline's target is cut short), cut at
+    COMMAND_CHARS."""
+    from .analysis import _command_text
+    call = next((by_id[s] for s in entry["sources"] if s in by_id and by_id[s].role == "tool_call"), None)
+    text = _command_text(call.content.partition("\n")[2] or call.content) if call is not None else ""
+    return (text or " ".join(str(entry.get("target") or entry.get("check") or "").split()))[:COMMAND_CHARS]
+
+
+def _last_result(entry: dict, by_id: dict[str, SourceRecord]) -> SourceRecord | None:
+    """The result that settled a run: its own, or the last poll of a run Codex left running (`_follow_polls`)."""
+    return next((by_id[s] for s in reversed(entry["sources"]) if s in by_id and by_id[s].role == "tool_result"), None)
+
+
 def _output_tail(entry: dict, by_id: dict[str, SourceRecord]) -> list[str]:
-    result = next((by_id[s] for s in entry["sources"] if s in by_id and by_id[s].role == "tool_result"), None)
+    result = _last_result(entry, by_id)
     return _failure_tail(result.content) if result is not None else []
 
 
@@ -424,12 +517,16 @@ def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], a
     position = {r.source_id: n for n, r in enumerate(assigned)}
     after_edit = _runs_after_edits(items, runs or [], position)
     for item, entry in zip(items, work):
-        if item.get("check") and item["status"] == "observed_success" and item["id"] in after_edit:
-            entry["output_tail"] = _output_tail(item, by_id)
+        if item.get("check") and item["id"] in after_edit:
+            entry["command"] = _command(item, by_id)
+            if item["status"] == "observed_success":
+                entry["output_tail"] = _output_tail(item, by_id)
     for run in runs or []:
         entry = {"id": run["id"], "kind": "run", "status": run["status"], "title": run["title"]}
+        if run["id"] in after_edit:
+            entry["command"] = _command(run, by_id)
         if run["status"] == "failed":
-            result = next((by_id[s] for s in run["sources"] if s in by_id and by_id[s].role == "tool_result"), None)
+            result = _last_result(run, by_id)
             if result is not None:
                 entry["failure_tail"] = _failure_tail(result.content)
         elif run["status"] == "passed" and run["id"] in after_edit:
@@ -471,7 +568,9 @@ def claimed_check(link: dict, work: dict[str, dict], blocks: list[dict], pool: d
     if not edited or not ran or {(r.provider, r.session_id) for r in edited} != {(r.provider, r.session_id) for r in ran}:
         return "not in the edit's session"
     call = next((r for r in ran if r.role == "tool_call"), ran[0])
-    if position[call.source_id] < max(position[r.source_id] for r in edited):
+    # A run in the edit's own call ran after its patch (`inline_run`); any other must start after the edit's records.
+    same_call = run.get("inline") and call.source_id in edit["sources"]
+    if position[call.source_id] < max(position[r.source_id] for r in edited) and not same_call:
         return "the run came before the edit"
     if not report_blocks(link, work, blocks, pool, position):
         return "no block where the assistant reports the run"
@@ -586,7 +685,9 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
     work_items = {item["id"]: item for item in items + runs}
     story_ids = {f"tmp:{entry['id']}" for entry in answer.get("story", []) if not entry["id"].startswith("ev_")}
     links, turned = [], []
-    for link in answer.get("links", []):
+    claimed = [{"from": entry["id"], "to": check["run"], "relation": "verifies", "blocks": check.get("blocks", [])}
+               for entry in answer.get("work", []) for check in entry.get("checked_by", [])]
+    for link in answer.get("links", []) + claimed:
         if reversed_link(link, work_items, requests, earlier):
             turned.append(f"{link['from']} → {link['to']}")
             link = {**link, "from": link["to"], "to": link["from"]}

@@ -188,7 +188,7 @@ def test_pipeline_v2_keeps_the_work_code_found_and_the_story_cites_written_block
     failed = next(w for w in request["work"] if w["status"] == "observed_failure")
     assert failed["failure_tail"][-1] == "Exit code: 1"  # but a failed run's last lines are
     answer = {"status": "complete", "snapshot_id": "snap", "unit_id": "unit_1",
-              "work": [{"id": item["id"], "title": "이름", "summary": ""} for item in items],
+              "work": [{"id": item["id"], "title": "이름", "summary": "", "checked_by": []} for item in items],
               "story": [{"id": "N1", "kind": "outcome", "status": "reported_complete",
                          "title": "부호가 반대였음", "why": None, "summary": "", "blocks": [blocks[1]["id"]], "work": []},
                         {"id": "N2", "kind": "decision", "status": "adopted", "title": "근거 없음",
@@ -434,3 +434,119 @@ def test_v2_reads_an_answer_written_to_the_request_the_other_way_and_keeps_only_
     assert (answer["from_event_id"], answer["to_event_id"]) == ("tmp:Q2", "tmp:N1")
     assert [c["source_id"] for c in answer["evidence"]] == ["later"]
     assert "story: link written in reverse, read the other way: N1 → Q2." in output["limitations"]
+
+
+def test_v2_shows_what_a_run_printed_inside_codexs_wrapper_and_its_command():
+    from contexttrail.light import _failure_tail, readable_output
+    wrapped = ('Script completed\nWall time 1.3 seconds\nOutput:\n\n'
+               + json.dumps({"chunk_id": "c1", "exit_code": 0, "output": "page 1: 2 figures\npage 2: table ok\n"}))
+    assert readable_output(wrapped)[-2:] == ["page 1: 2 figures", "page 2: table ok"]
+    assert _failure_tail(wrapped)[-1] == "page 2: table ok"  # not the wrapper's head, cut at 300 characters
+    assert readable_output('{"not": "a wrapper"}\nplain') == ['{"not": "a wrapper"}', "plain"]
+
+
+def test_v2_runs_right_after_an_edit_show_their_command(laboratory):
+    from contexttrail.light import run_items, skeleton, story_request, written_blocks
+    _, _, _, _, make = laboratory
+
+    def tool(key, role, text, call_id):
+        return replace(make(text, key=key, role=role), tool_call_id=call_id)
+    patch = "Tool: Edit\n" + json.dumps({"file_path": "/work/app/scripts/build.py", "old_string": "a", "new_string": "b"})
+    script = "python - <<'PY'\nfrom pypdf import PdfReader\nprint(len(PdfReader('out/report.pdf').pages))\nPY"
+    found = [make("보고서를 고쳐 주세요.", key="ask"),
+             tool("e", "tool_call", patch, "c1"), tool("e-out", "tool_result", "updated", "c1"),
+             tool("r", "tool_call", "Tool: Bash\n" + json.dumps({"command": script}), "c2"),
+             tool("r-out", "tool_result", "2\nExit code: 0", "c2")]
+    items, _ = skeleton(found, split_at_runs=True)
+    runs = run_items(found)
+    request = story_request({"id": "u"}, "s", {"user_requests": [], "existing_events": []}, items, found,
+                            written_blocks(found), runs)
+    (run,) = [w for w in request["work"] if w["kind"] == "run"]
+    assert "out/report.pdf" in run["command"] and "\n" not in run["command"]
+
+
+def test_v2_a_codex_call_that_runs_a_command_after_its_patch_shows_that_run(laboratory):
+    from contexttrail.light import inline_run, run_items, skeleton, story_extraction, written_blocks
+    from contexttrail.schema import EvidenceValidator
+    _, _, _, _, make = laboratory
+
+    def tool(key, role, text, call_id):
+        return replace(make(text, key=key, role=role), tool_call_id=call_id)
+    patch = ('text(await tools.apply_patch("*** Begin Patch\\n*** Update File: /work/app/src/calc.py\\n@@\\n-a\\n+b\\n'
+             '*** End Patch"));\n')
+    both = "Tool: exec\n" + patch + 'text(await tools.exec_command({cmd:"python -m pytest tests -q"}));'
+    assert inline_run(both) == "python -m pytest tests -q"
+    assert inline_run("Tool: exec\n" + 'text(await tools.exec_command({cmd:"ls"}));\n' + patch) is None  # run first
+    found = [make("고쳐 주세요.", key="ask"),
+             tool("e1", "tool_call", both, "c1"),
+             tool("e1-out", "tool_result", 'Output:\n{"exit_code":0,"output":"3 passed in 0.1s\\n"}', "c1"),
+             tool("e2", "tool_call", "Tool: exec\n" + patch.replace("+b", "+c"), "c2"),
+             tool("e2-out", "tool_result", "Output:\n{}", "c2"),
+             make("테스트 3개가 통과했습니다.", key="said", role="assistant")]
+    items, edges = skeleton(found, split_at_runs=True)
+    edits = [i for i in items if i.get("edit")]
+    assert [i["sources"][0] for i in edits] == ["e1", "e2"]  # the run after the first patch ends that change
+    (run,) = run_items(found)
+    assert (run["status"], run.get("inline"), run["sources"][0]) == ("passed", True, "e1")
+    blocks = written_blocks(found)
+    said = next(b["id"] for b in blocks if b["source_id"] == "said")
+    pool = {r.source_id: r for r in found}
+    provided = {r.source_id: [(1, max(1, len(r.content.splitlines())))] for r in found}
+    answer = {"work": [], "story": [], "turn_summary": None,
+              "links": [{"from": edits[0]["id"], "to": run["id"], "relation": "verifies", "blocks": [said]},
+                        {"from": edits[1]["id"], "to": run["id"], "relation": "verifies", "blocks": [said]}]}
+    output, _ = story_extraction(answer, items, edges, {"id": "u", "sources": list(pool)}, "snap", pool, provided,
+                                 EvidenceValidator(pool, provided), blocks, [run], "Korean")
+    kept = [(e["from_event_id"], e["to_event_id"]) for e in output["edge_candidates"] if e["relation"] == "verifies"]
+    assert kept == [(f"tmp:{edits[0]['id']}", f"tmp:{run['id']}")]  # the later patch came after that run
+
+
+def test_v2_reads_each_edits_checked_by_as_a_claimed_check(laboratory):
+    from contexttrail.light import STORY_SCHEMA, run_items, skeleton, story_extraction, written_blocks
+    from contexttrail.schema import EvidenceValidator, validate_shape
+    _, _, _, _, make = laboratory
+
+    def tool(key, role, text, call_id):
+        return replace(make(text, key=key, role=role), tool_call_id=call_id)
+    patch = "Tool: Edit\n" + json.dumps({"file_path": "/work/app/scripts/build.py", "old_string": "a", "new_string": "b"})
+    found = [make("보고서를 고쳐 주세요.", key="ask"),
+             tool("e", "tool_call", patch, "c1"), tool("e-out", "tool_result", "updated", "c1"),
+             tool("r", "tool_call", "Tool: Bash\n" + json.dumps({"command": "python scripts/build.py"}), "c2"),
+             tool("r-out", "tool_result", "wrote report.pdf\nExit code: 0", "c2"),
+             make("빌드해서 report.pdf가 나온 것을 확인했습니다.", key="said", role="assistant")]
+    items, edges = skeleton(found, split_at_runs=True)
+    runs = run_items(found)
+    blocks = written_blocks(found)
+    said = next(b["id"] for b in blocks if b["source_id"] == "said")
+    edit = next(i["id"] for i in items if i.get("edit"))
+    answer = {"status": "complete", "snapshot_id": "snap", "unit_id": "u", "story": [], "links": [], "turn_summary": None,
+              "work": [{"id": edit, "title": "빌드 수정", "summary": "", "checked_by": [{"run": "R1", "blocks": [said]}]}]}
+    validate_shape(answer, STORY_SCHEMA)
+    pool = {r.source_id: r for r in found}
+    provided = {r.source_id: [(1, max(1, len(r.content.splitlines())))] for r in found}
+    output, _ = story_extraction(answer, items, edges, {"id": "u", "sources": list(pool)}, "snap", pool, provided,
+                                 EvidenceValidator(pool, provided), blocks, runs, "Korean")
+    (check,) = [e for e in output["edge_candidates"] if e["relation"] == "verifies"]
+    assert (check["from_event_id"], check["to_event_id"], check["basis"]) == (f"tmp:{edit}", "tmp:R1", "explicit")
+
+
+def test_v2_a_codex_run_left_running_is_settled_by_its_later_poll(laboratory):
+    from contexttrail.light import run_items, story_request, skeleton, written_blocks
+    _, _, _, _, make = laboratory
+
+    def tool(key, role, text, call_id):  # Codex writes an exit status for every finished run
+        return replace(make(text, key=key, role=role), tool_call_id=call_id, provider="codex")
+    started = 'Output:\n{"chunk_id":"a","wall_time_seconds":1.0,"session_id":4500,"output":""}'
+    found = [make("빌드해 주세요.", key="ask"),
+             tool("r", "tool_call", 'Tool: exec\ntext(await tools.exec_command({cmd:"python scripts/build.py"}));', "c1"),
+             tool("r-out", "tool_result", started, "c1"),
+             tool("p1", "tool_call", 'Tool: exec\ntext(await tools.write_stdin({session_id:9999,chars:""}));', "c2"),
+             tool("p1-out", "tool_result", 'Output:\n{"exit_code":1,"output":"other job failed"}', "c2"),
+             tool("p2", "tool_call", 'Tool: exec\ntext(await tools.write_stdin({session_id:4500,chars:""}));', "c3"),
+             tool("p2-out", "tool_result", 'Output:\n{"exit_code":0,"output":"5 passed in 0.2s\\n"}', "c3")]
+    (run,) = run_items(found)
+    assert run["status"] == "passed" and run["sources"] == ["r", "r-out", "p2", "p2-out"]  # not the other session's poll
+    items, _ = skeleton(found, split_at_runs=True)
+    request = story_request({"id": "u"}, "s", {"user_requests": [], "existing_events": []}, items, found,
+                            written_blocks(found), [run])
+    assert request["work"][-1]["status"] == "passed"
