@@ -193,7 +193,7 @@ def test_pipeline_v2_keeps_the_work_code_found_and_the_story_cites_written_block
                          "title": "부호가 반대였음", "why": None, "summary": "", "blocks": [blocks[1]["id"]], "work": []},
                         {"id": "N2", "kind": "decision", "status": "adopted", "title": "근거 없음",
                          "why": None, "summary": "", "blocks": ["B99"], "work": []}],
-              "links": [], "turn_summary": "add() 부호 수정"}
+              "requests": [], "links": [], "turn_summary": "add() 부호 수정"}
     validate_shape(answer, STORY_SCHEMA)
     pool = {r.source_id: r for r in found}
     provided = {r.source_id: [(1, len(r.content.splitlines()))] for r in found}
@@ -367,7 +367,7 @@ def test_v2_answers_a_request_by_its_id_only_with_a_reply_after_it_in_its_sessio
              {"from": "Q2", "to": "N1", "relation": "answers", "blocks": [block["said"]]},  # the reply came before Q2
              {"from": "Q1", "to": "Q2", "relation": "answers", "blocks": [block["said"]]},  # request to request
              {"from": "N1", "to": items[0]["id"], "relation": "answers", "blocks": [block["said"]]},  # not a request
-             {"from": "Q2", "to": "N1", "relation": "answers", "blocks": []}]  # no reply cited
+             {"from": "Q1", "to": items[0]["id"], "relation": "answers", "blocks": []}]  # no reply cited
     answer = {"work": [], "story": story, "links": links, "turn_summary": None}
     validator = EvidenceValidator(pool, provided)
     output, _ = story_extraction(answer, items, edges, {"id": "u", "sources": list(pool)}, "snap", pool, provided,
@@ -436,6 +436,34 @@ def test_v2_reads_an_answer_written_to_the_request_the_other_way_and_keeps_only_
     assert "story: link written in reverse, read the other way: N1 → Q2." in output["limitations"]
 
 
+def test_v2_reads_each_requests_answered_by_as_a_claimed_answer_and_merges_one_repeated_in_the_links(laboratory):
+    from contexttrail.light import STORY_SCHEMA, skeleton, story_extraction, written_blocks
+    from contexttrail.schema import EvidenceValidator, validate_shape
+    _, _, _, _, make = laboratory
+    found = records(make) + [make("문서도 고쳐 줘", key="ask2"), make("문서를 고쳤습니다.", key="later", role="assistant")]
+    items, edges = skeleton(found)
+    blocks = written_blocks(found)
+    block = {b["source_id"]: b["id"] for b in blocks}
+    pool = {r.source_id: r for r in found}
+    provided = {r.source_id: [(1, max(1, len(r.content.splitlines())))] for r in found}
+    story = [{"id": "N1", "kind": "outcome", "status": "reported_complete", "title": "부호 오류였음", "why": None,
+              "summary": "", "blocks": [block["said"]], "work": []},
+             {"id": "N2", "kind": "outcome", "status": "reported_complete", "title": "문서 고침", "why": None,
+              "summary": "", "blocks": [block["later"]], "work": []}]
+    answer = {"status": "complete", "snapshot_id": "snap", "unit_id": "u", "work": [], "story": story,
+              "requests": [{"id": "Q1", "answered_by": [{"item": "N1", "blocks": [block["said"]]}]},
+                           {"id": "Q2", "answered_by": [{"item": "N1", "blocks": [block["said"]]},  # before Q2: refused
+                                                        {"item": "N2", "blocks": [block["later"]]}]}],
+              "links": [{"from": "Q2", "to": "N2", "relation": "answers", "blocks": [block["later"]]}],
+              "turn_summary": None}
+    validate_shape(answer, STORY_SCHEMA)
+    output, _ = story_extraction(answer, items, edges, {"id": "u", "sources": list(pool)}, "snap", pool, provided,
+                                 EvidenceValidator(pool, provided), blocks, [], "Korean")
+    kept = [(e["from_event_id"], e["to_event_id"], e["basis"]) for e in output["edge_candidates"] if e["relation"] == "answers"]
+    assert kept == [("tmp:Q2", "tmp:N2", "explicit"), ("tmp:Q1", "tmp:N1", "explicit")]  # Q2 → N2 once
+    assert any("Q2 → N1 (no reply after the request in its session)" in t for t in output["limitations"])
+
+
 def test_v2_shows_what_a_run_printed_inside_codexs_wrapper_and_its_command():
     from contexttrail.light import _failure_tail, readable_output
     wrapped = ('Script completed\nWall time 1.3 seconds\nOutput:\n\n'
@@ -502,7 +530,7 @@ def test_v2_a_codex_call_that_runs_a_command_after_its_patch_shows_that_run(labo
 
 
 def test_v2_reads_each_edits_checked_by_as_a_claimed_check(laboratory):
-    from contexttrail.light import STORY_SCHEMA, run_items, skeleton, story_extraction, written_blocks
+    from contexttrail.light import STORY_SCHEMA, run_items, skeleton, story_extraction, story_request, written_blocks
     from contexttrail.schema import EvidenceValidator, validate_shape
     _, _, _, _, make = laboratory
 
@@ -519,7 +547,10 @@ def test_v2_reads_each_edits_checked_by_as_a_claimed_check(laboratory):
     blocks = written_blocks(found)
     said = next(b["id"] for b in blocks if b["source_id"] == "said")
     edit = next(i["id"] for i in items if i.get("edit"))
-    answer = {"status": "complete", "snapshot_id": "snap", "unit_id": "u", "story": [], "links": [], "turn_summary": None,
+    # Work items carry no time: each names the first block the assistant wrote after it, where its report starts.
+    request = story_request({"id": "u"}, "snap", {"user_requests": []}, items, found, blocks, runs)
+    assert {w["id"]: w.get("next_written") for w in request["work"]} == {edit: said, "R1": said}
+    answer = {"status": "complete", "snapshot_id": "snap", "unit_id": "u", "story": [], "requests": [], "links": [], "turn_summary": None,
               "work": [{"id": edit, "title": "빌드 수정", "summary": "", "checked_by": [{"run": "R1", "blocks": [said]}]}]}
     validate_shape(answer, STORY_SCHEMA)
     pool = {r.source_id: r for r in found}

@@ -299,6 +299,10 @@ STORY_SCHEMA = obj({
     # Every story event is the assistant's: the person's requests and choices are made by code (`request_items`).
     "story": arr(obj({"id": STR, "kind": enum(STORY_KINDS), "status": enum(STATUSES),
                       "title": STR, "why": _NULLSTR, "summary": STR, "blocks": arr(STR), "work": arr(STR)})),
+    # `requests`: for each request (a Q, or the open request's E), the story events or work items where the assistant
+    # answered it, each with the reply's blocks, or []; asked of every request so each gets a decision (as
+    # `checked_by` is of every edit), read by code as claimed `answers` (`claimed_answer`).
+    "requests": arr(obj({"id": STR, "answered_by": arr(obj({"item": STR, "blocks": arr(STR)}))})),
     "links": arr(obj({"from": STR, "to": STR, "relation": enum(STORY_RELATIONS), "blocks": arr(STR)})),
     "turn_summary": _NULLSTR,
 })
@@ -532,6 +536,12 @@ def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], a
         elif run["status"] == "passed" and run["id"] in after_edit:
             entry["output_tail"] = _output_tail(run, by_id)
         work.append(entry)
+    # Work items carry no time, so the story could not tell which written block came after a run: each names the
+    # first block the assistant wrote after it in its session, where a report of it would start.
+    for item, entry in zip(items + list(runs or []), work):
+        following = next_written(item, blocks, by_id, position)
+        if following:
+            entry["next_written"] = following
     asked = {item["source_id"]: item["id"] for item in request_items(assigned)}
     requests = [{"id": asked[r["source_id"]], **r} for r in data["user_requests"] if r["source_id"] in asked]
     return {"unit_id": unit["id"], "snapshot_id": snapshot_id, "user_requests": requests,
@@ -541,6 +551,18 @@ def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], a
                          "text": "\n".join(shown_line(line) for line in b["text"].splitlines())} for b in blocks],
             "work": work, "existing_events": data.get("existing_events", []),
             "existing_edges": data.get("existing_edges", [])}
+
+
+def next_written(item: dict, blocks: list[dict], by_id: dict[str, SourceRecord], position: dict[str, int]) -> str | None:
+    """The first block the assistant wrote after the item's last record, in the item's session, or None."""
+    ends = [s for s in item["sources"] if s in position]
+    if not ends:
+        return None
+    finished, first = max(position[s] for s in ends), by_id[ends[0]]
+    return next((b["id"] for b in blocks if b["source_id"] in position and position[b["source_id"]] > finished
+                 and by_id[b["source_id"]].role == "assistant"
+                 and (by_id[b["source_id"]].provider, by_id[b["source_id"]].session_id) == (first.provider, first.session_id)),
+                None)
 
 
 def story_check(answer: dict) -> Any:
@@ -687,10 +709,19 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
     links, turned = [], []
     claimed = [{"from": entry["id"], "to": check["run"], "relation": "verifies", "blocks": check.get("blocks", [])}
                for entry in answer.get("work", []) for check in entry.get("checked_by", [])]
+    claimed += [{"from": asked["id"], "to": reply["item"], "relation": "answers", "blocks": reply.get("blocks", [])}
+                for asked in answer.get("requests", []) for reply in asked.get("answered_by", [])]
+    seen: dict[tuple, dict] = {}
     for link in answer.get("links", []) + claimed:
         if reversed_link(link, work_items, requests, earlier):
             turned.append(f"{link['from']} → {link['to']}")
             link = {**link, "from": link["to"], "to": link["from"]}
+        key = (link["from"], link["to"], link["relation"])
+        if key in seen:
+            # The same claim in the links and in its own field: one claim, with the blocks of both.
+            seen[key]["blocks"] = list(dict.fromkeys(seen[key]["blocks"] + list(link.get("blocks", []))))
+            continue
+        seen[key] = link = {**link, "blocks": list(link.get("blocks", []))}
         links.append(link)
     # A check or an answer the story claims and code refuses names no run: the refused claim keeps no event alive.
     refusals = {}
