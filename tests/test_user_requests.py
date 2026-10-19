@@ -112,3 +112,53 @@ def test_claude_codes_hand_backs_and_limit_notices_are_not_the_persons_requests(
     assert not is_user_prompt(record("j", "user", "[Image: original 800x600, displayed at 800x600.]"))
     from contexttrail.analysis import _one_line
     assert _one_line(with_image) == "그래프 축을 바꿔줘"
+
+
+REPLY = ('<send_user_message_question_reply>\n[{"questionItemId":"q","question":"어느 논문인가요?","answer":"%s"}]\n'
+         '</send_user_message_question_reply>')
+
+
+def test_an_app_screen_event_is_not_a_message_and_a_reply_to_the_agent_is_not_a_request():
+    from contexttrail.light import _turns, written_blocks
+    from contexttrail.model import question_reply
+    screen = record("p", "user", '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>')
+    assert not is_user_prompt(screen)
+    assert is_user_prompt(record("p2", "user", '<external_codex_apps_open_page>{}</external_codex_apps_open_page>\n표도 그려 줘'))
+    ask, answer = record("ask", "user", "논문 결과를 재현해 줘"), record("ans", "user", REPLY % "Donier & Bonart (2015)")
+    assert question_reply(answer) == [{"question": "어느 논문인가요?", "answer": "Donier & Bonart (2015)"}]
+    assert not is_user_prompt(answer) and question_reply(ask) is None
+    done = record("done", "assistant", "재현했습니다.")
+    assert _turns([ask, answer, done]) == {"ask": 1, "ans": 1, "done": 1}  # the reply continues the request's turn
+    assert [b["source_id"] for b in written_blocks([ask, answer, done])] == ["ask", "ans", "done"]
+
+
+def test_a_reply_that_picks_an_offered_option_is_the_persons_choice_and_a_free_reply_is_no_event():
+    ask = record("ask", "user", "보고서 형식을 정해 줘", at="2026-09-26T10:00:00Z")
+    offer = record("q", "tool_call", 'Tool: request_user_input_async\n{"questions": [{"title": "어느 논문인가요?", '
+                   '"options": ["Donier & Bonart (2015)", "Sato (2023)"]}]}', at="2026-09-26T10:01:00Z")
+    picked = record("ans", "user", REPLY % "Donier & Bonart (2015)", at="2026-09-26T10:02:00Z")
+    free = record("ans2", "user", REPLY % "잘 모르겠어요", at="2026-09-26T10:03:00Z")
+    pool = {r.source_id: r for r in (ask, offer, picked, free)}
+    evidence = {item["id"]: item for item in map(record_evidence, pool.values())}
+    result, _ = link_request_turns({"events": [], "edges": []}, {"events": [], "edges": []}, pool, list(pool),
+                                   evidence, lambda ids: {}, "run")
+    by_kind = {(e["kind"], e["title"]) for e in result["events"]}
+    assert by_kind == {("question", "보고서 형식을 정해 줘"), ("decision", "Donier & Bonart (2015)")}
+    choice = next(e for e in result["events"] if e["kind"] == "decision")
+    request = next(e for e in result["events"] if e["kind"] == "question")
+    assert (choice["actor"], choice["status"]) == ("user", "adopted")
+    assert [(x["from_event_id"], x["to_event_id"]) for x in result["edges"]] == [(request["id"], choice["id"])]
+
+
+def test_a_request_with_work_after_it_but_no_answer_linked_does_not_read_as_ignored():
+    from contexttrail.render import status_labels, status_tones
+
+    def question(key):
+        return {"id": key, "kind": "question", "status": "asked", "title": key}
+    graph = {"events": [question("answered"), question("followed"), question("alone"),
+                        {"id": "work", "kind": "action", "status": "applied", "title": "work"}],
+             "edges": [{"from_event_id": "answered", "to_event_id": "work", "relation": "answers", "active": True},
+                       {"from_event_id": "followed", "to_event_id": "work", "relation": "follows", "active": True}]}
+    labels, tones = status_labels(graph), status_tones(graph)
+    assert [labels[k] for k in ("answered", "followed", "alone")] == ["요청 · 답변됨", "요청 · 답변 연결 없음", "요청 · 답변 없음"]
+    assert [tones[k] for k in ("answered", "followed", "alone")] == ["ok", "plain", "warn"]

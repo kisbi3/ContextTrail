@@ -77,3 +77,16 @@ def test_a_request_over_the_budget_loses_background_then_quotes_then_cited_lines
     assert steps == list(TRIM_STEPS)
     assert data["context_only"] == [] and len(data["manifest"]["records"]) == 20 and data["manifest"]["index_cut_for_budget"]
     assert trim_step(data, done) is None  # nothing left: the unit fails
+
+
+def test_a_quote_cut_at_a_line_break_still_resolves_to_its_lines():
+    from contexttrail.model import SourceRecord
+    from contexttrail.schema import EvidenceValidator
+    text = "\n".join(["Script completed", "Output:", "x" * (SHOWN_QUOTE_CHARS - 26), "a much longer line " * 40, "end"])
+    record = SourceRecord("r", "codex", "s", "tool_result", text, {})
+    quote = "\n".join(text.splitlines()[:4])
+    shown = shown_quote(quote, None)
+    assert not shown.endswith("\n")  # the cut fell right after a line break
+    validator = EvidenceValidator({"r": record}, {"r": [(1, 5)]})
+    for asked in (shown, "Script completed\nOutput:\n"):  # a quote ending on a line break, as the shown part or as written
+        validator.citations([{"source_id": "r", "start_line": 1, "end_line": 4, "quote": asked}])

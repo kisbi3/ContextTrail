@@ -777,6 +777,9 @@ class EvidenceValidator:
         record = self.records.get(source_id)
         if not record:
             raise FlowError(f"unknown source ID: {source_id}")
+        if isinstance(citation.get("quote"), str) and citation["quote"].endswith("\n") and citation["quote"].strip():
+            # A quote ending on a line break says nothing more than the same quote without it (one reading).
+            citation = {**citation, "quote": citation["quote"].rstrip("\n")}
         lines = record.content.splitlines()
         if not (1 <= start <= end <= len(lines)):
             raise FlowError(f"cited line range is outside the source: {source_id}:{start}-{end}")

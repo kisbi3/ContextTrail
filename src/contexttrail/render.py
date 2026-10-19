@@ -83,17 +83,29 @@ def graph_summary(graph: dict) -> dict:
             "questions_unanswered": sum(event["id"] not in answered for event in questions)}
 
 
+def request_links(graph: dict) -> tuple[set[str], set[str]]:
+    """The requests with an answer linked, and those with any other relation leaving them (work that followed)."""
+    answered, followed = set(), set()
+    for edge in graph["edges"]:
+        if edge["active"]:
+            (answered if edge["relation"] == "answers" else followed).add(edge["from_event_id"])
+    return answered, followed - answered
+
+
 def status_labels(graph: dict) -> dict[str, str]:
     """Each event's status plus what its relations add: checks of a change, an answer to a question."""
     checks, unlinked = verification_links(graph)
-    answered = {edge["from_event_id"] for edge in graph["edges"]
-                if edge["active"] and edge["relation"] == "answers"}
+    answered, followed = request_links(graph)
     labels = {}
     for event in graph["events"]:
         status = event["status"]
         if event["kind"] == "question" and status == "asked":
-            labels[event["id"]] = tr("요청 · ", "request · ") + (tr("답변됨", "answered") if event["id"] in answered
-                                                            else tr("답변 없음", "no answer"))
+            # No answer linked is not the same as no answer: work that followed the request in its turn says the
+            # request was taken up, even when nothing is linked as its answer (`docs/plans/REQUEST_ANSWERS.md` §6).
+            labels[event["id"]] = tr("요청 · ", "request · ") + (
+                tr("답변됨", "answered") if event["id"] in answered
+                else tr("답변 연결 없음", "no answer linked") if event["id"] in followed
+                else tr("답변 없음", "no answer"))
         elif event["kind"] in ("action", "revision") and status in ("applied", "reported_complete"):
             results = checks.get(event["id"], [])
             passed = sum(item["status"] == "observed_success" for item in results)
@@ -118,13 +130,12 @@ def status_labels(graph: dict) -> dict[str, str]:
 def status_tones(graph: dict) -> dict[str, str]:
     """ok / warn / fail / plain per event, from the same relations as the labels."""
     checks, unlinked = verification_links(graph)
-    answered = {edge["from_event_id"] for edge in graph["edges"]
-                if edge["active"] and edge["relation"] == "answers"}
+    answered, followed = request_links(graph)
     tones = {}
     for event in graph["events"]:
         kind, status = event["kind"], event["status"]
         if kind == "question" and status == "asked":
-            tone = "ok" if event["id"] in answered else "warn"
+            tone = "ok" if event["id"] in answered else "plain" if event["id"] in followed else "warn"
         elif kind in ("action", "revision") and status in ("applied", "reported_complete"):
             results = {item["status"] for item in checks.get(event["id"], [])}
             tone = "fail" if "observed_failure" in results else "ok" if results else "warn"

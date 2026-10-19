@@ -189,9 +189,9 @@ def test_pipeline_v2_keeps_the_work_code_found_and_the_story_cites_written_block
     assert failed["failure_tail"][-1] == "Exit code: 1"  # but a failed run's last lines are
     answer = {"status": "complete", "snapshot_id": "snap", "unit_id": "unit_1",
               "work": [{"id": item["id"], "title": "이름", "summary": ""} for item in items],
-              "story": [{"id": "N1", "kind": "outcome", "status": "reported_complete", "actor": "assistant",
+              "story": [{"id": "N1", "kind": "outcome", "status": "reported_complete",
                          "title": "부호가 반대였음", "why": None, "summary": "", "blocks": [blocks[1]["id"]], "work": []},
-                        {"id": "N2", "kind": "decision", "status": "adopted", "actor": "assistant", "title": "근거 없음",
+                        {"id": "N2", "kind": "decision", "status": "adopted", "title": "근거 없음",
                          "why": None, "summary": "", "blocks": ["B99"], "work": []}],
               "links": [], "turn_summary": "add() 부호 수정"}
     validate_shape(answer, STORY_SCHEMA)
@@ -237,7 +237,7 @@ def test_v2_keeps_a_run_only_when_the_story_points_at_it_and_names_unnamed_work_
     items, edges = skeleton(found)
     blocks = written_blocks(found)
     answer = {"work": [], "links": [], "turn_summary": None,
-              "story": [{"id": "N1", "kind": "decision", "status": "adopted", "actor": "assistant", "title": "분석 실행",
+              "story": [{"id": "N1", "kind": "decision", "status": "adopted", "title": "분석 실행",
                          "why": None, "summary": "", "blocks": [blocks[1]["id"]], "work": ["R1"]}]}
     pool = {r.source_id: r for r in found}
     provided = {r.source_id: [(1, len(r.content.splitlines()))] for r in found}
@@ -258,7 +258,7 @@ def test_v2_draws_one_relation_when_the_story_names_the_work_and_links_it_too(la
     blocks = written_blocks(found)
     work = items[0]["id"]
     answer = {"work": [], "turn_summary": None,
-              "story": [{"id": "N1", "kind": "decision", "status": "adopted", "actor": "assistant", "title": "고치기로 함",
+              "story": [{"id": "N1", "kind": "decision", "status": "adopted", "title": "고치기로 함",
                          "why": None, "summary": "", "blocks": [blocks[1]["id"]], "work": [work]}],
               "links": [{"from": "N1", "to": work, "relation": "motivates", "blocks": [blocks[1]["id"]]}]}
     pool = {r.source_id: r for r in found}
@@ -312,7 +312,7 @@ def test_v2_keeps_a_check_the_story_claims_only_when_the_run_followed_the_edit_a
     output = kept((edit, "R2", plan), (edit, "R1", report), (edit, "R3", report))
     assert not [e for e in output["edge_candidates"] if e["relation"] == "verifies"]
     assert not any(c["id"] in ("tmp:R1", "tmp:R3") for c in output["event_candidates"])  # refused claims keep no run
-    refused = next(text for text in output["limitations"] if text.startswith("story: check not kept"))
+    refused = next(text for text in output["limitations"] if text.startswith("story: link not kept"))
     assert "no block where the assistant reports the run" in refused and "the run came before the edit" in refused
     assert "the run's result is unknown" in refused
 
@@ -330,3 +330,61 @@ def test_v2_ends_a_run_of_edits_at_a_run_between_them(laboratory):
              tool("e2", "tool_call", patch.replace('"b"', '"c"'), "c3"), tool("e2-out", "tool_result", "updated", "c3")]
     assert len([i for i in skeleton(found)[0] if i.get("edit")]) == 1
     assert [i["sources"][0] for i in skeleton(found, split_at_runs=True)[0] if i.get("edit")] == ["e1", "e2"]
+
+
+def test_v2_answers_a_request_by_its_id_only_with_a_reply_after_it_in_its_session(laboratory):
+    from contexttrail.analysis import add_user_requests
+    from contexttrail.light import open_requests, request_items, skeleton, story_extraction, story_request, written_blocks
+    from contexttrail.schema import EvidenceValidator
+    _, _, _, _, make = laboratory
+    found = records(make) + [make("문서도 고쳐 줘", key="ask2"), make("문서는 다음에 고치겠습니다.", key="later", role="assistant")]
+    items, edges = skeleton(found)
+    blocks = written_blocks(found)
+    block = {b["source_id"]: b["id"] for b in blocks}
+    assert [q["id"] for q in request_items(found)] == ["Q1", "Q2"]
+    data = {"user_requests": [{"source_id": r, "recorded_at": None, "text": r} for r in ("ask", "ask2")]}
+    request = story_request({"id": "u"}, "snap", data, items, found, blocks)
+    assert [(q["id"], q["source_id"]) for q in request["user_requests"]] == [("Q1", "ask"), ("Q2", "ask2")]
+    pool = {r.source_id: r for r in found}
+    provided = {r.source_id: [(1, max(1, len(r.content.splitlines())))] for r in found}
+    story = [{"id": "N1", "kind": "outcome", "status": "reported_complete", "title": "부호 오류였음", "why": None,
+              "summary": "", "blocks": [block["said"]], "work": []},
+             {"id": "Q2", "kind": "decision", "status": "adopted", "title": "ID를 가로챈 사건", "why": None,
+              "summary": "", "blocks": [block["said"]], "work": []},
+             {"id": "ev_old", "kind": "decision", "status": "adopted", "title": "기존 사건의 ID", "why": None,
+              "summary": "", "blocks": [block["said"]], "work": []}]
+    links = [{"from": "Q1", "to": "N1", "relation": "answers", "blocks": [block["said"]]},  # kept
+             {"from": "Q2", "to": "N1", "relation": "answers", "blocks": [block["said"]]},  # the reply came before Q2
+             {"from": "Q1", "to": "Q2", "relation": "answers", "blocks": [block["said"]]},  # request to request
+             {"from": "N1", "to": items[0]["id"], "relation": "answers", "blocks": [block["said"]]},  # not a request
+             {"from": "Q2", "to": "N1", "relation": "answers", "blocks": []}]  # no reply cited
+    answer = {"work": [], "story": story, "links": links, "turn_summary": None}
+    validator = EvidenceValidator(pool, provided)
+    output, _ = story_extraction(answer, items, edges, {"id": "u", "sources": list(pool)}, "snap", pool, provided,
+                                 validator, blocks, [], "Korean")
+    kept = [(e["from_event_id"], e["to_event_id"]) for e in output["edge_candidates"] if e["relation"] == "answers"]
+    assert kept == [("tmp:Q1", "tmp:N1")]
+    requests = [c for c in output["event_candidates"] if c["kind"] == "question"]
+    assert [(c["id"], c["actor"]) for c in requests] == [("tmp:Q1", "user"), ("tmp:Q2", "user")]
+    assert all(c["actor"] == "assistant" for c in output["event_candidates"] if c["kind"] != "question")
+    assert not any(c["id"] in ("tmp:Q2", "tmp:ev_old") and c["kind"] == "decision" for c in output["event_candidates"])
+    refused = next(t for t in output["limitations"] if t.startswith("story: link not kept"))
+    for why in ("no reply after the request in its session", "not to an event of this stretch", "not from a request",
+                "no block of the assistant's reply"):
+        assert why in refused
+    assert add_user_requests(output, found, validator) == []  # the requests are made once
+    validator.check_extraction(output, "u", "snap", {"events": [], "edges": []})
+
+    # An earlier request of the same session still unanswered can be answered here; one of another session cannot.
+    earlier = {"ev_old": {"provider": "claude", "session_id": "session-1"}, "ev_far": {"provider": "claude", "session_id": "other"}}
+    answer = {"work": [], "story": story[:1], "turn_summary": None,
+              "links": [{"from": "ev_old", "to": "N1", "relation": "answers", "blocks": [block["said"]]},
+                        {"from": "ev_far", "to": "N1", "relation": "answers", "blocks": [block["said"]]}]}
+    output, _ = story_extraction(answer, items, edges, {"id": "u", "sources": list(pool)}, "snap", pool, provided,
+                                 EvidenceValidator(pool, provided), blocks, [], "Korean", earlier)
+    assert [e["from_event_id"] for e in output["edge_candidates"] if e["relation"] == "answers"] == ["ev_old"]
+    graph = {"events": [{"id": "ev_old", "kind": "question", "actor": "user", "recorded_at": "1", "evidence_ids": ["a"]},
+                        {"id": "ev_done", "kind": "question", "actor": "user", "recorded_at": "2", "evidence_ids": ["b"]}],
+             "edges": [{"from_event_id": "ev_done", "to_event_id": "x", "relation": "answers", "active": True}]}
+    source = {"a": {"provider": "claude", "session_id": "session-1"}, "b": {"provider": "claude", "session_id": "session-1"}}
+    assert open_requests(graph, found, source.get) == {"ev_old": {"provider": "claude", "session_id": "session-1"}}

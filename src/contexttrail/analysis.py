@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import functools
+import json
 import dataclasses
 import difflib
 import os
@@ -20,7 +21,7 @@ from .freshness import INDEX_KEY, build_index
 from .git_context import Scope, collect_git, git
 from .i18n import tr
 from .langsmith_trace import LangSmithTracer
-from .model import IMAGE_NOTE, Snapshot, SourceRecord, is_user_prompt
+from .model import IMAGE_NOTE, Snapshot, SourceRecord, is_user_prompt, question_reply
 from .routing import ROUTING_VERSION, RunnerPool, TaskValidationError
 from .runners.cli_runner import EFFORTS
 from .schema import (DELTA_SCHEMA, EDIT_TOOL_NAMES, EXTRACT_SCHEMA, EvidenceValidator, delta_schema, docs_only,
@@ -646,7 +647,8 @@ def shown_quote(quote: str, focus: list[list[int]] | None) -> str:
         return quote
     pieces = sorted((quote[a:b] for a, b in (focus or []) if 0 <= a < b <= len(quote)), key=len, reverse=True)
     piece = pieces[0] if pieces else quote[:SHOWN_QUOTE_CHARS]
-    return piece[:SHOWN_QUOTE_CHARS]
+    # A cut that ends on a line break would ask for the next line too (the checks read it as a run past its end).
+    return piece[:SHOWN_QUOTE_CHARS].rstrip("\n") or piece[:SHOWN_QUOTE_CHARS]
 
 
 # What a request over the budget loses, in order; each name is one `trim_step`.
@@ -1141,6 +1143,32 @@ def link_request_turns(graph: dict, base: dict, pool: dict[str, SourceRecord], u
         graph["events"].insert(len(graph["events"]) if later is None else later, event)
         nodes[record.source_id] = (event, item["id"])
         requests_added += 1
+    # The person's answer to the agent's question is a choice only when it is one of the options the agent offered;
+    # then it is the person's decision. A free answer stays in the records and the story (no event of its own).
+    cited_by_user = {source_id for event in graph["events"] if event.get("actor") == "user" for source_id in sources(event)}
+    ordered = list(pool.values())
+    for record in ordered:
+        replies = question_reply(record) if record.source_id in assigned else None
+        if not replies or record.source_id in cited_by_user:
+            continue
+        offered = offered_options(record, ordered)
+        chosen = [reply for reply in replies if reply["answer"].strip() in offered.get(reply["question"].strip(), ())]
+        if not chosen:
+            continue
+        item = record_evidence(record)
+        added[item["id"]] = known[item["id"]] = item
+        event = {"id": ident("ev_", "user_choice", record.source_id), "kind": "decision",
+                 "title": "; ".join(reply["answer"].strip() for reply in chosen)[:240],
+                 "summary": "\n".join(f"{reply['question'].strip()} → {reply['answer'].strip()}" for reply in chosen)[:4000],
+                 "actor": "user", "status": "adopted", "basis": "explicit_statement",
+                 "session_ids": [record.session_id] if record.session_id else [],
+                 "worktree_ids": [record.worktree_id] if record.worktree_id else [],
+                 "recorded_at": record.recorded_at, "occurred_at": None, "evidence_ids": [item["id"]],
+                 "created_in_run": run_id, "updated_in_run": run_id}
+        later = next((n for n, other in enumerate(graph["events"])
+                      if record.recorded_at and (other.get("recorded_at") or "") > record.recorded_at), None)
+        graph["events"].insert(len(graph["events"]) if later is None else later, event)
+        requests_added += 1
     by_session: dict[str | None, list[SourceRecord]] = {}
     for record in prompts:
         by_session.setdefault(record.session_id, []).append(record)
@@ -1148,9 +1176,11 @@ def link_request_turns(graph: dict, base: dict, pool: dict[str, SourceRecord], u
     old = {event["id"] for event in base["events"]}
     links = 0
     for event in list(graph["events"]):
-        if event["id"] in old or event["id"] in reached or event.get("actor") == "user":
-            continue
         cited = [source_id for source_id in sources(event) if source_id in position]
+        # The person's choice in answer to the agent hangs in the turn of the request it continues.
+        reply = bool(cited) and all(question_reply(pool[source_id]) is not None for source_id in cited)
+        if event["id"] in old or event["id"] in reached or (event.get("actor") == "user" and not reply):
+            continue
         if not cited:
             continue
         first = min(cited, key=position.get)
@@ -1177,6 +1207,27 @@ def link_request_turns(graph: dict, base: dict, pool: dict[str, SourceRecord], u
         links += 1
     graph["request_turn_audit"] = {"requests_added": requests_added, "turn_links": links}
     return graph, added
+
+
+def offered_options(reply: SourceRecord, ordered: list[SourceRecord]) -> dict[str, tuple[str, ...]]:
+    """The options the agent's last question before this reply offered, by question title (Codex
+    `request_user_input`: `{"questions": [{"title", "options": [...]}]}`), in the reply's session."""
+    found: dict[str, tuple[str, ...]] = {}
+    for record in ordered:
+        if record.source_id == reply.source_id:
+            break
+        if record.role != "tool_call" or record.session_id != reply.session_id:
+            continue
+        head, _, body = record.content.partition("\n")
+        if not head.startswith("Tool: request_user_input"):
+            continue
+        try:
+            questions = json.loads(body).get("questions") or []
+        except (ValueError, AttributeError):
+            continue
+        found = {str(q.get("title") or "").strip(): tuple(str(o).strip() for o in q.get("options") or [])
+                 for q in questions if isinstance(q, dict)}
+    return found
 
 
 def _record_timestamp(value: str | None) -> float | None:
@@ -2376,8 +2427,17 @@ class Engine:
             h.keep_events = set(notes)
             if omitted:
                 issues.append(f"audit: {omitted} older note events of these records are not shown to the model.")
-        context = h.context(assigned, clues=" ".join(notes))
+        earlier: dict[str, dict] = {}
+        if self._story():
+            # Earlier requests of these sessions still unanswered: shown whatever the event limit, so the story can
+            # answer them by ID (`docs/plans/REQUEST_ANSWERS.md` §3).
+            from . import light
+            earlier = light.open_requests(graph, assigned, lambda i: (h.saved.get(i) or {}).get("source"))
+            h.keep_events |= set(earlier)
+        context = h.context(assigned, clues=" ".join([*notes, *earlier]))
         data, required = extract_request_data(unit, snapshot_id, assigned, h, context, issues)
+        if earlier:
+            data["open_requests"] = sorted(earlier)
         if not self._light():
             # The steps code sees in the tool calls (edits per turn, test results, commits) go with the request as
             # a skeleton: the model keeps them as candidates and adds what code cannot see, so a unit's structure
@@ -2493,8 +2553,9 @@ class Engine:
                     failed = False
                 except TaskValidationError:
                     answer, failed = {"work": [], "story": [], "links": [], "turn_summary": None}, True
+                earlier = light.open_requests(graph, assigned, lambda i: (h.saved.get(i) or {}).get("source"))
                 result, learned = light.story_extraction(answer, items, edges, unit, snapshot_id, h.pool, h.provided,
-                                                         validator, blocks, runs, self.config.output_language)
+                                                         validator, blocks, runs, self.config.output_language, earlier)
                 if failed:
                     result["limitations"].append(light.STORY_FALLBACK_LIMITATION)
                 text = learned.get("turn_summary")

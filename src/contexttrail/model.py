@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
@@ -101,17 +102,45 @@ HARNESS_TEXT = ("<task-notification>", "<command-name>", "<command-message>", "<
 IMAGE_NOTE = re.compile(r"\A(?:\s*\[Image: original [^\]\n]*\])+\s*")
 
 
-def is_user_prompt(record: SourceRecord) -> bool:
-    """A message the person typed, as opposed to text a harness or a parent agent put in the user role."""
+# A whole user-role message that is an event of the Codex app's screen, not something the person wrote.
+APP_EVENT = re.compile(r"\A<external_codex_apps_open_page>.*?</external_codex_apps_open_page>\Z", re.DOTALL)
+# The person's answers to the agent's own question (Codex `request_user_input`): a reply within the turn, not a
+# request and not the start of a new turn (`docs/plans/REQUEST_ANSWERS.md` §2).
+QUESTION_REPLY = re.compile(r"\A<send_user_message_question_reply>(.*)</send_user_message_question_reply>\Z", re.DOTALL)
+
+
+def _person_text(record: SourceRecord) -> str | None:
+    """The text of a user-role message the session itself received (no harness lineage, first fragment only)."""
     if record.role != "user" or record.derivation != "original":
-        return False
+        return None
     lineage = record.lineage or {}
     # Summaries, attachments and sub-agent transcripts carry a lineage kind; a split
     # message counts once, at its first fragment.
     if lineage.get("kind") or (lineage.get("fragment_index") or 1) > 1:
-        return False
-    text = IMAGE_NOTE.sub("", record.content).strip()
-    return bool(text) and not text.startswith(HARNESS_TEXT)
+        return None
+    return IMAGE_NOTE.sub("", record.content).strip()
+
+
+def question_reply(record: SourceRecord) -> list[dict] | None:
+    """The person's answers to the agent's question, `[{"question", "answer"}]`, when the message is one; else None.
+    A reply whose body cannot be read is still a reply (an empty list)."""
+    found = QUESTION_REPLY.match(_person_text(record) or "")
+    if not found:
+        return None
+    try:
+        items = json.loads(found.group(1))
+    except ValueError:
+        return []
+    return [{"question": str(item.get("question") or ""), "answer": str(item.get("answer") or "")}
+            for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def is_user_prompt(record: SourceRecord) -> bool:
+    """A message the person typed, as opposed to text a harness or a parent agent put in the user role. The
+    person's reply to the agent's own question is theirs but not a prompt: it continues the turn (`question_reply`)."""
+    text = _person_text(record)
+    return (bool(text) and not text.startswith(HARNESS_TEXT) and not APP_EVENT.match(text)
+            and not QUESTION_REPLY.match(text))
 
 
 def segment_record(record: SourceRecord, max_chars: int = 32_000) -> list[SourceRecord]:
