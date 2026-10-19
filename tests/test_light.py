@@ -550,6 +550,7 @@ def test_v2_reads_each_edits_checked_by_as_a_claimed_check(laboratory):
     # Work items carry no time: each names the first block the assistant wrote after it, where its report starts.
     request = story_request({"id": "u"}, "snap", {"user_requests": []}, items, found, blocks, runs)
     assert {w["id"]: w.get("next_written") for w in request["work"]} == {edit: said, "R1": said}
+    assert {w["id"]: w.get("later_runs") for w in request["work"]} == {edit: ["R1"], "R1": None}  # an edit's later runs
     answer = {"status": "complete", "snapshot_id": "snap", "unit_id": "u", "story": [], "requests": [], "links": [], "turn_summary": None,
               "work": [{"id": edit, "title": "빌드 수정", "summary": "", "checked_by": [{"run": "R1", "blocks": [said]}]}]}
     validate_shape(answer, STORY_SCHEMA)
@@ -581,3 +582,30 @@ def test_v2_a_codex_run_left_running_is_settled_by_its_later_poll(laboratory):
     request = story_request({"id": "u"}, "s", {"user_requests": [], "existing_events": []}, items, found,
                             written_blocks(found), [run])
     assert request["work"][-1]["status"] == "passed"
+
+
+def test_v2_a_codex_run_is_settled_by_its_poll_inside_a_call_that_does_more(laboratory):
+    from contexttrail.light import run_items, story_request, skeleton, written_blocks
+    _, _, _, _, make = laboratory
+
+    def tool(key, role, text, call_id):
+        return replace(make(text, key=key, role=role), tool_call_id=call_id, provider="codex")
+    patch = 'text(await tools.apply_patch("*** Begin Patch\\n*** Update File: /work/app/notes.md\\n@@\\n-a\\n+b\\n*** End Patch"));'
+    found = [make("빌드해 주세요.", key="ask"),
+             tool("r", "tool_call", 'Tool: exec\ntext(await tools.exec_command({cmd:"python scripts/build.py"}));', "c1"),
+             tool("r-out", "tool_result", 'Output:\n{"chunk_id":"a","session_id":4500,"output":""}', "c1"),
+             # A patch, another command and the poll in one call: the poll's own response is the second command response.
+             tool("p", "tool_call", "Tool: exec\n" + patch + '\ntext(await tools.exec_command({cmd:"ls"}));'
+                  '\ntext(await tools.write_stdin({session_id:4500,chars:""}));', "c2"),
+             tool("p-out", "tool_result", 'Output:\n{}\n{"chunk_id":"b","exit_code":0,"output":"notes.md\\n"}\n'
+                  '{"chunk_id":"c","exit_code":1,"output":"Traceback\\nRuntimeError: build failed\\n"}', "c2")]
+    run = next(r for r in run_items(found) if r["sources"][0] == "r")
+    assert (run["status"], run["sources"]) == ("failed", ["r", "r-out", "p", "p-out"])
+    items, _ = skeleton(found, split_at_runs=True)
+    request = story_request({"id": "u"}, "s", {"user_requests": [], "existing_events": []}, items, found,
+                            written_blocks(found), [run])
+    shown = next(w for w in request["work"] if w["id"] == run["id"])
+    assert shown["failure_tail"][-1] == "RuntimeError: build failed"  # its own output, not the other command's
+    # When the responses do not pair up with the call's commands, the run stays unknown rather than take a guess.
+    found[-1] = tool("p-out", "tool_result", 'Output:\n{"chunk_id":"c","exit_code":0,"output":"ok"}', "c2")
+    assert next(r for r in run_items(found) if r["sources"][0] == "r")["status"] == "unknown"

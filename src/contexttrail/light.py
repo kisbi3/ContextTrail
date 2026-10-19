@@ -336,8 +336,42 @@ _RUNNING = re.compile(r'"session_id"\s*:\s*(\d+)')
 _POLLED = re.compile(r'write_stdin\(\s*\{\s*"?session_id"?\s*:\s*(\d+)')
 
 
+_TOOL_RUN = re.compile(r"tools\.(exec_command|write_stdin)\(")
+
+
+def _chunks(text: str) -> list[dict]:
+    """The command responses of a Codex exec result, in order (`{"chunk_id": …, "exit_code" or "session_id", "output"}`):
+    one for each command run or polled in the call. A patch's `{}` and other JSON in the text are not responses."""
+    decoder, found, at = json.JSONDecoder(), [], 0
+    while (at := text.find('{"', at)) >= 0:
+        try:
+            value, end = decoder.raw_decode(text, at)
+        except ValueError:
+            at += 1
+            continue
+        if isinstance(value, dict) and ("exit_code" in value or "session_id" in value):
+            found.append(value)
+        at = end
+    return found
+
+
+def _poll_result(call: str, result: str, session: str) -> dict | None:
+    """What this session's poll returned, in a Codex exec call that may do more than poll (look at an image, patch a
+    file, run another command): each command or poll of the call answers with one chunk, in order, so the chunk at
+    the poll's place is its own. None when they do not pair up one to one."""
+    runs, chunks = list(_TOOL_RUN.finditer(call)), _chunks(result)
+    if len(runs) != len(chunks):
+        return None
+    for found, chunk in zip(runs, chunks):
+        polled = _POLLED.match(call, found.start(1))
+        if polled and polled.group(1) == session:
+            return chunk
+    return None
+
+
 def _follow_polls(run: dict, steps: list[dict], by_id: dict[str, SourceRecord]) -> None:
-    """A run Codex left running: its later polls join its records, and the last one with an exit status settles it."""
+    """A run Codex left running: the later calls that poll its session join its records, and the first poll that
+    returns an exit status settles it (its own output becomes the run's, `settled_output`)."""
     result = by_id.get(run["sources"][-1]) if len(run["sources"]) > 1 else None
     if result is None or run["status"] != "unknown" or EXIT_CODE.search(result.content):
         return
@@ -349,13 +383,17 @@ def _follow_polls(run: dict, steps: list[dict], by_id: dict[str, SourceRecord]) 
         if step["call"] == run["sources"][0]:
             later = True
             continue
-        call = by_id.get(step["call"])
-        if not later or step["hint"] != "poll" or call is None or running[-1] not in _POLLED.findall(call.content):
+        call, polled = by_id.get(step["call"]), by_id.get(step["result"]) if step["result"] else None
+        if not later or call is None or polled is None or running[-1] not in _POLLED.findall(call.content):
             continue
-        run["sources"] += [step["call"]] + ([step["result"]] if step["result"] else [])
-        polled = by_id.get(step["result"])
-        if polled is not None and EXIT_CODE.search(polled.content):
-            run["status"] = run_status(call, polled, step["failed"])
+        chunk = _poll_result(call.content, polled.content, running[-1])
+        if chunk is None:
+            continue
+        run["sources"] += [step["call"], step["result"]]
+        if isinstance(chunk.get("exit_code"), int):
+            output = str(chunk.get("output") or "")
+            run["status"] = "failed" if chunk["exit_code"] != 0 or check_failed(output, False) else "passed"
+            run["settled_output"] = output
             break
 
 
@@ -469,17 +507,22 @@ COMMAND_CHARS = 400
 RUNS_AFTER_EDIT = 3
 
 
-def _runs_after_edits(items: list[dict], runs: list[dict], position: dict[str, int]) -> set[str]:
-    """The IDs of the first RUNS_AFTER_EDIT runs and checks after each edit item, in record order, same session."""
+def _runs_after_edits(items: list[dict], runs: list[dict], position: dict[str, int],
+                      by_id: dict[str, SourceRecord]) -> dict[str, list[str]]:
+    """Per edit item, the IDs of the first RUNS_AFTER_EDIT runs and checks after it in its session, in record order."""
     def at(entry):
         return min((position[s] for s in entry["sources"] if s in position), default=-1)
+
+    def session(entry):
+        record = next((by_id[s] for s in entry["sources"] if s in by_id), None)
+        return (record.provider, record.session_id) if record is not None else None
     steps = sorted([e for e in items if e.get("check")] + list(runs), key=at)
-    chosen = set()
+    chosen = {}
     for edit in (e for e in items if e.get("edit")):
         end = max((position[s] for s in edit["sources"] if s in position), default=-1)
         # A run in the edit's own last call (after its patch) comes first.
-        chosen |= {e["id"] for e in [e for e in steps if at(e) > end or (e.get("inline") and e["sources"][0] in edit["sources"])]
-                   [:RUNS_AFTER_EDIT]}
+        chosen[edit["id"]] = [e["id"] for e in steps if session(e) == session(edit)
+                              and (at(e) > end or (e.get("inline") and e["sources"][0] in edit["sources"]))][:RUNS_AFTER_EDIT]
     return chosen
 
 
@@ -497,9 +540,17 @@ def _last_result(entry: dict, by_id: dict[str, SourceRecord]) -> SourceRecord | 
     return next((by_id[s] for s in reversed(entry["sources"]) if s in by_id and by_id[s].role == "tool_result"), None)
 
 
-def _output_tail(entry: dict, by_id: dict[str, SourceRecord]) -> list[str]:
+def _result_text(entry: dict, by_id: dict[str, SourceRecord]) -> str | None:
+    """What the run printed: the output of the poll that settled it, else its last result."""
+    if entry.get("settled_output") is not None:
+        return entry["settled_output"]
     result = _last_result(entry, by_id)
-    return _failure_tail(result.content) if result is not None else []
+    return result.content if result is not None else None
+
+
+def _output_tail(entry: dict, by_id: dict[str, SourceRecord]) -> list[str]:
+    text = _result_text(entry, by_id)
+    return _failure_tail(text) if text is not None else []
 
 
 def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], assigned: list[SourceRecord],
@@ -519,7 +570,11 @@ def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], a
                 entry["failure_tail"] = _failure_tail(result.content)
         work.append(entry)
     position = {r.source_id: n for n, r in enumerate(assigned)}
-    after_edit = _runs_after_edits(items, runs or [], position)
+    later = _runs_after_edits(items, runs or [], position, by_id)
+    after_edit = {run_id for ids in later.values() for run_id in ids}
+    for item, entry in zip(items, work):
+        if later.get(item["id"]):
+            entry["later_runs"] = later[item["id"]]
     for item, entry in zip(items, work):
         if item.get("check") and item["id"] in after_edit:
             entry["command"] = _command(item, by_id)
@@ -530,9 +585,9 @@ def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], a
         if run["id"] in after_edit:
             entry["command"] = _command(run, by_id)
         if run["status"] == "failed":
-            result = _last_result(run, by_id)
-            if result is not None:
-                entry["failure_tail"] = _failure_tail(result.content)
+            text = _result_text(run, by_id)
+            if text is not None:
+                entry["failure_tail"] = _failure_tail(text)
         elif run["status"] == "passed" and run["id"] in after_edit:
             entry["output_tail"] = _output_tail(run, by_id)
         work.append(entry)
