@@ -235,6 +235,18 @@ def _codex_authoring(records: list[SourceRecord], turns: list[tuple[int, dict]])
         record.authoring = dict(next((authoring for at, authoring in reversed(turns) if at < line), {}))
 
 
+def _codex_queued(records: list[SourceRecord], triggers: list[tuple[int, Any]]) -> None:
+    """A user-role message of a turn Codex started from its queue (`task_started` `turn_attribution.turn_trigger:
+    "queue"`, what `codex queue --thread … --message …` sends: a script, a monitor the agent set up) is marked
+    `authoring.trigger = "queue"`, so it is not read as the person's message (`model.is_user_prompt`). A message the
+    person types in the app starts a turn of `composer` or `user`."""
+    for record in records:
+        line = record.locator.get("line", 0)
+        trigger = next((value for at, value in reversed(triggers) if at < line), None)
+        if record.role == "user" and trigger == "queue":
+            record.authoring = {**record.authoring, "trigger": "queue"}
+
+
 def _segment(record: SourceRecord, max_chars: int = SEGMENT_CHARS) -> list[SourceRecord]:
     """Stable, evidence-citable fragments for long textual records.
 
@@ -322,6 +334,7 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
     result, call_cwd, unknown, relevant = [], {}, set(), scope.includes(cwd)
     context_git = metadata.get("git", {}) if isinstance(metadata.get("git"), dict) else {}
     turns: list[tuple[int, dict]] = []  # (line, model and effort) of each turn_context, for _codex_authoring
+    triggers: list[tuple[int, Any]] = []  # (line, turn_trigger) of each task_started, for _codex_queued
     for line, data, raw_hash in rows:
         record_type, payload = data.get("type"), data.get("payload", {})
         if not isinstance(payload, dict):
@@ -342,6 +355,9 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
             continue
         if record_type == "event_msg":
             event_type = payload.get("type")
+            if event_type == "task_started":
+                attribution = payload.get("turn_attribution")
+                triggers.append((line, attribution.get("turn_trigger") if isinstance(attribution, dict) else None))
             if event_type == "thread_goal_updated":
                 # Recognised, so it must never fall through to the classifier.
                 # An out-of-scope goal is a scope decision, not a parse gap.
@@ -461,6 +477,7 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
             for _, d, _ in rows):
         warnings.append(f"Codex UI message format without response_item is not supported yet: {path.name}")
     _codex_authoring(result, turns)
+    _codex_queued(result, triggers)
     return finish(_segments(result), warnings)
 
 

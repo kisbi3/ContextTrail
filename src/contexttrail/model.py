@@ -137,10 +137,18 @@ def question_reply(record: SourceRecord) -> list[dict] | None:
 
 def is_user_prompt(record: SourceRecord) -> bool:
     """A message the person typed, as opposed to text a harness or a parent agent put in the user role. The
-    person's reply to the agent's own question is theirs but not a prompt: it continues the turn (`question_reply`)."""
+    person's reply to the agent's own question is theirs but not a prompt: it continues the turn (`question_reply`).
+    A message a program sent through the tool's queue is not theirs either (`is_queued_message`)."""
     text = _person_text(record)
     return (bool(text) and not text.startswith(HARNESS_TEXT) and not APP_EVENT.match(text)
-            and not QUESTION_REPLY.match(text))
+            and not QUESTION_REPLY.match(text) and not is_queued_message(record))
+
+
+def is_queued_message(record: SourceRecord) -> bool:
+    """A user-role message of a turn the tool started from its queue, as its log says (Codex `turn_trigger:
+    "queue"`: what `codex queue` sends, such as a monitor's hourly report the agent set up): it starts a turn of
+    its own, but it is no request of the person's."""
+    return record.role == "user" and (record.authoring or {}).get("trigger") == "queue"
 
 
 def segment_record(record: SourceRecord, max_chars: int = 32_000) -> list[SourceRecord]:

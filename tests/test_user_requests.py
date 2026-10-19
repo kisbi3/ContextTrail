@@ -162,3 +162,27 @@ def test_a_request_with_work_after_it_but_no_answer_linked_does_not_read_as_igno
     labels, tones = status_labels(graph), status_tones(graph)
     assert [labels[k] for k in ("answered", "followed", "alone")] == ["요청 · 답변됨", "요청 · 답변 연결 없음", "요청 · 답변 없음"]
     assert [tones[k] for k in ("answered", "followed", "alone")] == ["ok", "plain", "warn"]
+
+
+def test_a_queued_message_ends_the_turn_before_it_and_its_own_work_hangs_on_no_request():
+    from contexttrail.light import _turns
+    ask, work, report, said = (
+        record("ask", "user", "다운로드를 켜고 매시간 보고해 줘", at="2026-09-26T10:00:00Z"),
+        record("w", "tool_call", "Tool: Bash\nstart.sh", at="2026-09-26T10:01:00Z"),
+        replace(record("q", "user", "매시간 보고: 65% 검증", at="2026-09-26T11:00:00Z"), authoring={"trigger": "queue"}),
+        record("r", "assistant", "65%가 검증됐습니다.", at="2026-09-26T11:00:10Z"))
+    assert not is_user_prompt(report)
+    assert _turns([ask, work, report, said]) == {"ask": 1, "w": 1, "q": 2, "r": 2}
+    pool = {r.source_id: r for r in (ask, work, report, said)}
+    evidence = {item["id"]: item for item in map(record_evidence, pool.values())}
+    cite = {item["source_id"]: item["id"] for item in evidence.values()}
+
+    def event(key, source):
+        return {"id": key, "kind": "outcome", "title": key, "summary": "", "actor": "assistant", "status": "reported_complete",
+                "basis": "explicit_statement", "session_ids": ["s"], "worktree_ids": [], "recorded_at": pool[source].recorded_at,
+                "occurred_at": None, "evidence_ids": [cite[source]]}
+    graph = {"events": [event("started", "w"), event("reported", "r")], "edges": []}
+    result, _ = link_request_turns(graph, {"events": [], "edges": []}, pool, list(pool), evidence, lambda ids: {}, "run")
+    assert [e["title"] for e in result["events"] if e["actor"] == "user"] == ["다운로드를 켜고 매시간 보고해 줘"]
+    turns = {edge["to_event_id"] for edge in result["edges"] if edge.get("origin") == "dialog_turn"}
+    assert turns == {"started"}  # the report's turn was the queue's, not the person's

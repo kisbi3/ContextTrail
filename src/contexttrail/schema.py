@@ -1601,7 +1601,8 @@ def authoring_of(sources: list[dict]) -> list[dict]:
         tool = source.get("provider")
         if tool not in AGENT_TOOLS:
             continue
-        named = {key: value for key, value in (source.get("authoring") or {}).items() if isinstance(value, str) and value}
+        named = {key: value for key, value in (source.get("authoring") or {}).items()
+                 if key in ("model", "effort", "provider") and isinstance(value, str) and value}
         entry = {"tool": tool, **named}
         # A sub-agent (or a tool another session's call ran) and a run with no person keep their role and name.
         lineage = source.get("lineage") or {}

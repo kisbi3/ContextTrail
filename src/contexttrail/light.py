@@ -21,7 +21,7 @@ import re
 from pathlib import PurePosixPath
 from typing import Any
 
-from .model import SourceRecord, is_user_prompt, question_reply
+from .model import SourceRecord, is_queued_message, is_user_prompt, question_reply
 from .schema import STATUSES, STR, arr, enum, obj
 
 # Kinds the model may add; the person's requests (question) are made by code.
@@ -54,10 +54,11 @@ def check_failed(text: str, tool_error: bool) -> bool:
 
 
 def _turns(assigned: list[SourceRecord]) -> dict[str, int]:
-    """The dialog turn of each record: a message the person typed starts a new one."""
+    """The dialog turn of each record: a message the person typed starts a new one, and so does one sent through
+    the tool's queue (whose turn has no request)."""
     turn, turns = 0, {}
     for record in assigned:
-        if is_user_prompt(record):
+        if is_user_prompt(record) or is_queued_message(record):
             turn += 1
         turns[record.source_id] = turn
     return turns

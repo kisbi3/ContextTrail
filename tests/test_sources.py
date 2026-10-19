@@ -388,6 +388,30 @@ def test_codex_records_carry_the_model_and_effort_of_their_turn(tmp_path):
     assert "authoring" not in record_for_model(records[1])
 
 
+def test_a_codex_message_sent_through_the_queue_is_marked_and_is_not_the_persons_request(tmp_path):
+    from contexttrail.model import is_queued_message, is_user_prompt
+    from contexttrail.schema import authoring_of
+    folder = tmp_path / "app"
+    folder.mkdir()
+    path = tmp_path / "codex.jsonl"
+    text = lambda role, words: {"type": "response_item", "payload": {"type": "message", "role": role,
+                                "content": [{"type": "input_text" if role == "user" else "output_text", "text": words}]}}
+    started = lambda trigger: {"type": "event_msg", "payload": {"type": "task_started", "turn_attribution": {"turn_trigger": trigger}}}
+    context = {"type": "turn_context", "payload": {"cwd": str(folder), "model": "gpt-6.1-sol", "effort": "high"}}
+    write(path, [
+        {"type": "session_meta", "payload": {"id": "native-session", "cwd": str(folder), "model_provider": "openai"}},
+        started("composer"), context, text("user", "Start the download and report every hour."), text("assistant", "Started."),
+        started("queue"), context, text("user", "Hourly report: 65% verified."), text("assistant", "65% is verified."),
+        started("user"), context, text("user", "How far along is it?"), text("assistant", "Almost done.")])
+    records = parse_codex(path, Scope.resolve(folder)).records
+    assert [r.authoring.get("trigger") for r in records] == [None, None, "queue", None, None, None]
+    assert [is_user_prompt(r) for r in records if r.role == "user"] == [True, False, True]
+    assert [is_queued_message(r) for r in records] == [False, False, True, False, False, False]
+    # The mark says how the turn started; it is not an agent of its own.
+    sources = [{"provider": "codex", "authoring": r.authoring} for r in records]
+    assert authoring_of(sources) == [{"tool": "codex", "model": "gpt-6.1-sol", "effort": "high", "provider": "openai"}]
+
+
 def test_claude_records_carry_the_assistant_model_and_a_tool_result_follows_its_call(tmp_path):
     folder = tmp_path / "app"
     folder.mkdir()

@@ -150,3 +150,12 @@ holdout: v2 Haiku 사람 4/4·자동 2/2 완료, Luna 사람 0/4·자동 1개 �
 - ✓ 비교: v2 3/21과 v1 27/36은 분모(사건)가 다르다. 같은 수정 단위끼리 맞춰 비교해야 한다(Astra).
 - 다른 프로젝트의 정답표.
 
+## 12. 자동화가 넣은 메시지 (2026-10-19)
+
+매시간 보고 지시의 출처를 원 기록에서 확인했다. 에이전트가 만든 감시 스크립트가 `codex queue --thread <세션> --message "사용자가 요청한 매시간 다운로드 진행 보고입니다…"`로 보냈고, Codex는 그렇게 시작한 턴의 `task_started`에 `turn_attribution.turn_trigger: "queue"`를 쓴다. 사람이 앱에서 친 메시지의 턴은 `composer` 또는 `user`(`codex exec`은 `exec`). 10월 기록 71개 파일에서 `queue` 턴의 사용자 역할 메시지 14개가 모두 매시간 보고였고, 사람이 친 메시지가 `queue`인 경우는 없었다.
+
+- 파싱(`_codex_queued`): `queue` 턴의 사용자 역할 기록에 `authoring.trigger = "queue"`. 내용 해시 밖이라 이미 분석한 단위를 다시 보내지 않는다.
+- `model.is_queued_message`: 그 기록. `is_user_prompt`는 거짓(요청 아님). 턴 경계는 된다(`light._turns`, `link_request_turns`): 그 턴의 작업은 앞 요청에 매달리지 않는다.
+- 남는 위험: 사람이 직접 `codex queue`를 쓰면 그 메시지도 요청이 아니게 된다. 앱의 대기열에 넣은 메시지가 어떤 값으로 기록되는지는 확인하지 못했다(이번 기록에 없었다).
+- 이미 게시된 그래프의 보고 지시 요청 상자는 그대로다(기존 그래프 보정, §8).
+

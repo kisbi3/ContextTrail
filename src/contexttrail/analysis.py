@@ -21,7 +21,7 @@ from .freshness import INDEX_KEY, build_index
 from .git_context import Scope, collect_git, git
 from .i18n import tr
 from .langsmith_trace import LangSmithTracer
-from .model import IMAGE_NOTE, Snapshot, SourceRecord, is_user_prompt, question_reply
+from .model import IMAGE_NOTE, Snapshot, SourceRecord, is_queued_message, is_user_prompt, question_reply
 from .routing import ROUTING_VERSION, RunnerPool, TaskValidationError
 from .runners.cli_runner import EFFORTS
 from .schema import (DELTA_SCHEMA, EDIT_TOOL_NAMES, EXTRACT_SCHEMA, EvidenceValidator, delta_schema, docs_only,
@@ -1169,9 +1169,11 @@ def link_request_turns(graph: dict, base: dict, pool: dict[str, SourceRecord], u
                       if record.recorded_at and (other.get("recorded_at") or "") > record.recorded_at), None)
         graph["events"].insert(len(graph["events"]) if later is None else later, event)
         requests_added += 1
+    # A message sent through the tool's queue ends the turn before it; its own turn has no request to hang work on.
     by_session: dict[str | None, list[SourceRecord]] = {}
-    for record in prompts:
-        by_session.setdefault(record.session_id, []).append(record)
+    for record in pool.values():
+        if is_user_prompt(record) or is_queued_message(record):
+            by_session.setdefault(record.session_id, []).append(record)
     reached = {edge["to_event_id"] for edge in graph["edges"] if edge["active"]}
     old = {event["id"] for event in base["events"]}
     links = 0
