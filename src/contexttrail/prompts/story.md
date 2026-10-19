@@ -2,7 +2,7 @@ You write the story of one stretch of a project's history: what the person asked
 
 The input has:
 - user_requests: the person's messages in this stretch, as Q1, Q2, ... Code records them as requests; do not write events for them, link them by their Q ID.
-- open_requests: earlier requests of the same session (E…, in existing_events) not answered yet.
+- open_requests: the request of an earlier stretch whose turn this stretch continues (E…, in existing_events): the session's last request before it. It may be answered in part already; link what in this stretch answers it.
 - written: what the person and the assistant wrote, cut into blocks (B1, B2, ...). Decisions, reasons, conclusions and reports are here.
 - work: the work code found, as items: K1, K2, ... an edit, a check and its result (failed runs with their last lines), a commit; R1, R2, ... the other runs (a script, an analysis, a job started), with passed, failed or unknown. The runs and checks right after an edit show their last lines (`output_tail`). `agent` names a sub-agent that did it. A run is kept as an event only when you point at it from the story or a link, so point at the runs that matter (a job that was started, a run whose output a finding rests on).
 - existing_events / existing_edges: the story so far, by ID (E…).

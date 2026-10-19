@@ -340,7 +340,7 @@ def code_title(item: dict, language: str | None) -> str:
     return item["title"]
 
 
-# The person's requests the story may answer from earlier stretches of the same session (newest first).
+# The requests the story may answer from earlier stretches: one per session, whose turn these records continue.
 OPEN_REQUESTS = 5
 
 
@@ -351,20 +351,25 @@ def request_items(assigned: list[SourceRecord]) -> list[dict]:
 
 
 def open_requests(graph: dict, assigned: list[SourceRecord], source_of) -> dict[str, dict]:
-    """Earlier requests of these records' sessions with no answer yet: event ID → its session (provider, session).
-    `source_of(evidence_id)` gives the cited record's metadata. Judged on the whole graph, not on the events shown."""
-    sessions = {(r.provider, r.session_id) for r in assigned if r.session_id}
-    answered = {e["from_event_id"] for e in graph.get("edges", []) if e.get("active") and e["relation"] == "answers"}
-    found = []
+    """The request whose turn these records continue, per session: the session's last request before them, answered
+    in part or not at all (a request a later one followed has had its turn; offering it let a reply to the later one be
+    taken for its answer). Event ID → its session (provider, session). `source_of(evidence_id)` gives the cited
+    record's metadata. Judged on the whole graph, not on the events shown."""
+    starts: dict[tuple, str] = {}
+    for record in assigned:
+        if record.session_id and record.recorded_at:
+            key = (record.provider, record.session_id)
+            starts[key] = min(starts.get(key, record.recorded_at), record.recorded_at)
+    last: dict[tuple, tuple[str, str]] = {}
     for event in graph.get("events", []):
-        if event["kind"] != "question" or event.get("actor") != "user" or event["id"] in answered:
+        if event["kind"] != "question" or event.get("actor") != "user" or not event.get("recorded_at"):
             continue
         meta = next((m for m in map(source_of, event.get("evidence_ids", [])) if m), None)
         key = (meta.get("provider"), meta.get("session_id")) if meta else None
-        if key in sessions:
-            found.append((event.get("recorded_at") or "", event["id"], key))
+        if key in starts and event["recorded_at"] < starts[key] and event["recorded_at"] > last.get(key, ("", ""))[0]:
+            last[key] = (event["recorded_at"], event["id"])
     return {event_id: {"provider": key[0], "session_id": key[1]}
-            for _, event_id, key in sorted(found, reverse=True)[:OPEN_REQUESTS]}
+            for key, (_, event_id) in sorted(last.items(), key=lambda item: item[1], reverse=True)[:OPEN_REQUESTS]}
 
 
 def written_blocks(assigned: list[SourceRecord]) -> list[dict]:
@@ -489,11 +494,13 @@ def reply_blocks(link: dict, requests: dict[str, SourceRecord], earlier: dict[st
                  pool: dict[str, SourceRecord], position: dict[str, int]) -> list[str]:
     """The cited blocks of a claimed answer that the assistant wrote in the request's session, after the request when
     it is in this stretch: the only ones kept as its evidence."""
+    before = len(position)
     if link["from"] in requests:
         asked = requests[link["from"]]
         session, after = (asked.provider, asked.session_id), position[asked.source_id]
     elif link["from"] in earlier:
         session, after = (earlier[link["from"]]["provider"], earlier[link["from"]]["session_id"]), -1
+        before = turn_end(session, pool, position)
     else:
         return []
     by_id = {b["id"]: b for b in blocks}
@@ -501,9 +508,17 @@ def reply_blocks(link: dict, requests: dict[str, SourceRecord], earlier: dict[st
     for block in link.get("blocks", []):
         record = pool.get(by_id[block]["source_id"]) if block in by_id else None
         if record is not None and record.source_id in position and record.role == "assistant" \
-                and (record.provider, record.session_id) == session and position[record.source_id] > after:
+                and (record.provider, record.session_id) == session and after < position[record.source_id] < before:
             kept.append(block)
     return kept
+
+
+def turn_end(session: tuple, pool: dict[str, SourceRecord], position: dict[str, int]) -> int:
+    """Where the turn an earlier request left open ends in these records: the session's first message of the person's
+    (or one sent through the tool's queue); past it, a reply belongs to that message's turn."""
+    return min((n for source_id, n in position.items() if source_id in pool
+                and (pool[source_id].provider, pool[source_id].session_id) == session
+                and (is_user_prompt(pool[source_id]) or is_queued_message(pool[source_id]))), default=len(position))
 
 
 def reversed_link(link: dict, work: dict[str, dict], requests: dict, earlier: dict) -> bool:
@@ -522,8 +537,9 @@ def reversed_link(link: dict, work: dict[str, dict], requests: dict, earlier: di
 def claimed_answer(link: dict, requests: dict[str, SourceRecord], earlier: dict[str, dict], present: set[str],
                    blocks: list[dict], pool: dict[str, SourceRecord], position: dict[str, int]) -> str | None:
     """Why an `answers` the story claims is not kept, or None to keep it. Code checks only what it can see: the link
-    leaves a request (`Q…` of this stretch, or an earlier request still unanswered) for an event of this stretch that
-    is not a request, and cites a block the assistant wrote in the request's session after it. Whether the block
+    leaves a request (`Q…` of this stretch, or the earlier request whose turn the stretch continues) for an event of
+    this stretch that is not a request, and cites a block the assistant wrote in the request's session after it (for
+    the earlier request, before the session's next request here). Whether the block
     answers this request and not another is the story's reading (`docs/plans/REQUEST_ANSWERS.md` §4)."""
     if link["from"] not in requests and link["from"] not in earlier:
         return "not from a request"
@@ -542,6 +558,8 @@ def claimed_answer(link: dict, requests: dict[str, SourceRecord], earlier: dict[
     elif not any((r.provider, r.session_id) == (earlier[link["from"]]["provider"], earlier[link["from"]]["session_id"])
                  for r in replies):
         return "no reply in the request's session"
+    elif not reply_blocks(link, requests, earlier, blocks, pool, position):
+        return "the reply came after a later request"
     return None
 
 

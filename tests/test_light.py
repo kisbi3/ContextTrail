@@ -387,19 +387,30 @@ def test_v2_answers_a_request_by_its_id_only_with_a_reply_after_it_in_its_sessio
     assert add_user_requests(output, found, validator) == []  # the requests are made once
     validator.check_extraction(output, "u", "snap", {"events": [], "edges": []})
 
-    # An earlier request of the same session still unanswered can be answered here; one of another session cannot.
+    # An earlier request whose turn these records continue can be answered here, by a reply before the session's next
+    # request; one of another session cannot, and a reply after the next request belongs to that request's turn.
     earlier = {"ev_old": {"provider": "claude", "session_id": "session-1"}, "ev_far": {"provider": "claude", "session_id": "other"}}
+    unit = {"id": "u", "sources": [i for i in pool if i != "ask"]}  # the stretch starts in ev_old's turn
     answer = {"work": [], "story": story[:1], "turn_summary": None,
               "links": [{"from": "ev_old", "to": "N1", "relation": "answers", "blocks": [block["said"]]},
                         {"from": "ev_far", "to": "N1", "relation": "answers", "blocks": [block["said"]]}]}
-    output, _ = story_extraction(answer, items, edges, {"id": "u", "sources": list(pool)}, "snap", pool, provided,
+    output, _ = story_extraction(answer, items, edges, unit, "snap", pool, provided,
                                  EvidenceValidator(pool, provided), blocks, [], "Korean", earlier)
     assert [e["from_event_id"] for e in output["edge_candidates"] if e["relation"] == "answers"] == ["ev_old"]
-    graph = {"events": [{"id": "ev_old", "kind": "question", "actor": "user", "recorded_at": "1", "evidence_ids": ["a"]},
-                        {"id": "ev_done", "kind": "question", "actor": "user", "recorded_at": "2", "evidence_ids": ["b"]}],
-             "edges": [{"from_event_id": "ev_done", "to_event_id": "x", "relation": "answers", "active": True}]}
-    source = {"a": {"provider": "claude", "session_id": "session-1"}, "b": {"provider": "claude", "session_id": "session-1"}}
-    assert open_requests(graph, found, source.get) == {"ev_old": {"provider": "claude", "session_id": "session-1"}}
+    answer["links"] = [{"from": "ev_old", "to": "N1", "relation": "answers", "blocks": [block["later"]]}]
+    output, _ = story_extraction(answer, items, edges, unit, "snap", pool, provided,
+                                 EvidenceValidator(pool, provided), blocks, [], "Korean", earlier)
+    assert not [e for e in output["edge_candidates"] if e["relation"] == "answers"]
+    assert any("the reply came after a later request" in t for t in output["limitations"])
+    # Offered: the session's last request before these records, whose turn they continue, even when answered in
+    # part; not one a later request followed, one of another session, or one after them.
+    def asked(key, at, evidence):
+        return {"id": key, "kind": "question", "actor": "user", "recorded_at": f"2026-09-22T{at}:00Z", "evidence_ids": [evidence]}
+    graph = {"events": [asked("ev_old", "09:00", "a"), asked("ev_last", "09:30", "a"), asked("ev_far", "09:50", "b"),
+                        asked("ev_after", "10:30", "a")],
+             "edges": [{"from_event_id": "ev_last", "to_event_id": "x", "relation": "answers", "active": True}]}
+    source = {"a": {"provider": "claude", "session_id": "session-1"}, "b": {"provider": "claude", "session_id": "other"}}
+    assert open_requests(graph, found, source.get) == {"ev_last": {"provider": "claude", "session_id": "session-1"}}
 
 
 def test_v2_reads_an_answer_written_to_the_request_the_other_way_and_keeps_only_the_reply_after_it(laboratory):
