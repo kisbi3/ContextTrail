@@ -530,11 +530,21 @@ def delegated_path(call: SourceRecord, result: SourceRecord | None) -> str | Non
     return f"{own.rstrip('/')}/{target.strip()}"
 
 
+def delegated_to(call: SourceRecord, result: SourceRecord | None) -> str | None:
+    """Whom a delegation call handed its task, as a person would call it: a Codex agent's task name (the last part
+    of its path), else the sub-agent type the call asked for (Claude Code `Agent`/`Task`, opencode `task`)."""
+    path = delegated_path(call, result)
+    if path:
+        return path.rstrip("/").rpartition("/")[2] or None
+    kind = _arguments(call).get("subagent_type")
+    return kind.strip() if isinstance(kind, str) and kind.strip() else None
+
+
 def mark_steps(records: list[SourceRecord]) -> None:
     """Set `SourceRecord.step` on every tool call and its result: what `tool_steps` makes of the call. Run at
     scan, per session, so the flow can tell a check or a documentation edit from the records an event cites
-    (`schema.fill_steps`) instead of from its title. A Codex delegation also names the path of the agent it gave
-    the task to (`agent`), which `schema.link_delegations` matches to that agent's lineage."""
+    (`schema.fill_steps`) instead of from its title. A delegation also names whom it gave the task to (`to`, for
+    the views) and, for Codex, that agent's path (`agent`), which `schema.link_delegations` matches to its lineage."""
     sessions: dict[str | None, list[SourceRecord]] = {}
     for record in records:
         if record.role in ("tool_call", "tool_result"):
@@ -544,9 +554,9 @@ def mark_steps(records: list[SourceRecord]) -> None:
         for step in tool_steps(session):
             mark = {"hint": step["hint"], **({"doc": True} if step.get("doc") else {})}
             if step["hint"] == "delegate" and step["tool"] in DELEGATION_CALLS:
-                path = delegated_path(by_id[step["call"]], by_id.get(step["result"]))
-                if path:
-                    mark["agent"] = path
+                call, result = by_id[step["call"]], by_id.get(step["result"])
+                path, name = delegated_path(call, result), delegated_to(call, result)
+                mark.update({"agent": path} if path else {}, **({"to": name} if name else {}))
             for key in (step["call"], step["result"]):
                 if key in by_id:
                     by_id[key].step = mark

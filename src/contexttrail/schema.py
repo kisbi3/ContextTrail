@@ -1524,6 +1524,13 @@ def link_delegations(graph: dict, source_of: Callable[[str], dict | None]) -> in
                 return lineage["parent_session_id"], "path", lineage["agent_path"]
         return None
 
+    for event in graph["events"]:
+        # Whom the delegation went to, for the views (`story_view`), from the call's own record.
+        event.pop("delegated_to", None)
+        if event.get("step") == "delegate":
+            named = next(((s.get("step") or {}).get("to") for s in sources[event["id"]] if (s.get("step") or {}).get("to")), None)
+            if named:
+                event["delegated_to"] = named
     incoming: dict[str, list[dict]] = {}
     for edge in graph["edges"]:
         if edge["active"]:
@@ -1632,6 +1639,125 @@ def folded_view(graph: dict) -> dict:
         edges.append(moved if moved != edge else edge)
     view["edges"] = edges
     return view
+
+
+STORY_VIEW = "story"
+# The events a person reads the story by: what was asked, set out, decided or changed in course. A finding the
+# assistant stated (an outcome resting on what was written, not on a tool record) is one too.
+INTENT_KINDS = ("question", "goal", "proposal", "decision", "revision")
+CAUSE_RELATIONS = ("motivates", "revises", "answers", "produces")
+
+
+def _sub_agents(event: dict) -> list[str]:
+    return [agent.get("agent") or agent.get("tool", "") for agent in event.get("authoring") or []
+            if agent.get("role") == "subagent"]
+
+
+def story_view(graph: dict) -> dict:
+    """The graph as a person reads it, the default screen (`docs/DECISIONS.md` 2026-10-20): the story only. Each box is
+    a request, a goal, proposal, decision or change of course, a finding the assistant stated, or a failure nothing
+    later answered; the work (edits, checks, runs), the delegations and every sub-agent step fold into the story box
+    they belong to: by a relation first (a decision's work, the work a finding rests on), else into the intention
+    before them in their session (never into a finding). What folds in is kept per box as `folded_agents`: each
+    agent handed work there, with the title of what it last said (None while its work waits for analysis).
+    Only relations between two drawn boxes stay; every event keeps its number in the whole list (`number`), and the
+    tones and labels are those of the whole graph (`tones`, `labels`), so a request answered by a folded step still
+    reads answered. `homes` maps each folded event to its box. Display only: the stored graph is unchanged, and
+    the detail, `find`, `show` and the agents read the whole graph."""
+    from .render import status_labels, status_tones
+    events = graph["events"]
+    by_id = {event["id"]: event for event in events}
+    when = {event["id"]: (event.get("recorded_at") or "", n) for n, event in enumerate(events)}
+    active = [edge for edge in graph["edges"] if edge["active"] and edge["from_event_id"] in by_id
+              and edge["to_event_id"] in by_id and edge.get("origin") not in ("dialog_turn", DELEGATION_ORIGIN)]
+    passed = {edge["from_event_id"] for edge in active if edge["relation"] == "verifies"
+              and by_id[edge["to_event_id"]]["status"] == "observed_success"}
+    checked_by: dict[str, list[str]] = {}
+    for edge in active:
+        if edge["relation"] == "verifies":
+            checked_by.setdefault(edge["to_event_id"], []).append(edge["from_event_id"])
+
+    def unanswered_failure(event: dict) -> bool:
+        # A failed check that nothing came of and whose change no later check passed: left as it was.
+        return (event["status"] == "observed_failure"
+                and not any(edge["from_event_id"] == event["id"] and edge["relation"] in CAUSE_RELATIONS for edge in active)
+                and not any(change in passed for change in checked_by.get(event["id"], [])))
+
+    def is_story(event: dict) -> bool:
+        if event.get("actor") == "user":
+            return True
+        if _sub_agents(event) or event.get("step") == "delegate":
+            return False
+        if event["kind"] in INTENT_KINDS:
+            return True
+        if event["kind"] == "outcome":
+            return event.get("basis") != "tool_record" or unanswered_failure(event)
+        return False
+
+    story = [event["id"] for event in events if is_story(event)]
+    shown = set(story)
+    intents = [key for key in story if by_id[key]["kind"] in INTENT_KINDS]
+
+    def intention_before(key: str) -> str | None:
+        sessions = set(by_id[key].get("session_ids") or [])
+        before = [other for other in intents if when[other] <= when[key]]
+        same = [other for other in before if sessions & set(by_id[other].get("session_ids") or [])]
+        return (same or before or intents[:1] or story[:1] or [None])[-1]
+
+    homes: dict[str, str | None] = {}
+
+    def home(key: str, seen: frozenset = frozenset()) -> str | None:
+        if key in homes:
+            return homes[key]
+        delegation = by_id[key].get(DELEGATED)
+        if delegation in by_id and delegation not in seen:
+            found = delegation if delegation in shown else home(delegation, seen | {key})
+        else:
+            leads = sorted((edge["from_event_id"] for edge in active if edge["to_event_id"] == key
+                            and edge["from_event_id"] in shown), key=when.get)
+            led = sorted((edge["to_event_id"] for edge in active if edge["from_event_id"] == key
+                          and edge["to_event_id"] in shown), key=when.get)
+            found = (leads or led or [intention_before(key)])[0]
+        homes[key] = found
+        return found
+
+    # Whom each delegation went to: as its call named it, else as the work it started names its agent (a graph
+    # published before the name was recorded), else its title.
+    worked: dict[str, str] = {}
+    for event in events:
+        if event.get(DELEGATED) and _sub_agents(event):
+            worked.setdefault(event[DELEGATED], _sub_agents(event)[0])
+    named = {event["id"]: event.get("delegated_to") or worked.get(event["id"]) or event["title"]
+             for event in events if event.get("step") == "delegate"}
+    # Each agent handed work at a box, once, with what it last said there: its last stated finding or decision, else
+    # its last step.
+    agents: dict[str, dict[str, dict[str, str | None]]] = {}
+    for event in sorted(events, key=lambda event: when[event["id"]]):
+        key = event["id"]
+        if key in shown:
+            continue
+        at = home(key)
+        if at is None:
+            continue
+        if event.get("step") == "delegate":
+            agents.setdefault(at, {}).setdefault(named[key], {"stated": None, "last": None})
+        elif _sub_agents(event):
+            name = named.get(event.get(DELEGATED) or "") or _sub_agents(event)[0]
+            said = agents.setdefault(at, {}).setdefault(name, {"stated": None, "last": None})
+            said["last"] = event["title"]
+            if event.get("basis") != "tool_record":
+                said["stated"] = event["title"]
+    tones, labels = status_tones(graph), status_labels(graph)
+    view_events = []
+    for number, event in enumerate(events, 1):
+        if event["id"] in shown:
+            view_events.append({**event, "number": number, **(
+                {"folded_agents": [{"agent": name, "said": said["stated"] or said["last"]}
+                                   for name, said in agents[event["id"]].items()]}
+                if agents.get(event["id"]) else {})})
+    edges = [edge for edge in graph["edges"] if edge["from_event_id"] in shown and edge["to_event_id"] in shown]
+    return {**graph, "events": view_events, "edges": edges, "view": STORY_VIEW, "tones": tones, "labels": labels,
+            "homes": {key: value for key, value in homes.items() if value}}
 
 
 def step_of(event: dict, sources: list[dict]) -> str | None:

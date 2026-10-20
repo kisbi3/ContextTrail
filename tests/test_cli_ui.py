@@ -95,8 +95,9 @@ def test_graph_command_shows_project_and_eval_in_terminal(tmp_path, capsys):
     assert main(['graph',str(folder)])==0
     project_output=capsys.readouterr().out
     assert '사건' in project_output and '┌─ [01] 요청' in project_output
-    # labelled arrows between boxes; each check stands beside the change it checked, a request's links run in the margin
-    assert '─검증──▶' in project_output and '│ 후속' in project_output and '[01] 후속 ▶' in project_output
+    # labelled arrows between boxes; each check stands beside the change it checked; a request's turn is the
+    # column's order (no turn line), its answer a few boxes down runs in the margin
+    assert '─검증──▶' in project_output and '│ 후속' not in project_output and '후속 ▶' not in project_output
     assert '[05] 답변 ▶' in project_output and '✗ 관측 실패' in project_output
     assert 'AI 호출 없음' in project_output
 

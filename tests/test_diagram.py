@@ -41,28 +41,30 @@ def test_boxes_and_labelled_arrows_show_each_relation_once():
     # Both checks leave the change on labelled lines; their other links are written in both boxes.
     assert text.count("─검증──▶") == 2 and "→ [06] 동기" in text and "← [05] 동기" in text
     assert "→ [04] 검증" in text and "← [06] 검증" in text
-    # Links that skip boxes run on margin rails and arrive under the number of the box they left.
-    assert "[01] 답변 ▶" in text
+    # A link past more than three boxes (here five, counting the checks beside the change) is no margin rail
+    # running down the screen: it is written in both boxes.
+    assert "→ [08] 답변" in text and "← [01] 답변" in text and "[01] 답변 ▶" not in text
     assert "흐름" not in text  # one session, one flow: no heading
     assert "연결된 사건 없음" not in text  # that is the detail pane's to say
-    assert flow_diagram(graph, 60) is None  # too narrow to read: callers fall back to the text list
+    assert flow_diagram(graph, 54) is None  # too narrow to read: callers fall back to the text list
 
 
 def test_long_titles_and_labels_wrap_without_being_cut():
     graph = story()
     graph["events"][2]["title"] = "install.sh 추가와 기존 명령 충돌 검사, 관리 표식 기록, 설치 후 경로 안내까지 한 번에 처리"
-    diagram = flow_diagram(graph, 110)
+    diagram = flow_diagram(graph, 90)
     top, x, height, width = diagram.boxes["script"]
     inside = ["".join(cell.char for cell in row[x + 2:x + width - 2]).strip()
               for row in diagram.rows[top + 1:top + height - 1]]
-    assert " ".join(inside[:3]) == graph["events"][2]["title"]  # three lines, nothing cut
-    assert inside[3:] == ["✗ 변경 적용 · 검증 통과 1건", "· 검증 실패 1건"]  # a label breaks between its parts
+    status = next(n for n, line in enumerate(inside) if line.startswith("✗"))
+    assert status > 1 and " ".join(inside[:status]) == graph["events"][2]["title"]  # wrapped, nothing cut
+    assert inside[status:status + 2] == ["✗ 변경 적용 · 검증 통과 1건", "· 검증 실패 1건"]  # a label breaks between its parts
 
 
 def test_links_without_room_are_written_in_both_boxes():
     events = [node(key, "action", "applied") for key in "abcdef"]
     edges = [link("a", "d", "follows"), link("a", "e", "follows"), link("a", "f", "follows"),
-             link("b", "e", "follows"), link("b", "f", "motivates")]
+             link("b", "e", "follows"), link("b", "f", "motivates"), link("c", "f", "revises")]
     diagram = flow_diagram({"events": events, "edges": edges}, 110)
     rows = diagram.lines()
 
@@ -70,7 +72,9 @@ def test_links_without_room_are_written_in_both_boxes():
         top, _, height, _ = diagram.boxes[key]
         return "\n".join(rows[top:top + height])
 
-    assert "→ [06] 동기" in inside("b") and "← [02] 동기" in inside("f")  # a fifth rail does not fit
+    assert "→ [06] 후속" in inside("a") and "← [01] 후속" in inside("f")  # past four boxes: no rail
+    assert "→ [06] 수정" in inside("c") and "← [03] 수정" in inside("f")  # a fifth rail does not fit
+    assert "[02] 동기 ▶" in "\n".join(rows)  # past three: still a rail
 
 
 def test_unrelated_sessions_are_separate_flows():
@@ -89,17 +93,16 @@ def test_unrelated_sessions_are_separate_flows():
 
 
 def test_rails_sharing_a_box_use_separate_rows():
-    graph = story()
-    graph["edges"].append(link("plan", "answer", "follows"))
-    diagram = flow_diagram(graph, 110)
-    top = diagram.boxes["answer"][0]
+    events = [node(key, "action", "applied") for key in "abcd"]
+    diagram = flow_diagram({"events": events, "edges": [link("a", "d", "motivates"), link("b", "d", "follows")]}, 110)
+    top = diagram.boxes["d"][0]
     rows = diagram.lines()
-    assert "[01] 답변 ▶" in rows[top + 1] and "[02] 후속 ▶" in rows[top + 2]
+    assert "[01] 동기 ▶" in rows[top + 1] and "[02] 후속 ▶" in rows[top + 2]
 
 
 def test_selected_box_is_drawn_with_heavy_lines():
     from contexttrail.ui import FlowPanels
-    panels = FlowPanels(story(), lambda _: None)
+    panels = FlowPanels(story(), lambda _: None, story=False)
     panels.current = "script"
     diagram = panels.diagram(110)
     top = diagram.boxes["script"][0]
@@ -109,17 +112,16 @@ def test_selected_box_is_drawn_with_heavy_lines():
     assert "┏" not in "".join(text for text, _ in panels._cell_runs(diagram.rows[top]))
 
 
-def test_turn_links_of_a_user_message_share_one_bracket():
+def test_turn_links_of_a_user_message_are_the_columns_order_not_lines():
     events = [node("ask", "question", "asked", "설치 스크립트를 만들어 줘")] + [
         node(key, "action", "applied", key) for key in ("a", "b", "c", "d")]
     events[0]["actor"] = "user"
-    turn = [dict(link("ask", key, "follows"), basis="structural", origin="dialog_turn") for key in ("b", "c", "d")]
+    turn = [dict(link("ask", key, "follows"), basis="structural", origin="dialog_turn") for key in ("a", "b", "c", "d")]
     diagram = flow_diagram({"events": events, "edges": turn + [link("a", "c", "motivates")]}, 110)
-    rows = diagram.lines()
-    ticks = [n for n, row in enumerate(rows) if row.startswith(" ├") or row.startswith(" └")]
-    assert len(ticks) == 3 and rows[ticks[-1]].startswith(" └")  # one rail, a tick per target
-    assert all("[01] 후속 ▶" in rows[n] for n in ticks)
-    assert "[02] 동기 ▶" in "\n".join(rows)  # the model's own link still gets a rail of its own
+    text = "\n".join(diagram.lines())
+    # What came after the message is the order of the column: no bracket down the turn, no note in any box.
+    assert "후속" not in text and "┊" in text
+    assert "[02] 동기 ▶" in text  # the model's own link still gets a rail of its own
 
 
 def test_a_box_that_sends_and_receives_rails_uses_a_row_for_each():
@@ -196,7 +198,7 @@ def test_panels_move_by_request_and_follow_links_back():
 def test_selected_box_lights_its_links_and_dims_unrelated_boxes():
     import curses
     from contexttrail.ui import FlowPanels
-    panels = FlowPanels(story(), lambda _: None)
+    panels = FlowPanels(story(), lambda _: None, story=False)
     diagram = panels.diagram(110)
     panels.current = "fix"
     script_top, _, script_height, _ = diagram.boxes["script"]
@@ -432,7 +434,7 @@ def test_a_box_beside_the_selected_step_is_not_dimmed():
     graph = {"events": timed(node("month", "decision", "adopted", "한 달 자료로 확대"),
                              node("hash", "outcome", "observed_success", "산출물 해시 일치"),
                              node("other", "decision", "adopted", "재현 분리")), "edges": []}
-    panels = FlowPanels(graph, lambda _: None)
+    panels = FlowPanels(graph, lambda _: None, story=False)
     panels._drawn = diagram = panels.diagram(120)
     panels.current = "month"
     hash_row = diagram.rows[diagram.boxes["hash"][0] + 1]

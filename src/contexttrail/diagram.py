@@ -27,6 +27,7 @@ from wcwidth import wcswidth, wcwidth
 
 from .i18n import tr
 from .render import ASCII_MARK, MARK, RELATION, _when, delegate_label, kind_label, status_labels, status_tones
+from .schema import STORY_VIEW
 from .util import cell_slice, safe_text
 
 OBSERVED = {"observed_success", "observed_failure"}
@@ -34,10 +35,10 @@ OBSERVED = {"observed_success", "observed_failure"}
 ANCHOR_ORDER = {"verifies": 0, "produces": 1}
 LIGHT = {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "│", "lt": "├", "rt": "┤",
          "down": "┬", "cross": "┼", "right": "▶", "left": "◀", "arrow_down": "▼", "up": "↑", "back": "←",
-         "forward": "→", "flow": "═", "then": "┊", "then_down": "▽"}
+         "forward": "→", "flow": "═", "then": "┊", "then_down": "▽", "sub_mark": "↳"}
 PLAIN = {"tl": "+", "tr": "+", "bl": "+", "br": "+", "h": "-", "v": "|", "lt": "+", "rt": "+",
          "down": "+", "cross": "+", "right": ">", "left": "<", "arrow_down": "v", "up": "^", "back": "<-",
-         "forward": "->", "flow": "=", "then": ":", "then_down": "v"}
+         "forward": "->", "flow": "=", "then": ":", "then_down": "v", "sub_mark": "->"}
 
 
 def _sub_agent(event: dict) -> bool:
@@ -93,6 +94,10 @@ def _sub_label(event: dict) -> str:
 # The selected box is redrawn with heavy lines.
 HEAVY = str.maketrans("┌┐└┘─│├┤┬┼", "┏┓┗┛━┃┣┫┳╋")
 MAX_RAILS = 4
+# A link drawn as a margin rail passes at most this many boxes (story boxes and the boxes beside them); a longer
+# one is written in both boxes, since a line running past a screen of boxes is not read as joining anything.
+RAIL_BOXES = 3
+STORY_BOX = 76  # the story view's one column is at most this wide, the width that reads well
 MIN_BOX = 22  # the narrowest box that still reads
 WIDE_BOX = 30  # a fork's side keeps result and sub-agent boxes beside it only when they can be this wide
 BRANCH_GAP = 4  # between a fork's sides
@@ -260,7 +265,9 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
     With `only`, just those events are drawn (one user request's turn); their links to the
     rest are written inside their boxes. Numbers stay those of the whole list.
     """
-    number = {event["id"]: f"[{n:02d}]" for n, event in enumerate(graph["events"], 1)}
+    # A view of the graph (`schema.story_view`) keeps each event's number in the whole list.
+    number = {event["id"]: f"[{event.get('number', n):02d}]" for n, event in enumerate(graph["events"], 1)}
+    story_view = graph.get("view") == STORY_VIEW
     events = [event for event in graph["events"] if only is None or event["id"] in only]
     if not events:
         return None
@@ -269,11 +276,13 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
     ids = {event["id"] for event in events}
     order = {event["id"]: n for n, event in enumerate(events)}
     by_id = {event["id"]: event for event in events}
-    labels, tones = status_labels(graph), status_tones(graph)
+    labels, tones = graph.get("labels") or status_labels(graph), graph.get("tones") or status_tones(graph)
     active = [edge for edge in graph["edges"] if edge["active"] and
               edge["from_event_id"] in number and edge["to_event_id"] in number]
     edges = [edge for edge in active if edge["from_event_id"] in ids and edge["to_event_id"] in ids]
-    outside = [edge for edge in active if (edge["from_event_id"] in ids) != (edge["to_event_id"] in ids)]
+    # A turn link is the column's order: drawn neither as a line nor as a note (the detail lists it).
+    outside = [edge for edge in active if (edge["from_event_id"] in ids) != (edge["to_event_id"] in ids)
+               and edge.get("origin") != "dialog_turn"]
 
     groups = _flows(events, edges)
 
@@ -289,7 +298,7 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
     relations = [edge for edge in edges if edge.get("origin") not in ("dialog_turn", "delegation")]
     handed = {edge["to_event_id"]: edge for edge in edges if edge.get("origin") == "delegation"}
     placed: dict[str, tuple[str, str, dict | None]] = {}  # right-hand box → (main step, out|in|near|sub, edge)
-    for group in groups:
+    for group in ([] if story_view else groups):  # the story view is one column: what it folded is in the boxes
         detail = {key for key in group if _sub_agent(by_id[key]) or _detail(by_id[key])}
         if not set(group) - detail:
             detail = {key for key in group if _sub_agent(by_id[key])}
@@ -398,6 +407,8 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
         lanes = 0
 
         def note(edge: dict) -> None:
+            if story_view:
+                return  # the story view draws neighbours' links only; the rest are in the detail
             relation = _edge_label(edge)
             source, target = edge["from_event_id"], edge["to_event_id"]
             if source in ids:
@@ -430,31 +441,22 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
 
             inner_edges = [edge for edge in edges if edge["from_event_id"] in index and edge["to_event_id"] in index
                            and edge["id"] not in splitters]
-            turns: dict[str, list[dict]] = {}
             longer: list[dict] = []
             for edge in sorted(inner_edges, key=lambda edge: (order[edge["from_event_id"]], order[edge["to_event_id"]])):
                 source, target = edge["from_event_id"], edge["to_event_id"]
                 start, end = index[source], index[target]
+                if edge.get("origin") == "dialog_turn":
+                    continue  # what came after a message: the column's order says it
                 if end == start + 1:
                     spine.setdefault((source, target), []).append(edge)
-                elif end > start and edge.get("origin") == "dialog_turn":
-                    turns.setdefault(source, []).append(edge)
                 else:
                     longer.append(edge)
-            # A message's turn links go first and share one rail, like a bracket down its turn;
-            # turns follow one another, so they usually all fit on the same lane. A fork's side has no rails:
-            # its turn links are its order, and anything longer is written in the boxes.
-            for source, group in turns.items():
-                lane = take(index[source], max(index[edge["to_event_id"]] for edge in group)) if allow else None
-                if lane is None:
-                    if allow:
-                        for edge in group:
-                            note(edge)
-                else:
-                    rails.append((group, lane))
+            # A fork's side has no rails: anything longer than a neighbour's link is written in the boxes.
             for edge in longer:
                 start, end = index[edge["from_event_id"]], index[edge["to_event_id"]]
-                lane = take(start, end) if allow and end > start else None
+                passed = sum(1 + len(stacks.get(key, [])) for key in column[start + 1:end])
+                near = passed <= (0 if story_view else RAIL_BOXES)
+                lane = take(start, end) if allow and end > start and near else None
                 if lane is None:
                     note(edge)
                 else:
@@ -516,6 +518,8 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
                 splitters |= {edge["id"] for edge in layout[3]}
         spine, rails, notes, lanes = plan(drawn, splitters)
         margin, arrow_gap, box_width = geometry(rails, lanes)
+    if story_view:
+        box_width = min(width - margin - 4, STORY_BOX)
     if box_width < MIN_BOX:
         return None
     x_left, x_right = margin, margin + box_width + arrow_gap
@@ -535,6 +539,15 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
             inner = box_w - 4
             none = frozenset()
             lines = [(part, "title", none) for part in _wrap(safe_text(by_id[key]["title"], multiline=False), inner)]
+            if story_view:
+                # The title and the agents handed work here, each with what it last said; the status is the
+                # border's colour, the reason and every step are in the detail and the full view.
+                for agent in by_id[key].get("folded_agents", []):
+                    said = safe_text(agent["said"], multiline=False) if agent["said"] else tr("아직 분석 전", "not analysed yet")
+                    text = f"{g['sub_mark']} {safe_text(agent['agent'], multiline=False)}: {said}"
+                    lines += [(part, "sub", none) for part in _wrap(text, inner)]
+                drawn_lines[(key, box_w, fold)] = lines
+                return lines
             if by_id[key]["kind"] in ("decision", "outcome") and by_id[key].get("summary") and key not in placed:
                 # A decision says why it was made, a result in the story what was found: the first sentence of its
                 # summary (the prompts ask a decision's to start with the reason, `common.md`). A title alone left
@@ -662,6 +675,8 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
                 box(row, rx, item, box_w)
                 if kind != "near":
                     label = _sub_label(by_id[item]) if kind == "sub" else _edge_label(edge) if edge else ""
+                    if kind == "sub" and arrows and arrows[-1][1] == "sub" and _sub_label(by_id[arrows[-1][4]]) == label:
+                        label = ""  # an agent is named once, at the top of its stack
                     arrows.append((row + 1, kind, label, edge["id"] if edge else None, item))
                 row += height(item, box_w, False) + 1
             if arrows:

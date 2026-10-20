@@ -64,7 +64,7 @@ def test_side_keys_move_between_a_change_and_its_result():
 
 
 def test_bang_cycles_through_what_needs_a_look():
-    panels = FlowPanels(story(), lambda _: None)
+    panels = FlowPanels(story(), lambda _: None, story=False)
     panels.select("q")
     seen = []
     for _ in range(4):
@@ -174,13 +174,13 @@ def at(screen, text):
 
 def test_mouse_selects_boxes_follows_labels_and_scrolls(monkeypatch):
     graph = story()
-    panels = FlowPanels(graph, evidence_of(graph, 20))
+    panels = FlowPanels(graph, evidence_of(graph, 20), story=False)
     screen = drawn(panels, rows=60, cols=160)
     click(monkeypatch, panels, *at(screen, "문서 갱신"))
     assert panels.current == "docs"
     screen = drawn(panels, rows=60, cols=160)
-    click(monkeypatch, panels, *at(screen, "[01] 답변 ▶"))
-    assert panels.current == "q" and panels.history == ["docs"]  # the label names where the rail left
+    click(monkeypatch, panels, *at(screen, "← [01] 답변"))
+    assert panels.current == "q" and panels.history == ["docs"]  # a note names the box at the link's other end
     screen = drawn(panels, rows=60, cols=160)
     click(monkeypatch, panels, *at(screen, "install.sh 추가"))
     screen = drawn(panels, rows=60, cols=160)

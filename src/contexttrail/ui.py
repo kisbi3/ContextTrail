@@ -14,7 +14,7 @@ from wcwidth import wcswidth
 
 from .diagram import HEAVY, Diagram, _wrap, flow_diagram, request_turns
 from .i18n import language, tr
-from .schema import folded_view
+from .schema import folded_view, story_view
 from .render import (ASCII_MARK, MARK, event_detail, linked_events, status_labels, status_tones,
                      terminal_graph)
 from .agent_view import reference
@@ -132,8 +132,8 @@ CLICK = curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
 
 # The footer lists the common panel keys; `?` shows every key (`help_sections` plus the screen's own).
 def keys() -> str:
-    return tr("↑↓←→ 이동  [ ] 요청  1-9 연결  ! 확인 필요  / 검색  Tab 상세  ? 도움말",
-              "↑↓←→ move  [ ] request  1-9 link  ! needs a look  / search  Tab detail  ? help")
+    return tr("↑↓←→ 이동  [ ] 요청  1-9 연결  ! 확인 필요  / 검색  v 핵심↔전체  Tab 상세  ? 도움말",
+              "↑↓←→ move  [ ] request  1-9 link  ! needs a look  / search  v story↔full  Tab detail  ? help")
 
 
 def help_sections() -> list[tuple[str, list[tuple[str, str]]]]:
@@ -156,6 +156,7 @@ def help_sections() -> list[tuple[str, list[tuple[str, str]]]]:
                      ("e", "원문 근거 전부 펼치기 ↔ 8줄까지"),
                      ("z", "지금 칸을 화면 전체로 ↔ 되돌리기"),
                      ("A", "전체 흐름 ↔ 요청별 흐름"),
+                     ("v", "핵심 보기(요청·결정·결론, 작업과 위임은 상자 안 한 줄) ↔ 모든 단계"),
                      ("Esc", "검색·크게 보기 닫기, 선택한 사건 칸에서 흐름 칸으로"),
                      ("?", "이 도움말")]),
             ("마우스", [("클릭", "상자·요청·번호 붙은 연결로. 선이나 [02] 동기 ▶ 같은 표시는 이어진 상자로"),
@@ -179,6 +180,7 @@ def help_sections() -> list[tuple[str, list[tuple[str, str]]]]:
                   ("e", "show every quoted line ↔ up to 8 lines"),
                   ("z", "this panel full screen ↔ back"),
                   ("A", "whole flow ↔ one request at a time"),
+                  ("v", "story view (requests, decisions, findings; work and delegations a line in their box) ↔ every step"),
                   ("Esc", "close the search or the full-screen view; from the event panel back to the flow"),
                   ("?", "this help")]),
         ("Mouse", [("Click", "a box, a request or a numbered link; a line or a mark like [02] motivates ▶ goes to the linked box"),
@@ -241,8 +243,11 @@ class FlowPanels:
     QUOTE_LINES = 8
 
     def __init__(self, graph: dict, evidence: Callable[[str], dict | None], *, ascii_only: bool = False,
-                 app_keys: tuple[tuple[str, str], ...] = ()):
+                 app_keys: tuple[tuple[str, str], ...] = (), story: bool = True):
         self.evidence, self.ascii_only, self.app_keys = evidence, ascii_only, app_keys
+        # The flow draws the story view (`schema.story_view`) until `v` or a jump to a step it folded asks for every
+        # step; the detail, search, links and references always read the whole graph (`self.full`).
+        self.story = story
         self.marks = ASCII_MARK if ascii_only else MARK
         self.styles = _styles(False)
         self.graph: dict | None = None
@@ -261,23 +266,30 @@ class FlowPanels:
         self.set_graph(graph)
 
     def set_graph(self, graph: dict) -> None:
+        self.full = folded_view(graph)
+        full = self.full
+        # The narrow screen's text list is of every step.
+        self.lines = terminal_graph(full, ascii_only=self.ascii_only, marks=True)
+        self.labels, self.tones = status_labels(full), status_tones(full)
+        self.numbers = {event["id"]: f"[{n:02d}]" for n, event in enumerate(full["events"], 1)}
+        self.position = {event["id"]: n for n, event in enumerate(full["events"])}
+        self.titles = {event["id"]: event["title"] for event in full["events"]}
+        self.edges = {edge["id"]: edge for edge in full["edges"] if edge["active"]}
+        self._view()
+
+    def _view(self) -> None:
+        """Draw the story view or every step; the selection moves to the box a folded step belongs to."""
         keep = self.current
-        graph = folded_view(graph)
-        self.graph = graph
-        self.lines = terminal_graph(graph, ascii_only=self.ascii_only, marks=True)
-        self.labels, self.tones = status_labels(graph), status_tones(graph)
-        self.numbers = {event["id"]: f"[{n:02d}]" for n, event in enumerate(graph["events"], 1)}
-        self.position = {event["id"]: n for n, event in enumerate(graph["events"])}
-        self.titles = {event["id"]: event["title"] for event in graph["events"]}
-        self.edges = {edge["id"]: edge for edge in graph["edges"] if edge["active"]}
+        graph = self.graph = story_view(self.full) if self.story else self.full
         self.turns = request_turns(graph)
         self.turn_of = {key: n for n, (_, keys) in enumerate(self.turns) for key in keys}
         ids = [event["id"] for event in graph["events"]]
+        keep = keep if keep in ids else graph.get("homes", {}).get(keep)
         self.current = keep if keep in ids else (ids[0] if ids else None)
-        self.history = [key for key in self.history if key in ids]
+        self.history = [key for key in self.history if key in self.position]
         self.matches = [key for key in self.matches if key in self.position]
-        # Until the first draw, arrow keys follow the text list's order.
-        self._order = list(dict.fromkeys(event_id for _, event_id in self.lines if event_id))
+        # Until the first draw, arrow keys follow the text list's order (the story view's own order).
+        self._order = ids if self.story else list(dict.fromkeys(event_id for _, event_id in self.lines if event_id))
         self._diagrams: dict[tuple[int | None, int], Diagram | None] = {}
         self._details: dict[tuple[str | None, int, bool], tuple[list[tuple[str, str]], list[int | None]]] = {}
         self._near: tuple[str | None, set[str], set[str]] = (None, set(), set())
@@ -381,8 +393,8 @@ class FlowPanels:
         if key not in self._details:
             lines: list[tuple[str, str]] = []
             links: list[int | None] = []
-            linked = linked_events(self.graph, event_id) if event_id else []
-            source = (event_detail(self.graph, event_id, self.evidence, ascii_only=self.ascii_only, keys=True,
+            linked = linked_events(self.full, event_id) if event_id else []
+            source = (event_detail(self.full, event_id, self.evidence, ascii_only=self.ascii_only, keys=True,
                                    quote_lines=10 ** 6 if self.expand else self.QUOTE_LINES)
                       if event_id else [(tr("사건을 선택하면 설명과 원문 근거가 표시됩니다.",
                                              "Select an event to see its description and quoted evidence."), "dim")])
@@ -451,7 +463,7 @@ class FlowPanels:
             self.graph_top = max(0, min(top, top + height - visible))
 
     def _flow_title(self, turn: int | None) -> str:
-        parts = [tr("사건 흐름", "Event flow")]
+        parts = [tr("사건 흐름", "Event flow"), tr("핵심", "story") if self.story else tr("모든 단계", "every step")]
         if self.turns and turn is None:
             parts.append(tr("전체", "all"))
         elif self.turns:
@@ -556,6 +568,13 @@ class FlowPanels:
     def select(self, event_id: str, *, remember: bool = False) -> None:
         if event_id == self.current:
             return
+        if self.story and event_id in self.position and event_id not in self.turn_of and event_id not in {
+                event["id"] for event in self.graph["events"]}:
+            # A link, search or flag led to a step the story view folded: show every step.
+            self.story = False
+            self._view()
+            self.message = tr("전체 보기로 바꿈: 그 단계는 핵심 보기에서 상자 안에 접혀 있습니다 (v로 돌아감)",
+                              "Switched to the full view: that step is folded into a box in the story view (v goes back)")
         if remember and self.current is not None:
             self.history = (self.history + [self.current])[-50:]
         self.current, self.detail_top = event_id, 0
@@ -610,7 +629,7 @@ class FlowPanels:
         """Each event's title, summary and quoted evidence, folded for matching."""
         if self._haystack is None:
             self._haystack = {}
-            for event in self.graph["events"]:
+            for event in self.full["events"]:
                 quotes = [(self.evidence(key) or {}).get("quote", "") for key in event["evidence_ids"]]
                 self._haystack[event["id"]] = "\n".join([event["title"], event["summary"], *quotes]).casefold()
         return self._haystack
@@ -653,7 +672,7 @@ class FlowPanels:
             self.typing += key
 
     def _follow(self, number: int) -> None:
-        linked = linked_events(self.graph, self.current) if self.current else []
+        linked = linked_events(self.full, self.current) if self.current else []
         if number <= len(linked):
             self.select(linked[number - 1], remember=True)
 
@@ -783,11 +802,19 @@ class FlowPanels:
             self._request(1 if key == "]" else -1)
         elif key in ("a", "A"):
             self.whole = not self.whole
+        elif key in ("v", "V"):
+            self.story = not self.story
+            self._view()
+            self.graph_top = 0
+            self.message = (tr("핵심 보기 · 작업과 위임은 상자 안 한 줄 (v: 모든 단계)",
+                               "Story view · work and delegations are a line in their box (v: every step)") if self.story
+                            else tr("전체 보기 · 모든 단계 (v: 핵심 보기)", "Full view · every step (v: story view)"))
         elif isinstance(key, str) and len(key) == 1 and key in "123456789":
             self._follow(int(key))
         elif key in BACK:
             if self.history:
-                self.current, self.detail_top = self.history.pop(), 0
+                self.select(self.history.pop())
+                self.detail_top = 0
         elif key == "!":
             self._flagged()
         elif key == "/":
@@ -801,8 +828,8 @@ class FlowPanels:
         elif key in ("z", "Z"):
             self.zoom = not self.zoom
         elif key in ("y", "Y"):
-            if self.current in {event["id"] for event in self.graph["events"]}:
-                ref = reference(self.graph, self.current)
+            if self.current in self.position:
+                ref = reference(self.full, self.current)
                 how = copy_text(ref)
                 self.message = (tr(f"복사함: {ref} · 대화에 붙여넣으세요", f"Copied: {ref} · paste it into a chat")
                                 if how == "pbcopy" else

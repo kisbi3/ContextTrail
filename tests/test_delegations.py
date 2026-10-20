@@ -32,7 +32,7 @@ def test_a_scan_names_the_codex_agent_a_delegation_gave_its_task_to(laboratory):
     mark_steps(found)
     step = {record.source_id: record.step for record in found}
     # The spawn's result names the path; a follow-up's target is under the caller's own path (the root's).
-    assert step["spawn"] == step["spawn-out"] == step["again"] == {"hint": "delegate", "agent": "/root/plots"}
+    assert step["spawn"] == step["spawn-out"] == step["again"] == {"hint": "delegate", "agent": "/root/plots", "to": "plots"}
     assert step["wait"] == {"hint": "delegate"}  # waiting hands nothing over
     nested = replace(found[3], lineage={"kind": "subagent", "parent_session_id": "root-1", "agent_path": "/root/plots"})
     assert delegated_path(nested, None) == "/root/plots/plots"
