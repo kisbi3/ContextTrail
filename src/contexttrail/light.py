@@ -119,9 +119,9 @@ def skeleton(assigned: list[SourceRecord], split_at_runs: bool = False) -> tuple
     """Events and `verifies` relations the tool steps show, with the records each rests on (call first).
     `split_at_runs` (pipeline v2) ends a run of edits at any other run in between, so the edits a run could have
     tried are a change of their own, the one a story's claimed check can name."""
-    from .analysis import tool_steps
+    from .analysis import tool_steps, whole_records
     turns = _turns(assigned)
-    content = {record.source_id: record.content for record in assigned}
+    content = {record.source_id: record.content for record in whole_records(assigned)}
     items: list[dict] = []
     edges: list[dict] = []
     last_edit: dict[int, dict] = {}   # per turn: the latest code edit a later test may verify
@@ -375,8 +375,8 @@ def _follow_polls(run: dict, steps: list[dict], by_id: dict[str, SourceRecord]) 
 def run_items(assigned: list[SourceRecord]) -> list[dict]:
     """The other runs of these records (scripts, analyses, jobs started), as work items `R1`, `R2`, … for the story's
     outline. A run becomes an event only when the story points at it, so a slice of many runs stays readable."""
-    from .analysis import tool_steps
-    by_id = {r.source_id: r for r in assigned}
+    from .analysis import tool_steps, whole_records
+    by_id = {r.source_id: r for r in whole_records(assigned)}
     found = []
     steps = tool_steps(assigned)
     from .journal import runs_note
@@ -422,8 +422,8 @@ def delegation_items(assigned: list[SourceRecord]) -> list[dict]:
     """The tasks these records hand to other agents (`DELEGATION_CALLS`: a sub-agent started, or given a new task),
     as work items `D1`, `D2`, … The story names them and may point a decision at them; at publish code hangs the
     work of the agent each one started under it (`schema.link_delegations`). A refused call is no delegation."""
-    from .analysis import DELEGATION_CALLS, tool_steps
-    by_id = {r.source_id: r for r in assigned}
+    from .analysis import DELEGATION_CALLS, tool_steps, whole_records
+    by_id = {r.source_id: r for r in whole_records(assigned)}
     found = []
     for step in tool_steps(assigned):
         if step["hint"] != "delegate" or step["tool"] not in DELEGATION_CALLS or step["failed"]:
