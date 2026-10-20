@@ -14,7 +14,7 @@ from .i18n import language, tr
 from .render import RELATION, evidence_excerpt, mermaid, status_labels, svg
 from .diagram import story_svg
 from .schema import folded_view, story_view
-from .freshness import check_from_store
+from .freshness import check_from_store, scanned_at
 from .freshness import summary as freshness_summary
 from .store import Store
 from .util import FlowError, dumps
@@ -56,7 +56,7 @@ class LocalViewer:
         # "reason"}. The page asks no plan (docs/DECISIONS.md), so it starts one only with a runner chosen and
         # the person's consent for it already given in a terminal.
         self.refresh_ready = refresh_ready or (lambda: {"ok": True})
-        self._fresh: tuple[int, str] | None = None
+        self._fresh: tuple[tuple, str] | None = None
         self.token = secrets.token_urlsafe(32)
         self.refresh_thread = None
         self.refresh_lock = threading.Lock()
@@ -73,8 +73,9 @@ class LocalViewer:
         """What the graph does not hold yet, counted once per graph version; empty without a scope."""
         if self.scope is None:
             return ""
-        if self._fresh is None or self._fresh[0] != version:
-            self._fresh = (version, freshness_summary(check_from_store(self.scope, self.store)))
+        key = (version, scanned_at(self.store))
+        if self._fresh is None or self._fresh[0] != key:
+            self._fresh = (key, freshness_summary(check_from_store(self.scope, self.store)))
         return self._fresh[1]
 
     def url(self, version: int | None = None, event_id: str | None = None) -> str:

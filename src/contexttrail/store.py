@@ -120,7 +120,7 @@ class Store:
             db.execute("PRAGMA journal_mode=WAL")
             row = db.execute("SELECT value FROM project_meta WHERE key='scope_id'").fetchone()
             if row and json.loads(row[0]) != scope_id:
-                raise FlowError(tr("저장된 프로젝트 scope와 요청 scope가 일치하지 않습니다.", "The saved project scope does not match the requested scope."))
+                raise FlowError(scope_mismatch(directory))
             db.execute("INSERT OR IGNORE INTO project_meta VALUES ('scope_id', ?)", (dumps(scope_id),))
             db.commit()
 
@@ -561,6 +561,15 @@ class Store:
             db.execute("UPDATE analysis_runs SET status='cancelled',finished_at=? WHERE finished_at IS NULL", (now(),))
 
 
+def scope_mismatch(directory: Path) -> str:
+    """Why a saved state does not open: the scope is the project's absolute folder (or Git directory) path."""
+    return tr(f"저장된 프로젝트 scope와 요청 scope가 일치하지 않습니다. 이 상태({directory})는 다른 경로의 프로젝트에서 "
+              "만들어졌습니다: 프로젝트 폴더나 Git 저장소를 옮기거나 이름을 바꾸면 이렇게 됩니다. 원래 경로로 되돌리면 다시 열립니다.",
+              f"The saved project scope does not match the requested scope. This state ({directory}) was made for the "
+              "project at another path: moving or renaming the project folder or its Git repository does this. Moving it "
+              "back to its old path opens it again.")
+
+
 class ReadOnlyStore(Store):
     """The saved state opened for reading only: nothing is created, migrated or written, and no file is left behind.
 
@@ -587,7 +596,7 @@ class ReadOnlyStore(Store):
         if version not in (1, GRAPH_SCHEMA):
             raise FlowError(tr(f"지원하지 않는 DB schema: {version}", f"Unsupported DB schema: {version}"))
         if row and self.scope_id and json.loads(row[0]) != self.scope_id:
-            raise FlowError(tr("저장된 프로젝트 scope와 요청 scope가 일치하지 않습니다.", "The saved project scope does not match the requested scope."))
+            raise FlowError(scope_mismatch(self.directory))
         return self
 
     @contextmanager

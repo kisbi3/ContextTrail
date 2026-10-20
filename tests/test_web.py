@@ -237,3 +237,18 @@ def test_the_page_starts_no_analysis_without_a_runner_and_its_consent(viewer):
     assert payload['refresh_with']=={'runner':'codex','model':'gpt-luna'}
     status,body,_=request(obj,'POST','/refresh',headers=headers,body='{"confirm":true}')
     assert status==409 and 'never consented' in json.loads(body)['error'] and not calls
+
+
+def test_the_freshness_phrase_is_counted_again_after_a_scan_elsewhere(viewer, monkeypatch):
+    from contexttrail import freshness, webview
+    obj,_,_=viewer
+    counted=[]
+    monkeypatch.setattr(freshness, "SCANNED_AT_SECONDS", 0)
+    monkeypatch.setattr(webview, "check_from_store", lambda scope, store: counted.append(1) or None)
+    obj.scope=object()
+    version=obj.store.graph()["version"]
+    obj.freshness(version); obj.freshness(version)
+    assert len(counted)==1  # once per graph version and scan
+    obj.store.set_meta("source_index", {"scanned_at": "2026-10-21T00:00:00Z", "files": {}})
+    obj.freshness(version)
+    assert len(counted)==2  # a scan run in another process changes what the graph lags

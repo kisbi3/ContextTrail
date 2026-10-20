@@ -292,6 +292,25 @@ def unaudited(store: Store, sources: dict[str, dict], units: list[dict]) -> dict
     return {"sessions": len(sessions), "records": records}
 
 
+_SCANNED_AT: dict[str, tuple[float, str | None]] = {}
+SCANNED_AT_SECONDS = 20
+
+
+def scanned_at(store: Store) -> str | None:
+    """When the project was last scanned, read at most every `SCANNED_AT_SECONDS` per state: a screen keys its
+    freshness phrase on it with the graph version, so a scan run elsewhere (another terminal, a hook) is seen
+    without reading the index at every redraw."""
+    key = str(store.directory)
+    at, value = _SCANNED_AT.get(key, (0.0, None))
+    if time.monotonic() - at > SCANNED_AT_SECONDS:
+        try:
+            value = (store.get_meta(INDEX_KEY) or {}).get("scanned_at")
+        except Exception:
+            pass
+        _SCANNED_AT[key] = (time.monotonic(), value)
+    return value
+
+
 def saved_homes(store: Store) -> dict[str, Path]:
     """The source directories a check reads: the project's saved ones, else the ones the last scan read (a scan's
     flags are not saved, but its index is what the check compares with), else the defaults (left out here)."""

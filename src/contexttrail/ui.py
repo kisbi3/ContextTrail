@@ -19,7 +19,7 @@ from .render import (ASCII_MARK, MARK, event_detail, linked_events, status_label
                      terminal_graph)
 from .agent_view import reference
 from .analysis import plan_choices_text, plan_text
-from .freshness import check_from_store
+from .freshness import check_from_store, scanned_at
 from .freshness import summary as freshness_summary
 from .git_context import Scope
 from .store import Store
@@ -969,14 +969,15 @@ class TerminalApp:
         self._token_checked_at = 0.0
         self._token_totals = (0, 0, 0)
         self._check = {}
-        self._fresh: tuple[int, str] | None = None
+        self._fresh: tuple[tuple, str] | None = None
 
     def _freshness(self, version: int) -> str:
         """What the graph does not hold yet, counted once per graph version (changed files are parsed up to a budget)."""
         if self.scope is None:
             return ""
-        if self._fresh is None or self._fresh[0] != version:
-            self._fresh = (version, freshness_summary(check_from_store(self.scope, self.store)))
+        key = (version, scanned_at(self.store))
+        if self._fresh is None or self._fresh[0] != key:
+            self._fresh = (key, freshness_summary(check_from_store(self.scope, self.store)))
         return self._fresh[1]
 
     @staticmethod
