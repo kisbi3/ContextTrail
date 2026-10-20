@@ -96,8 +96,12 @@ def selections(graph: dict) -> dict[str, list[str]]:
     newest-first order, status labels and tones, event references."""
     labels, tones = status_labels(graph), status_tones(graph)
     events = {event["id"]: event for event in graph["events"]}
+    # `_dealt_with` for every event at once: a failure revised later, or checking a change revised later.
+    revised = {edge["from_event_id"] for edge in graph["edges"] if edge["active"] and edge["relation"] == "revises"}
+    fixed = revised | {edge["to_event_id"] for edge in graph["edges"] if edge["active"]
+                       and edge["relation"] == "verifies" and edge["from_event_id"] in revised}
     failed = [event for event in newest_first(graph["events"])
-              if tones[event["id"]] == "fail" and event["status"] != "withdrawn" and not _dealt_with(graph, event["id"])]
+              if tones[event["id"]] == "fail" and event["status"] != "withdrawn" and event["id"] not in fixed]
     failed_ids = {event["id"] for event in failed}
     decided = [event for event in newest_first(graph["events"])
                if event["kind"] in ("decision", "action", "revision") and event["status"] != "withdrawn"
@@ -118,12 +122,16 @@ def selections(graph: dict) -> dict[str, list[str]]:
     items = [item for item in graph.get("open_items", []) if isinstance(item, dict) and item.get("status") != "resolved"
              and safe_text(item.get("text", ""), multiline=False)]
     open_lines = []
-    for item in sorted(items, key=latest, reverse=True):
+    for item in sorted(items, key=latest, reverse=True)[:dict(LIMITS)["open_items"]]:
         related = next((events[i] for i in item.get("related_event_ids", []) if i in events), None)
         where = f" ({event_row(graph, related, labels)['reference']})" if related else ""
         open_lines.append(f"- {_title(item['text'], ITEM_CHARS)}{where}")
-    return {"decisions": [line(event) for event in decided], "open_items": open_lines,
-            "failures": [line(event) for event in failed]}
+    # Only the first items of a section can be taken (`LIMITS`); the rest are not formatted (a reference is
+    # computed against every event: formatting all of them made the session-start hook grow with the graph).
+    limit = dict(LIMITS)
+    return {"decisions": [line(event) for event in decided[:limit["decisions"]]],
+            "open_items": open_lines[:limit["open_items"]],
+            "failures": [line(event) for event in failed[:limit["failures"]]]}
 
 
 HEADERS = {"decisions": "Recent decisions and changes:", "open_items": "Open items:",
