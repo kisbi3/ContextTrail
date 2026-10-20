@@ -346,6 +346,8 @@ def plan_work_units(state: StudioState) -> StudioState:
             raise Cancelled(tr("외부 전송에 동의하지 않아 분석하지 않았습니다.",
                             "Not analyzed: consent to send data externally was not given."))
         if units:
+            # The run will send: a language detected from the person's messages is the project's from now on.
+            language = engine.resolve_language(snapshot, save=True)
             # Before the first unit: what can be checked without a model (the CLI, its sandbox and its login;
             # `preflight` calls none). A runner that cannot work stops the run here, not unit by unit. No runner
             # is built before the consent above, nor after a cancel.
@@ -361,6 +363,8 @@ def plan_work_units(state: StudioState) -> StudioState:
     total = len(units)
     if state.get("mode") in {"live", "eval"}:
         units = units[:state["max_units"]]
+        if units:
+            engine.resolve_language(snapshot, save=True)
     pool = {r.source_id: r for r in snapshot.records}
     chosen = {i for unit in units for i in unit["sources"]}
     return {"planned_units": [{**unit, "provider": pool[unit["sources"][0]].provider}

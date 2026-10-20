@@ -149,7 +149,15 @@ def detect_language(records: list[SourceRecord], locale: str | None = None) -> s
         elif re.search(r"[A-Za-z]{3,}", record.content):
             code = (locale or "").split("_")[0].split(".")[0].lower()
             votes[_LATIN_LOCALES.get(code, DEFAULT_LANGUAGE)] += 1
-    return votes.most_common(1)[0][0] if votes else DEFAULT_LANGUAGE
+    if votes:
+        return votes.most_common(1)[0][0]
+    # No message of the person's yet: the locale's language, for this plan only (`Engine.resolve_language` saves
+    # nothing it did not read from a message).
+    code = (locale or "").split("_")[0].split(".")[0].lower()
+    return _LOCALE_LANGUAGES.get(code) or _LATIN_LOCALES.get(code, DEFAULT_LANGUAGE)
+
+
+_LOCALE_LANGUAGES = {"ko": "Korean", "ja": "Japanese", "zh": "Chinese", "ru": "Russian", "en": "English"}
 
 
 def prompt(name: str) -> str:
@@ -1902,6 +1910,8 @@ class Engine:
         self.review_capture: Callable[[dict], None] | None = None
         # Records of units the last plan held back after a failure of their own (`_hold_back_failed`).
         self.held_back: set[str] = set()
+        # The output language was detected for this plan, not configured or saved (`resolve_language`).
+        self._language_detected = False
         # The sessions this run takes ahead of the oldest-first order, and whether records outside them still
         # wait (then what the run adds is out of order); set by `_plan_units`.
         self.selection: dict | None = None
@@ -1925,13 +1935,18 @@ class Engine:
         mark_steps(logs.records)
         return Snapshot(logs.records + artifacts.records, list(dict.fromkeys(logs.limitations + artifacts.limitations)), logs.files)
 
-    def resolve_language(self, snapshot: Snapshot) -> str:
-        """The output language: as configured, else as saved for the project, else detected and saved."""
-        if not self.config.output_language:
+    def resolve_language(self, snapshot: Snapshot, *, save: bool = False) -> str:
+        """The output language: as configured, else as saved for the project, else detected. A detected language is
+        saved only when a run is about to send (`save`, after the consent) and it was read from the person's own
+        messages: a preview (`scan`), a declined run or a project with no message yet decides nothing for later."""
+        if not self.config.output_language or self._language_detected:
             saved = self.store.get_meta("output_language")
+            self._language_detected = not saved
             if not saved:
                 saved = detect_language(snapshot.records, os.environ.get("LC_ALL") or os.environ.get("LANG"))
-                self.store.set_meta("output_language", saved)
+                if save and any(is_user_prompt(record) for record in snapshot.records):
+                    self.store.set_meta("output_language", saved)
+                    self._language_detected = False
             self.config.output_language = saved
         return self.config.output_language
 
