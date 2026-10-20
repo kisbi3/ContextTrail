@@ -235,3 +235,15 @@ def test_a_codex_sub_agent_is_called_by_its_task_not_its_random_nickname():
     assert agent_name({"kind": "subagent", "agent_type": "Explore", "agent_path": "/root/x"}) == "Explore"
     (entry,) = authoring_of([{"provider": "codex", "lineage": codex}])
     assert entry == {"tool": "codex", "role": "subagent", "agent": "reproduction_review"}
+
+
+def test_a_codex_encrypted_task_message_is_no_task_text(laboratory):
+    """Codex hands a sub-agent its task as an encrypted token: the delegation keeps the agent's name, not the token."""
+    from dataclasses import replace
+    from contexttrail.light import code_title, delegation_items
+    _, _, _, _, make = laboratory
+    token = "gAAAAABqzES9w74mZ39zu0XLYSjkH519yRflWssQ0J1GEl3rfG0-NWEAISChxyz0123456789abcdef=="
+    call = replace(make("Tool: spawn_agent\n" + json.dumps({"task_name": "plots", "message": token}), key="spawn",
+                        role="tool_call"), tool_call_id="s1")
+    item, = delegation_items([call])
+    assert item["agent"] == "plots" and item["task"] == "" and "gAAAA" not in code_title(item, "Korean")

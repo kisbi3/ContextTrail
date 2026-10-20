@@ -33,10 +33,11 @@ TEST_FAILURES = re.compile(r"\b[1-9]\d* (?:failed|errors?)\b|^FAILED\b|^ERROR\b"
 
 
 def check_failed(text: str, tool_error: bool) -> bool:
-    """Whether a check's result shows a failure: its exit status when it has one, else a failure count."""
+    """Whether a check's result shows a failure: its exit statuses when it has any (one call can run several commands,
+    and a failing test followed by a passing `rg` is still a failure), else a failure count."""
     codes = EXIT_CODE.findall(text)
     if codes:
-        return int(codes[-1]) != 0
+        return any(int(code) != 0 for code in codes)
     return tool_error or bool(TEST_FAILURES.search(text))
 
 
@@ -390,6 +391,10 @@ def run_items(assigned: list[SourceRecord]) -> list[dict]:
 TASK_CHARS = 160
 
 
+# Codex encrypts the message it hands a sub-agent (a Fernet token, `gAAAAA…`); it says nothing to a reader.
+ENCRYPTED_TASK = re.compile(r"gAAAAA[A-Za-z0-9_=-]{40,}")
+
+
 def delegation_task(call: SourceRecord) -> tuple[str, str]:
     """Whom a delegation call handed a task and the task in one line (at most `TASK_CHARS`): Codex `spawn_agent`
     (`task_name`, `message`) and `followup_task` (`target`, `message`), Claude Code `Agent`/`Task` and opencode `task`
@@ -399,7 +404,8 @@ def delegation_task(call: SourceRecord) -> tuple[str, str]:
     agent = next((arguments[key] for key in ("task_name", "target", "subagent_type")
                   if isinstance(arguments.get(key), str) and arguments[key].strip()), "")
     task = next((arguments[key] for key in ("description", "message", "prompt")
-                 if isinstance(arguments.get(key), str) and arguments[key].strip()), "")
+                 if isinstance(arguments.get(key), str) and arguments[key].strip()
+                 and not ENCRYPTED_TASK.fullmatch(arguments[key].strip())), "")
     return agent.strip() or "sub-agent", _one_line(task, TASK_CHARS) if task else ""
 
 
