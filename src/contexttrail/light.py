@@ -19,7 +19,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .model import SourceRecord, is_queued_message, is_user_prompt, question_reply
-from .schema import STATUSES, STR, arr, enum, obj
+from .schema import STATUSES, STR, agent_name, arr, enum, obj
 
 # A citation code cuts is at most this many lines of what the model was shown; the rest is one `show` away.
 CITED_LINES = 20
@@ -570,7 +570,7 @@ def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], a
             del entry["status"]
         lineage = next(((by_id[s].lineage or {}) for s in item["sources"] if s in by_id), {})
         if lineage.get("kind") == "subagent":
-            entry["agent"] = lineage.get("agent_type") or lineage.get("agent_nickname") or "sub-agent"
+            entry["agent"] = agent_name(lineage) or "sub-agent"
         if item["status"] == "observed_failure":
             result = next((by_id[s] for s in item["sources"] if s in by_id and by_id[s].role == "tool_result"), None)
             if result is not None:
@@ -797,8 +797,10 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
         if link["relation"] == "verifies":
             refusals[n] = claimed_check(link, work_items, blocks, pool, position)
         elif link["relation"] == "answers":
-            refusals[n] = claimed_answer(link, requests, earlier, story_ids | {f"tmp:{w}" for w in work_items},
-                                         blocks, pool, position)
+            # Handing a task over is the work toward an answer; the answer is what the assistant then said or found.
+            refusals[n] = ("a task handed to another agent is not the answer" if work_items.get(link["to"], {}).get("delegate")
+                           else claimed_answer(link, requests, earlier, story_ids | {f"tmp:{w}" for w in work_items},
+                                               blocks, pool, position))
     pointed = {w for entry in answer.get("story", []) for w in entry.get("work", [])} | {
         end for n, link in enumerate(links) if not refusals.get(n) for end in (link["from"], link["to"])}
     shown_runs = [{**run, "kind": "outcome", "status": {"failed": "observed_failure", "passed": "observed_success"}.get(run["status"], "unknown")}
@@ -920,6 +922,27 @@ def story_extraction(answer: dict, items: list[dict], edges: list[dict], unit: d
                           "evidence": evidence, "active": True,
                           "rationale": "Linked by the story; its evidence blocks show the link." if link.get("blocks")
                           else "Linked by the story without a block that shows it."})
+    # One reply, one answer: answers of one request resting on the same reply blocks are the story naming each step on
+    # the way to it. The answer is the story event among them (all of them, when the reply holds several), else the
+    # last work item; the rest are left in the limitations.
+    replies: dict[tuple, list[dict]] = {}
+    for relation in relations:
+        if relation["relation"] == "answers":
+            cited = tuple(sorted((c["source_id"], c["start_line"], c["end_line"]) for c in relation["evidence"]))
+            replies.setdefault((relation["from_event_id"], cited), []).append(relation)
+    def last_record(event_id: str) -> int:
+        sources = item_sources.get(event_id.removeprefix("tmp:"), [])
+        return max((position.get(s, -1) for s in sources), default=-1)
+    for same in replies.values():
+        if len(same) < 2:
+            continue
+        told = [r for r in same if r["to_event_id"] in by_tmp]
+        kept = told or [max(same, key=lambda r: last_record(r["to_event_id"]))]
+        for relation in same:
+            if relation not in kept:
+                relations.remove(relation)
+                refused.append(f"{relation['from_event_id'].removeprefix('tmp:')} → "
+                               f"{relation['to_event_id'].removeprefix('tmp:')} (the same reply answers it through another event)")
     if taken:
         base["limitations"] = base["limitations"] + [
             f"story: event not kept, its ID names a request, work item, block or earlier event: {', '.join(taken)}."]

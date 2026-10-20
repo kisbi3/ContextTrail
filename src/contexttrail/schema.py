@@ -1406,6 +1406,18 @@ class EvidenceValidator:
 AGENT_TOOLS = ("claude", "codex", "opencode")
 
 
+def agent_name(lineage: dict) -> str:
+    """What a sub-agent is called: its type (Claude Code `Explore`, opencode's agent), else the task it was given (the
+    last part of a Codex agent's path, `/root/plots` → `plots`, the name its delegation used), else Codex's own
+    nickname for it (`Dirac`, a random name that says nothing about the work), else its role; empty when none."""
+    path = lineage.get("agent_path")
+    task = path.rstrip("/").rpartition("/")[2] if isinstance(path, str) else ""
+    for value in (lineage.get("agent_type"), task, lineage.get("agent_nickname"), lineage.get("agent_role")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def authoring_of(sources: list[dict]) -> list[dict]:
     """The agents behind the cited records: each one's tool, with the model, effort and provider its log named
     (`SourceRecord.authoring`); unique and sorted. Read off the records by code, never written by the model."""
@@ -1421,8 +1433,8 @@ def authoring_of(sources: list[dict]) -> list[dict]:
         lineage = source.get("lineage") or {}
         if lineage.get("kind") in ("subagent", "unattended"):
             entry["role"] = lineage["kind"]
-            agent = lineage.get("agent_type") or lineage.get("agent_nickname") or lineage.get("agent_role")
-            if isinstance(agent, str) and agent:
+            agent = agent_name(lineage)
+            if agent:
                 entry["agent"] = agent
         found.setdefault(tuple(sorted(entry.items())), entry)
     return [found[key] for key in sorted(found)]

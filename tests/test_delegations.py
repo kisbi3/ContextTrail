@@ -188,3 +188,50 @@ def test_an_analysis_hangs_a_claude_sub_agents_work_under_the_task_call(laborato
     active = [e for e in graph["edges"] if e["active"]]
     assert {e["to_event_id"] for e in active if e.get("origin") == "delegation"}
     assert not any(e.get("origin") == "dialog_turn" and e["to_event_id"] in {w["id"] for w in work} for e in active)
+
+
+def test_a_delegation_is_not_a_requests_answer_and_one_reply_gives_one_answer(laboratory):
+    _, _, _, _, make = laboratory
+    found = codex_parent(make)
+    patch = "Tool: Edit\n" + json.dumps({"file_path": "/work/app/src/calc.py", "old_string": "a", "new_string": "b"})
+    run = "Tool: Bash\n" + json.dumps({"command": "python scripts/build.py"})
+    found[-1:-1] = [replace(make(patch, key="e1", role="tool_call", provider="codex", session="root-1"), tool_call_id="c7"),
+                    replace(make(run, key="r1", role="tool_call", provider="codex", session="root-1"), tool_call_id="c9"),
+                    replace(make(patch.replace('"b"', '"c"'), key="e2", role="tool_call", provider="codex", session="root-1"),
+                            tool_call_id="c8")]
+    from contexttrail.light import request_items, skeleton
+    items = sorted(skeleton(found, split_at_runs=True)[0] + delegation_items(found),
+                   key=lambda item: [r.source_id for r in found].index(item["sources"][0]))
+    blocks = written_blocks(found)
+    reply = blocks[-1]["id"]
+    (asked,) = request_items(found)
+    edits = [item["id"] for item in items if item.get("edit")]
+    assert len(edits) == 2  # the run between them ends the first
+    unit = {"id": "u", "sources": [r.source_id for r in found]}
+    pool = {r.source_id: r for r in found}
+    provided = {r.source_id: [(1, len(r.content.splitlines()))] for r in found}
+    def answers(story, answered_by):
+        answer = {"work": [], "story": story, "links": [], "turn_summary": None,
+                  "requests": [{"id": asked["id"], "answered_by": [{"item": i, "blocks": [reply]} for i in answered_by]}]}
+        output, _ = story_extraction(answer, items, [], unit, "snap", pool, provided, EvidenceValidator(pool, provided),
+                                     blocks, [], "Korean")
+        return {e["to_event_id"] for e in output["edge_candidates"] if e["relation"] == "answers"}, output["limitations"]
+    decision = [{"id": "N1", "kind": "decision", "status": "adopted", "title": "그림은 맡김", "why": None, "summary": "",
+                 "blocks": [reply], "work": ["D1"]}]
+    kept, notes = answers(decision, ["N1", "D1", "D2"])
+    assert kept == {"tmp:N1"}  # the decision the reply states, not each task handed over
+    assert any("D1 (a task handed to another agent is not the answer)" in note for note in notes)
+    kept, notes = answers([], edits)  # two edits named for one reply: the last one delivered it
+    assert kept == {f"tmp:{edits[-1]}"}
+    assert any("(the same reply answers it through another event)" in note for note in notes)
+
+
+def test_a_codex_sub_agent_is_called_by_its_task_not_its_random_nickname():
+    from contexttrail.schema import agent_name, authoring_of
+    codex = {"kind": "subagent", "parent_session_id": "root-1", "agent_path": "/root/reproduction_review",
+             "agent_nickname": "Dirac"}
+    assert agent_name(codex) == "reproduction_review"
+    assert agent_name({**codex, "agent_path": None}) == "Dirac"  # nothing better to call it
+    assert agent_name({"kind": "subagent", "agent_type": "Explore", "agent_path": "/root/x"}) == "Explore"
+    (entry,) = authoring_of([{"provider": "codex", "lineage": codex}])
+    assert entry == {"tool": "codex", "role": "subagent", "agent": "reproduction_review"}
