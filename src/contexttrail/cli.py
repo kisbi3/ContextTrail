@@ -197,7 +197,7 @@ def parser() -> argparse.ArgumentParser:
     sub = commands.add_parser("find", help=tr("저장된 사건 검색(검색어 없으면 최근 사건과 열린 항목). AI 호출 없음",
                                               "Search saved events (recent events and open items without a query); no AI calls"))
     sub.add_argument("query", nargs="?", default="", help=tr("제목·설명·원문 근거에 모두 들어 있어야 할 단어들", "Words that must all appear in the title, summary or quoted evidence"))
-    sub.add_argument("folder", nargs="?", default=".")
+    sub.add_argument("folder", nargs="?", default=None)
     sub.add_argument("--limit", type=int, default=20)
     sub.add_argument("--json", action="store_true")
     sub = commands.add_parser("show", help=tr("사건 하나의 설명·연결·원문 근거. AI 호출 없음",
@@ -422,9 +422,14 @@ def _brief(result: dict) -> None:
 
 
 def _find(args) -> int:
-    if args.folder == "." and args.query and Path(args.query).expanduser().is_dir():
-        # `find .` or `find ~/proj`: a folder alone is where to look, not words to look for.
-        args.query, args.folder = "", args.query
+    if args.folder is None:
+        # `find .` or `find ~/proj`: a path alone is where to look, not words to look for. A plain word that happens
+        # to name a subfolder (`find docs`) is still a search.
+        looks_like_path = args.query in (".", "..") or args.query.startswith(("/", "~", "./", "../")) or os.sep in args.query
+        if args.query and looks_like_path and Path(args.query).expanduser().is_dir():
+            args.query, args.folder = "", args.query
+        else:
+            args.folder = "."
     elif not Path(args.folder).expanduser().is_dir():
         raise FlowError(tr(f"폴더가 없습니다: {args.folder}. 여러 단어를 찾으려면 따옴표로 묶으세요: find \"{args.query} {args.folder}\"",
                            f"No such folder: {args.folder}. To search for several words, quote them: find \"{args.query} {args.folder}\""))
@@ -709,8 +714,9 @@ def main(argv: list[str] | None = None) -> int:
     if threading.current_thread() is threading.main_thread():
         # A host that stops the run with terminate() (SIGTERM) or a closed terminal (SIGHUP) stops it like Ctrl-C,
         # so the runner's process group is killed and the run is recorded as cancelled, not left calling a model.
+        # Only a default handler is replaced: `nohup` ignores SIGHUP so the run outlives the session, and keeps it.
         for name in ("SIGTERM", "SIGHUP"):
-            if hasattr(signal, name):
+            if hasattr(signal, name) and signal.getsignal(getattr(signal, name)) is signal.SIG_DFL:
                 signal.signal(getattr(signal, name), _stop_on_signal)
     _screen_language(_language_option(argv))
     args = parser().parse_args(_default_command(argv))

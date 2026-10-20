@@ -195,13 +195,29 @@ def test_serve_prints_its_link_at_once_and_stops_on_sigterm(tmp_path):
     must stop it like Ctrl-C."""
     import os, signal, subprocess, sys
     folder = tmp_path / "project"; folder.mkdir()
+    previous = signal.getsignal(signal.SIGHUP)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)  # as nohup leaves it
+    try:
+        from contexttrail.cli import main
+        main(["status", str(folder)])
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN  # nohup's choice is kept
+    finally:
+        signal.signal(signal.SIGHUP, previous)
     env = {**os.environ, "CONTEXTTRAIL_LANGUAGE": "en"}
     process = subprocess.Popen([sys.executable, "-m", "contexttrail", "serve", str(folder), "--port", "0"],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
     try:
-        lines = []
-        while not any("Access URL" in line for line in lines) and len(lines) < 6:
-            lines.append(process.stdout.readline())
+        import select, time
+        output, deadline = b"", time.monotonic() + 15
+        # A deadline, so a link stuck in the buffer (the defect this guards) fails the test instead of hanging it.
+        while b"Access URL" not in output and time.monotonic() < deadline:
+            ready, _, _ = select.select([process.stdout], [], [], max(0.0, deadline - time.monotonic()))
+            if ready:
+                chunk = os.read(process.stdout.fileno(), 4096)
+                if not chunk:
+                    break
+                output += chunk
+        lines = output.decode("utf-8", "replace").splitlines()
         assert any("Access URL" in line and "#token=" in line for line in lines)
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=10) == 0  # stopped like Ctrl-C, not killed by the signal (-15)

@@ -74,6 +74,10 @@ def test_a_check_fails_by_its_exit_status_else_by_a_failure_count():
     # One Codex call ran the tests (exit 1) and then three searches (exit 0): the check failed.
     mixed = '{"exit_code": 1, "output": "2 failed, 184 passed"}\n{"exit_code": 0}\n{"exit_code": 0}\n{"exit_code": 0}'
     assert check_failed(mixed, False)
+    # One status covers a whole shell line: a test run piped to tail, or followed by a search, exits 0 after failures.
+    piped = "Exit code: 0\nWall time: 3.1 seconds\nOutput:\nFAILED tests/test_x.py::test_a\n=== 2 failed, 184 passed in 3.0s ==="
+    assert check_failed(piped, False, test=True) and not check_failed(piped, False)
+    assert not check_failed("Exit code: 0\nOutput:\n12 passed in 0.4s", False, test=True)
 
 
 def test_a_scan_marks_what_each_tool_call_did_and_an_event_reads_it_off_its_citations(laboratory):

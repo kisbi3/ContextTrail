@@ -720,3 +720,25 @@ def test_a_wrapper_that_wrote_notes_is_never_their_evidence(project, tmp_path):
                   quotes=["All concurrency tests pass now"])
     evidence = store.evidence(result["event"]["evidence_ids"][0])
     assert evidence["source"]["role"] == "assistant"
+
+
+def test_an_edit_that_shows_note_flags_stays_quotable(project, tmp_path):
+    """Only a call that ran notes with this quote is excluded; an edit of a test or a skill that mentions the flags is work."""
+    folder, scope, store = project
+    path = tmp_path / "claude" / "projects" / "app" / f"{SESSION}.jsonl"
+    edit = row(folder, 7, "assistant", [{"type": "tool_use", "id": "t5", "name": "Edit", "input": {
+        "file_path": str(folder / "test_notes.py"), "old_string": "pass",
+        "new_string": "run(['note', '--kind', 'outcome', '--quote', 'x'])\nassert reminder_was_sent_only_once_per_turn()"}}])
+    path.write_text(path.read_text() + dumps(edit) + "\n", encoding="utf-8")
+    result = note(scope, store, kind="action", title="Test the reminder",
+                  quotes=["assert reminder_was_sent_only_once_per_turn()"])
+    assert store.evidence(result["event"]["evidence_ids"][0])["source"]["role"] == "tool_call"
+
+
+def test_a_run_after_the_edit_verifies_it_though_the_change_also_quotes_a_later_message(project):
+    _, scope, store = project
+    change = note(scope, store, kind="action", title="Lock the store",
+                  quotes=["write_atomically(path)", "All concurrency tests pass now"])  # the edit 10:01, a message 10:05
+    result = note(scope, store, kind="outcome", status="observed_failure", title="Two writers fail",
+                  quotes=["test_two_writers - JSONDecodeError"], relations={"verifies": [change["ref"]]})  # the run 10:04
+    assert [edge["relation"] for edge in result["edges"]] == ["verifies"]

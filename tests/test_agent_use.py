@@ -309,3 +309,11 @@ def test_find_takes_a_lone_folder_as_where_to_look_and_explains_unquoted_words(t
     assert not (elsewhere / ".contexttrail").exists()
     assert main(["find", "story", "view"]) == 1
     assert 'find "story view"' in capsys.readouterr().err
+
+
+def test_find_searches_a_word_that_names_a_subfolder(tmp_path, monkeypatch, capsys):
+    from contexttrail.cli import main
+    (tmp_path / "docs").mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert main(["find", "docs"]) == 0
+    assert not (tmp_path / "docs" / ".contexttrail").exists()  # this folder's graph was asked, not the subfolder's

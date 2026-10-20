@@ -280,6 +280,8 @@ def test_an_observed_result_without_a_tool_result_and_a_tool_basis_without_a_too
 def test_a_change_stored_with_an_observed_status_reads_as_applied_never_as_a_success():
     """Graphs written before the rule gave some changes `observed_success`; the screens show them as unverified."""
     from contexttrail.render import status_tones
-    graph = {"events": [{"id": "c", "kind": "action", "status": "observed_success", "title": "repo search"}],
+    graph = {"events": [{"id": "c", "kind": "action", "status": "observed_success", "title": "repo search"},
+                        {"id": "f", "kind": "action", "status": "observed_failure", "title": "install attempt"}],
              "edges": []}
     assert status_labels(graph)["c"] == "변경 적용 · 미검증" and status_tones(graph)["c"] == "warn"
+    assert status_labels(graph)["f"] == "관측 실패" and status_tones(graph)["f"] == "fail"  # a failure stays one

@@ -252,8 +252,11 @@ def writes_this_note(record: SourceRecord, quote: str) -> bool:
     a script of note calls) that `runs_note` cannot see. Such a call holds every quote it passed, so it would be cited
     as its own evidence; the edit, run or message the quote came from is the source."""
     head = quote.strip()[:40]
-    return (record.role == "tool_call" and bool(head) and "--quote" in record.content and "--kind" in record.content
-            and (head in record.content or json.dumps(head)[1:-1] in record.content))
+    if record.role != "tool_call" or not head or step_hint(record)[2] == "edit":
+        return False  # an edit of a file that shows note flags (a test, a skill) is real work, and quotable
+    command = _command_text(record.content.partition("\n")[2], "\n")
+    return "--kind" in command and any(
+        re.search(r"--quote[ =]+['\"]?" + re.escape(text), command) for text in {head, json.dumps(head)[1:-1]})
 
 
 def locate(records: list[SourceRecord], quote: str) -> dict[str, Any]:
@@ -390,9 +393,12 @@ def _check_order(graph: dict, store: Store, changes: list[str], kind: str, cited
         event = events.get(change)
         if event is None:
             continue
-        items = store.evidence_many(event.get("evidence_ids", []))
-        times = [str(item.get("source", {}).get("recorded_at")) for item in items.values()
-                 if item.get("source", {}).get("recorded_at")] or ([event["recorded_at"]] if event.get("recorded_at") else [])
+        items = [item for item in store.evidence_many(event.get("evidence_ids", [])).values()
+                 if item.get("source", {}).get("recorded_at")]
+        # The change is its edits and runs; a message about it written later is no part of what the run checked.
+        tool = [item for item in items if item["source"].get("role") in ("tool_call", "tool_result")]
+        times = [str(item["source"]["recorded_at"]) for item in (tool or items)] or (
+            [event["recorded_at"]] if event.get("recorded_at") else [])
         checked, changed = max(map(_seconds, ran)), max(map(_seconds, times), default=0.0)
         if checked and changed and checked < changed:
             raise FlowError(f"--verifies {change}: the quoted output ran before that change's last cited record, so it cannot have checked it. Quote a run after the change, or leave "

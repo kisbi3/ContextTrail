@@ -590,10 +590,14 @@ class FlowPanels:
         if self.story and event_id in self.position and event_id not in self.turn_of and event_id not in {
                 event["id"] for event in self.graph["events"]}:
             # A link, search or flag led to a step the story view folded: show every step.
+            placed = event_id in self.graph.get("homes", {})
             self.story = False
             self._view()
-            self.message = tr("전체 보기로 바꿈: 그 단계는 핵심 보기에서 상자 안에 접혀 있습니다 (v로 돌아감)",
-                              "Switched to the full view: that step is folded into a box in the story view (v goes back)")
+            self.message = (tr("전체 보기로 바꿈: 그 단계는 핵심 보기에서 상자 안에 접혀 있습니다 (v로 돌아감)",
+                               "Switched to the full view: that step is folded into a box in the story view (v goes back)")
+                            if placed else
+                            tr("전체 보기로 바꿈: 그 단계는 핵심 보기의 어느 상자에도 들지 않습니다 (v로 돌아감)",
+                               "Switched to the full view: that step is in no box of the story view (v goes back)"))
         if remember and self.current is not None:
             self.history = (self.history + [self.current])[-50:]
         self.current, self.detail_top = event_id, 0
@@ -1083,8 +1087,10 @@ class TerminalApp:
         graph, styles = self.graph, self.panels.styles
         check = self._check = self._read(lambda: self.store.get_meta("last_check", {}), self._check)
         events, relations = len(graph["events"]), sum(e["active"] for e in graph["edges"])
+        unplaced = graph.get("unplaced") or 0  # story view: steps whose session has no box to fold into
         self._put(screen, 0, 1, f"◆ CONTEXTTRAIL   {self.title}   v{graph['version']}   ·   "
-                  + tr(f"{events} 사건 · {relations} 관계", f"{events} events · {relations} relations"),
+                  + tr(f"{events} 사건 · {relations} 관계", f"{events} events · {relations} relations")
+                  + (tr(f" · 상자에 들지 않은 단계 {unplaced} (v)", f" · {unplaced} steps in no box (v)") if unplaced else ""),
                   curses.A_BOLD | styles["frame"])
         none = tr("없음", "none")
         analyzed, checked, state = graph.get("analyzed_at") or none, check.get("at", none), check.get("status", "no_data")

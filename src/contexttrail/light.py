@@ -32,12 +32,21 @@ EXIT_CODE = re.compile(r'(?:exit(?:ed with)? code|"exit_code")\s*[:=]?\s*(-?\d+)
 TEST_FAILURES = re.compile(r"\b[1-9]\d* (?:failed|errors?)\b|^FAILED\b|^ERROR\b", re.MULTILINE)
 
 
-def check_failed(text: str, tool_error: bool) -> bool:
+# A test runner's closing summary that counts failures ("=== 2 failed, 184 passed in 3.0s ===", "Tests: 1 failed").
+SUMMARY_FAILURES = re.compile(r"\b[1-9]\d* (?:failed|errors?)\b")
+
+
+def check_failed(text: str, tool_error: bool, *, test: bool = False) -> bool:
     """Whether a check's result shows a failure: its exit statuses when it has any (one call can run several commands,
-    and a failing test followed by a passing `rg` is still a failure), else a failure count."""
+    and a failing test followed by a passing `rg` is still a failure), else a failure count. For a test run (`test`),
+    a failure count in its last lines fails it even under exit status 0: one status covers a whole shell line, so
+    `pytest -q | tail -3` or `pytest; rg …` exits 0 after failing tests."""
     codes = EXIT_CODE.findall(text)
     if codes:
-        return any(int(code) != 0 for code in codes)
+        if any(int(code) != 0 for code in codes):
+            return True
+        tail = "\n".join(text.rstrip().splitlines()[-5:])
+        return test and bool(SUMMARY_FAILURES.search(tail))
     return tool_error or bool(TEST_FAILURES.search(text))
 
 
@@ -135,7 +144,7 @@ def skeleton(assigned: list[SourceRecord], split_at_runs: bool = False) -> tuple
                 previous = None  # the call ran a command after its patch: the edits up to it are a change of their own
             continue
         if step["hint"] == "test" and step["result"]:
-            failed = check_failed(content.get(step["result"], ""), step["failed"])
+            failed = check_failed(content.get(step["result"], ""), step["failed"], test=True)
             item = {"id": f"K{len(items) + 1}", "kind": "outcome", "turn": turn, "sources": [step["result"], step["call"]],
                     "status": "observed_failure" if failed else "observed_success", "check": step["target"],
                     "title": ("Check failed: " if failed else "Check passed: ") + step["target"][:60]}

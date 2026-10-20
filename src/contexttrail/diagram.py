@@ -27,7 +27,7 @@ from wcwidth import wcswidth, wcwidth
 
 from .i18n import tr
 from .render import ASCII_MARK, MARK, RELATION, _when, delegate_label, kind_label, status_labels, status_tones
-from .schema import STORY_VIEW
+from .schema import STORY_VIEW, event_times
 from .util import cell_slice, safe_text
 
 OBSERVED = {"observed_success", "observed_failure"}
@@ -287,9 +287,11 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
 
     groups = _flows(events, edges)
 
-    def when(key: str) -> tuple[str, int]:
-        # Events of different sessions are listed in the order they were analysed; time decides what came next.
-        return (by_id[key].get("recorded_at") or "", order[key])
+    times = event_times(events)
+
+    def when(key: str) -> tuple[float, int]:
+        # When it happened (offsets parsed, a missing time its neighbour's), as the list is ordered (`folded_view`).
+        return (times[key][0], order[key])
 
     # Two lanes: the story on the left (requests, decisions, code changes, failures, claims), the steps in between
     # on the right (checks, documentation edits, sub-agents and runs of another model), each beside a main step.
@@ -883,6 +885,14 @@ def story_svg(view: dict) -> str:
             bottom = y + height
             y = bottom + gap
             previous = key
+    if view.get("unplaced"):
+        # Work whose session has no box to fold into (a sub-agent no delegation reaches yet) is in no box here.
+        note = tr(f"상자에 들지 않은 단계 {view['unplaced']}개: 그 세션에 요청·의도가 없습니다. 위 버튼(모든 단계)에서 보입니다.",
+                  f"{view['unplaced']} steps are in no box: their session has no request or intention. The button "
+                  "above (every step) shows them.")
+        for n, part in enumerate(_wrap(note, 76)):
+            body.append(f'<text x="32" y="{y + 10 + 20 * n}" fill="#617686" font-size="13">{html.escape(part)}</text>')
+        y += 20 * len(_wrap(note, 76)) + 10
     if not events:
         empty = (tr("핵심 보기로 그릴 요청·결정·결론이 없습니다. 위 버튼으로 모든 단계를 보세요.",
                     "Nothing to draw in the story view (no requests, decisions or findings); the button above shows every step.")

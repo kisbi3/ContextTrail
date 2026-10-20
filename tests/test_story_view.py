@@ -113,5 +113,7 @@ def test_work_never_folds_into_another_sessions_box_and_a_choice_stays_in_its_tu
     assert "elsewhere" not in view["homes"] and "drawn" not in view["homes"]  # no box of their own session
     assert view["unplaced"] == 2
     assert not any(e.get("folded_agents") for e in view["events"])
+    from contexttrail.diagram import story_svg
+    assert "상자에 들지 않은 단계 2개" in story_svg(view)  # said, not silently dropped
     turns = dict(request_turns({"version": 1, "events": events, "edges": []}))
     assert turns["ask"][:3] == ["ask", "plan", "choice"]

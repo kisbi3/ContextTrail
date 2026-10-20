@@ -101,10 +101,11 @@ def request_links(graph: dict) -> tuple[set[str], set[str]]:
     return answered, followed - answered
 
 
-# A change and the statuses it is drawn with: applied or reported, and the observed statuses older graphs gave a
-# change itself, which read as applied.
+# A change and the statuses it is drawn with: applied or reported, and the observed success older graphs gave a
+# change itself, which reads as applied (never as a success badge). A change stored as an observed failure keeps
+# reading as a failure.
 CHANGE_KINDS = ("action", "revision")
-CHANGE_STATUSES = ("applied", "reported_complete", "observed_success", "observed_failure")
+CHANGE_STATUSES = ("applied", "reported_complete", "observed_success")
 # The heads code puts on a check's title (`light.code_title`, `light.skeleton`).
 CHECK_TITLE_HEADS = ("검사 실패: ", "검사 통과: ", "Check failed: ", "Check passed: ")
 
