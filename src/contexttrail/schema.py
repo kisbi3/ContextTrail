@@ -1662,7 +1662,7 @@ def story_view(graph: dict) -> dict:
     agent handed work there, with the title of what it last said (None while its work waits for analysis).
     Only relations between two drawn boxes stay; every event keeps its number in the whole list (`number`), and the
     tones and labels are those of the whole graph (`tones`, `labels`), so a request answered by a folded step still
-    reads answered. `homes` maps each folded event to its box. Display only: the stored graph is unchanged, and
+    reads answered. `homes` maps each folded event to its box; `hidden` counts the events not drawn. Display only: the stored graph is unchanged, and
     the detail, `find`, `show` and the agents read the whole graph."""
     from .render import status_labels, status_tones
     events = graph["events"]
@@ -1757,7 +1757,7 @@ def story_view(graph: dict) -> dict:
                 if agents.get(event["id"]) else {})})
     edges = [edge for edge in graph["edges"] if edge["from_event_id"] in shown and edge["to_event_id"] in shown]
     return {**graph, "events": view_events, "edges": edges, "view": STORY_VIEW, "tones": tones, "labels": labels,
-            "homes": {key: value for key, value in homes.items() if value}}
+            "homes": {key: value for key, value in homes.items() if value}, "hidden": len(events) - len(view_events)}
 
 
 def step_of(event: dict, sources: list[dict]) -> str | None:

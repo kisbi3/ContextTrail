@@ -97,3 +97,84 @@ def test_english_screen_serves_english_page_and_labels(viewer):
     texts=[text for text,_ in event_detail(graph,event['id'],obj.store.evidence)]
     assert 'What happened' in texts and not any(re.search('[가-힣]',text) for text in texts if 'Source evidence' in text)
     assert not calls
+
+
+def test_the_page_opens_on_the_story_view_which_only_draws_what_the_page_imports(viewer):
+    import xml.etree.ElementTree as ET
+    obj,calls,_=viewer
+    status,data,_=request(obj,'GET','/graph.svg?view=story')
+    assert status==200 and b'data-event-id' in data
+    allowed={'svg','defs','marker','path','g','rect','text'}  # the page's own whitelist (app.js)
+    document=ET.fromstring(data)
+    assert {node.tag.split('}')[1] for node in document.iter()}<=allowed
+    assert not any(name.startswith('on') or name in ('href','style') for node in document.iter() for name in node.attrib)
+    assert request(obj,'GET','/graph.svg?view=other')[1]==request(obj,'GET','/graph.svg')[1]  # anything else: every step
+    page=request(obj,'GET','/',auth=False)[1].decode()
+    script=request(obj,'GET','/app.js',auth=False)[1].decode()
+    assert 'id="view"' in page and '"/graph.svg?view=story"' in script and '"story"' in script
+    assert not calls
+
+
+def test_the_story_svg_escapes_what_the_model_wrote_and_names_each_agent_once():
+    from contexttrail.diagram import story_svg
+    from contexttrail.schema import story_view
+    events=[{"id":"q","kind":"question","status":"asked","title":"<script>alert(1)</script> 해 주세요","summary":"","actor":"user",
+             "basis":"explicit_statement","evidence_ids":[],"session_ids":["s"],"recorded_at":"10:00"},
+            {"id":"d","kind":"decision","status":"adopted","title":"맡김","summary":"","actor":"assistant",
+             "basis":"explicit_statement","evidence_ids":[],"session_ids":["s"],"recorded_at":"10:01"},
+            {"id":"h","kind":"action","status":"applied","title":"위임","summary":"","actor":"assistant","basis":"tool_record",
+             "step":"delegate","delegated_to":"plots & <b>","evidence_ids":[],"session_ids":["s"],"recorded_at":"10:02"},
+            {"id":"w","kind":"outcome","status":"reported_complete","title":"그림 \"완성\"","summary":"","actor":"assistant",
+             "basis":"explicit_statement","authoring":[{"tool":"codex","role":"subagent","agent":"plots & <b>"}],
+             "delegated_by":"h","evidence_ids":[],"session_ids":["s2"],"recorded_at":"10:03"}]
+    edges=[{"id":"e1","from_event_id":"q","to_event_id":"d","relation":"answers","basis":"explicit","active":True,"evidence_ids":[]},
+           {"id":"e2","from_event_id":"d","to_event_id":"h","relation":"motivates","basis":"inferred","active":True,"evidence_ids":[]}]
+    out=story_svg(story_view({"version":1,"events":events,"edges":edges}))
+    assert "<script>" not in out and "&lt;script&gt;" in out and "<b>" not in out
+    assert out.count("↳ plots &amp; &lt;b&gt;: 그림 &quot;완성&quot;")==1 or out.count("↳ plots &amp; &lt;b&gt;: 그림 \"완성\"")==1
+    assert 'data-event-id="h"' not in out and 'data-event-id="w"' not in out  # folded into the decision's box
+    assert ">답변<" in out  # neighbours joined by their relation
+
+
+def test_the_story_svg_keeps_one_meaning_for_a_dashed_line_and_lights_a_folded_step():
+    from contexttrail.diagram import story_svg
+    from contexttrail.schema import story_view
+    def event(key, kind, status, at, session="s", **more):
+        return {"id": key, "kind": kind, "status": status, "title": key, "summary": "", "actor": "assistant",
+                "basis": "explicit_statement", "evidence_ids": [], "session_ids": [session], "recorded_at": at, **more}
+    events = [event("g", "goal", "adopted", "10:00"), event("d", "decision", "adopted", "10:01", title="결정￿ 하나"),
+              event("e", "action", "applied", "10:02", basis="tool_record"), event("x", "decision", "adopted", "10:03"),
+              event("o", "goal", "adopted", "10:04", session="other")]
+    edges = [{"id": "e1", "from_event_id": "g", "to_event_id": "d", "relation": "motivates", "basis": "inferred",
+              "active": True, "evidence_ids": []},
+             {"id": "e2", "from_event_id": "d", "to_event_id": "e", "relation": "motivates", "basis": "explicit",
+              "active": True, "evidence_ids": []}]
+    out = story_svg(story_view({"version": 1, "events": events, "edges": edges}))
+    assert "￿" not in out and 'aria-label="02 · 결정 하나 ·' in out  # the whole title, nothing XML cannot carry
+    assert out.count("stroke-dasharray") == 1 and "동기·추정" in out  # dashed means inferred, as on the rest of the page
+    assert out.count("marker-end") == 1  # d → x share no relation: no line between them
+    assert "흐름 1/2" in out and "흐름 2/2" in out  # the other session is a flow of its own
+    assert 'data-folds="e"' in out  # the edit folded into the decision that led to it
+    work_only = story_view({"version": 1, "events": [events[2]], "edges": []})
+    assert "모든 단계를 보세요" in story_svg(work_only)
+
+
+def test_the_story_svg_draws_every_relation_between_neighbours_and_wraps_its_empty_message():
+    from contexttrail import i18n
+    from contexttrail.diagram import story_svg
+    from contexttrail.schema import story_view
+    def event(key, kind, at, **more):
+        return {"id": key, "kind": kind, "status": "adopted", "title": key, "summary": "", "actor": "assistant",
+                "basis": "explicit_statement", "evidence_ids": [], "session_ids": ["s"], "recorded_at": at, **more}
+    events = [event("a", "goal", "10:00"), event("b", "decision", "10:01")]
+    edges = [{"id": "e1", "from_event_id": "a", "to_event_id": "b", "relation": "motivates", "basis": "inferred",
+              "active": True, "evidence_ids": []},
+             {"id": "e2", "from_event_id": "a", "to_event_id": "b", "relation": "revises", "basis": "explicit",
+              "active": True, "evidence_ids": []}]
+    out = story_svg(story_view({"version": 1, "events": events, "edges": edges}))
+    assert "동기·추정·수정" in out and "stroke-dasharray" not in out  # one explicit relation: a solid line
+    assert 'class="story"' in out
+    i18n.set_language("en")
+    empty = story_svg(story_view({"version": 1, "events": [event("w", "action", "10:02", basis="tool_record")], "edges": []}))
+    lines = [line for line in empty.split("<text")[1:] if 'font-size="15"' in line]
+    assert len(lines) >= 2 and "every step" in empty  # wrapped onto lines that fit, the pointer to the button kept

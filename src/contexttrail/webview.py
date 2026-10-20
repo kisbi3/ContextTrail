@@ -11,7 +11,8 @@ from urllib.parse import parse_qs, quote, urlsplit
 from .agent_view import reference
 from .i18n import language, tr
 from .render import RELATION, evidence_excerpt, mermaid, status_labels, svg
-from .schema import folded_view
+from .diagram import story_svg
+from .schema import folded_view, story_view
 from .freshness import check_from_store
 from .freshness import summary as freshness_summary
 from .store import Store
@@ -136,7 +137,10 @@ class LocalViewer:
                             "freshness": "" if refreshing else viewer.freshness(graph["version"]), "refreshing": refreshing,
                             "refresh_result": viewer.refresh_result, "can_refresh": viewer.refresh_callback is not None})
                     if path == "/graph.svg":
-                        return self.send_data(200, svg(graph), "image/svg+xml; charset=utf-8")
+                        # The story view (the page's default) or every step; any other value is every step.
+                        story = parse_qs(urlsplit(self.path).query).get("view", [""])[0] == "story"
+                        return self.send_data(200, story_svg(story_view(graph)) if story else svg(graph),
+                                              "image/svg+xml; charset=utf-8")
                     if path == "/graph.mmd":
                         return self.send_data(200, mermaid(graph), "text/plain; charset=utf-8")
                     if path.startswith("/events/"):

@@ -93,8 +93,9 @@ def merge_focus(*ranges: list | None) -> list[list[int]]:
 
 def safe_text(value: Any, *, multiline: bool = True) -> str:
     text = _ESC.sub("", str(value))
+    # U+FFFE and U+FFFF are no characters XML can carry: one would make a whole SVG view unreadable.
     text = "".join(c for c in text if (c == "\n" and multiline) or
-                   (unicodedata.category(c) not in {"Cc", "Cf", "Cs"}))
+                   (unicodedata.category(c) not in {"Cc", "Cf", "Cs"} and c not in "\ufffe\uffff"))
     return text if multiline else " ".join(text.split())
 
 

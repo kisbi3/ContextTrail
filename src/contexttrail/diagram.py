@@ -785,3 +785,115 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
                 line(end, column, frozenset({edge["id"]}), g["h"])
             diagram.put(end, label_start, label, "dim", edges=frozenset({edge["id"]}))
     return diagram
+
+
+# The story view in the browser (`story_svg`): one column of boxes this wide, its text wrapped at these many cells
+# (conservative for upper-case Latin in the page's own font).
+SVG_BOX = 600
+SVG_TITLE_CELLS, SVG_LINE_CELLS = 64, 78
+SVG_TONE = {"ok": "#3f8f5a", "warn": "#b8862b", "fail": "#c0453d", "plain": "#ced7df"}
+
+
+def story_svg(view: dict) -> str:
+    """The story view (`schema.story_view`) as the browser draws it: each flow (events joined by a session or a
+    relation, `_flows`) as one column of boxes in the order of the list, under its own heading when there are
+    several, each box with its number and kind, its title and a line per agent handed work there, wrapped (never
+    cut), its status as the border's colour; a box joined to the one before it by a relation gets that arrow
+    (dashed with `·추정` when inferred, as on the rest of the page), and boxes with no relation get no line: order is
+    not a cause. Each box lists the steps folded into it (`data-folds`), so the page can light the box of a folded
+    step. Only the elements the page imports (svg, defs, marker, path, g, rect, text), every text escaped."""
+    import html
+    events = view["events"]
+    tones = view.get("tones") or status_tones(view)
+    labels = view.get("labels") or status_labels(view)
+    shown = {event["id"] for event in events}
+    active = [edge for edge in view["edges"] if edge["active"] and edge["from_event_id"] in shown
+              and edge["to_event_id"] in shown]
+    joins: dict[tuple[str, str], list[dict]] = {}
+    for edge in active:
+        if edge.get("origin") not in ("dialog_turn", "delegation"):
+            joins.setdefault((edge["from_event_id"], edge["to_event_id"]), []).append(edge)
+    folds: dict[str, list[str]] = {}
+    for folded, home in (view.get("homes") or {}).items():
+        folds.setdefault(home, []).append(folded)
+    by_id = {event["id"]: event for event in events}
+    order = {event["id"]: n for n, event in enumerate(events)}
+    heads: dict[str, str] = {}
+    for summary in (view.get("unit_summaries") or {}).values():
+        keys = [key for key in summary.get("event_ids", []) if key in shown]
+        if keys and summary.get("text"):
+            first = min(keys, key=order.get)
+            heads[first] = " / ".join(filter(None, [heads.get(first), summary["text"]]))
+    flows = _flows(events, active)
+    x, y, gap = 32, 28, 46
+    body: list[str] = []
+    for index, flow in enumerate(flows, 1):
+        if len(flows) > 1:
+            if index > 1:
+                y += 18
+            heading = tr(f"흐름 {index}/{len(flows)} · 사건 {len(flow)}개", f"flow {index}/{len(flows)} · {len(flow)} events")
+            body.append(f'<text x="{x}" y="{y + 12}" fill="#486273" font-size="12" font-weight="700">{html.escape(heading)}</text>')
+            y += 30
+        previous: str | None = None
+        bottom = 0  # of the previous box
+        for key in flow:
+            event = by_id[key]
+            # A unit's summary heads the first of its boxes, beside the line that comes down to it.
+            for part in (_wrap(safe_text(tr("구간 · ", "stretch · ") + heads[key], multiline=False), SVG_LINE_CELLS - 6)
+                         if key in heads else []):
+                body.append(f'<text x="{x + 56}" y="{y + 12}" fill="#2f7f8f" font-size="12" font-weight="600">{html.escape(part)}</text>')
+                y += 18
+            if key in heads:
+                y += 10
+            between = joins.get((previous, key), []) if previous is not None else []
+            if between:
+                # Every relation between the two, each inferred one marked; dashed only when all are inferred.
+                label = "·".join(_edge_label(edge) + (tr("·추정", "·inferred") if edge.get("basis") == "inferred" else "")
+                                 for edge in between)
+                dashed = ' stroke-dasharray="5 5"' if all(edge.get("basis") == "inferred" for edge in between) else ""
+                body.append(f'<path d="M{x + 40} {bottom} V{y - 4}" fill="none" stroke="#778593" stroke-width="1.7"{dashed} marker-end="url(#arrow)"/>')
+                body.append(f'<text x="{x + 52}" y="{bottom + 22}" fill="#667788" font-size="11">{html.escape(label)}</text>')
+            title_text = safe_text(event["title"], multiline=False)
+            title = _wrap(title_text, SVG_TITLE_CELLS)
+            agents = [line for agent in event.get("folded_agents", [])
+                      for line in _wrap(f"↳ {safe_text(agent['agent'], multiline=False)}: "
+                                        + (safe_text(agent["said"], multiline=False) if agent["said"]
+                                           else tr("아직 분석 전", "not analysed yet")), SVG_LINE_CELLS)]
+            height = 16 + 18 + 20 * len(title) + 18 * len(agents) + 12
+            tone = tones.get(key, "plain")
+            number = event.get("number", order[key] + 1)
+            label = f"{number:02d} · {title_text} · {safe_text(labels.get(key, ''), multiline=False)}"
+            folded = " ".join(folds.get(key, []))
+            body.append(f'<g data-event-id="{html.escape(key, quote=True)}" tabindex="0" role="button" '
+                        f'aria-label="{html.escape(label, quote=True)}"'
+                        + (f' data-folds="{html.escape(folded, quote=True)}"' if folded else "")
+                        + f' transform="translate({x},{y})">')
+            body.append(f'<rect width="{SVG_BOX}" height="{height}" rx="9" fill="#ffffff" stroke="{SVG_TONE[tone]}" '
+                        f'stroke-width="{1.6 if tone != "plain" else 1}"/>')
+            body.append(f'<text x="16" y="24" fill="#7b8995" font-size="11">{number:02d} · {html.escape(kind_label(event))}</text>')
+            line_y = 24 + 22
+            for part in title:
+                body.append(f'<text x="16" y="{line_y}" fill="#203343" font-size="14" font-weight="600">{html.escape(part)}</text>')
+                line_y += 20
+            for part in agents:
+                body.append(f'<text x="16" y="{line_y - 2}" fill="#8e4fb0" font-size="12">{html.escape(part)}</text>')
+                line_y += 18
+            body.append("</g>")
+            bottom = y + height
+            y = bottom + gap
+            previous = key
+    if not events:
+        empty = (tr("핵심 보기로 그릴 요청·결정·결론이 없습니다. 위 버튼으로 모든 단계를 보세요.",
+                    "Nothing to draw in the story view (no requests, decisions or findings); the button above shows every step.")
+                 if view.get("hidden") else tr("저장된 사건이 없습니다.", "No saved events."))
+        for n, part in enumerate(_wrap(empty, 76)):
+            body.append(f'<text x="32" y="{70 + 22 * n}" fill="#617686" font-size="15">{html.escape(part)}</text>')
+        y = 120 + 22 * len(_wrap(empty, 76))
+    width, height = x * 2 + SVG_BOX, max(y - gap + 28, 120)
+    # `story`: the page marks a selected box without painting over its border, which is its status here.
+    head = (f'<svg xmlns="http://www.w3.org/2000/svg" class="story" width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+            f'role="img" aria-label="{html.escape(tr("프로젝트 흐름 · 핵심", "Project flow · story"), quote=True)}" '
+            'font-family="Noto Sans CJK KR, Noto Sans KR, Malgun Gothic, Apple SD Gothic Neo, sans-serif">'
+            '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">'
+            '<path d="M0 0 L8 4 L0 8 z" fill="#778593"/></marker></defs>')
+    return head + "\n".join(body) + "</svg>"
