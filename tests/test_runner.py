@@ -6,7 +6,7 @@ import time
 import pytest
 from contexttrail.runners.cli_runner import (CLIRunner, claude_reported_model, execute, newest_in_family,
                                             parse_codex_output, parse_claude_output)
-from contexttrail.schema import EXTRACT_SCHEMA, DELTA_SCHEMA
+from contexttrail.light import STORY_SCHEMA
 from contexttrail.util import FlowError, Cancelled
 
 
@@ -30,13 +30,8 @@ def test_live_schemas_type_constant_properties():
             for value in schema:
                 visit(value)
 
-    visit(EXTRACT_SCHEMA)
-    visit(DELTA_SCHEMA)
-    assert "oneOf" not in json.dumps(EXTRACT_SCHEMA)
-    read_schema = EXTRACT_SCHEMA["properties"]["read_requests"]["items"]
-    assert read_schema["type"] == "object"
-    assert set(read_schema["required"]) == {
-        "kind", "ids", "start_line", "end_line", "query", "unit_id"}
+    visit(STORY_SCHEMA)  # the one schema a model answers
+    assert "oneOf" not in json.dumps(STORY_SCHEMA)
 
 
 @pytest.mark.parametrize('text',['not json','[]','{"type":"error"}','{"type":"item.started","item":{"type":"command_execution"}}'])
@@ -244,7 +239,7 @@ def test_failed_call_reports_the_providers_reason():
 
 
 def test_a_codex_follow_up_resumes_the_session_with_only_what_is_new():
-    from contexttrail.runners.cli_runner import Thread, codex_thread_id
+    from contexttrail.runners.cli_runner import FOLLOW_UP, Thread, codex_thread_id
     runner=CLIRunner('codex'); runner.executable='/usr/bin/codex'; runner.features={'shell_tool','hooks'}
     first=runner.build_cli({},persist=True)
     assert '--ephemeral' not in first and first[first.index('--sandbox')+1]=='read-only'
@@ -258,43 +253,19 @@ def test_a_codex_follow_up_resumes_the_session_with_only_what_is_new():
         name='/nowhere'
         def cleanup(self): pass
     thread=Thread(Directory())
-    base={'stage':'extract','data':{'records':[1,2]}}
+    base={'stage':'story','data':{'records':[1,2]}}
     assert thread.follow_up(base) is None                       # nothing to resume yet
     assert thread.answered(base,'abc',{'input_tokens':100,'cached_input_tokens':0}) == {'input_tokens':100,'cached_input_tokens':0}
-    asked={**base,'evidence_rounds':[['round one']]}
-    assert thread.follow_up(asked)=={'follow_up':thread.follow_up(asked)['follow_up'],'new_evidence_rounds':[['round one']]}
+    assert thread.follow_up(base) is None                       # nothing new to send
+    repaired={**base,'repair':{'instruction':'fix it','previous_output':{'status':'complete'}}}
+    assert thread.follow_up(repaired)=={'follow_up':FOLLOW_UP,'repair':repaired['repair']}
+    # Other instructions or changed records cannot continue: a new session.
+    assert thread.follow_up(repaired,'other instructions') is None
+    assert thread.follow_up({**repaired,'data':{'records':[1]}}) is None
     # A resumed session reports its running total; the call's own usage is the difference.
-    assert thread.answered(asked,'abc',{'input_tokens':230,'cached_input_tokens':98}) == {'input_tokens':130,'cached_input_tokens':98}
-    final={**asked,'evidence_rounds':[['round one'],['round two']],'evidence_requests':'None left'}
-    delta=thread.follow_up(final)
-    assert delta['new_evidence_rounds']==[['round two']] and delta['evidence_requests']=='None left'
-    # Changed records (a trimmed request) cannot continue: a new session.
-    assert thread.follow_up({**asked,'data':{'records':[1]}}) is None
+    assert thread.answered(repaired,'abc',{'input_tokens':230,'cached_input_tokens':98}) == {'input_tokens':130,'cached_input_tokens':98}
     thread.reset()
-    assert thread.follow_up(asked) is None
-
-
-def test_a_later_stage_of_the_same_unit_continues_the_codex_session_with_its_whole_request():
-    from contexttrail.runners.cli_runner import STAGE_FOLLOW_UP, Thread
-
-    class Directory:
-        name = '/nowhere'
-        def cleanup(self): pass
-    thread = Thread(Directory())
-    extract = {'stage': 'extract', 'instructions': 'extract…', 'data': {'records': [1, 2]}}
-    thread.answered(extract, 'abc', {'input_tokens': 100}, 'common')
-    integrate = {'stage': 'integrate', 'instructions': 'integrate…', 'data': {'candidates': [1], 'records': [1, 2]}}
-    # What the session's first request already holds (the same records view) is named, not sent again.
-    assert thread.follow_up(integrate, 'common') == {'follow_up': STAGE_FOLLOW_UP, **integrate,
-                                                     'data': {'candidates': [1], 'already_in_conversation': ['records']}}
-    thread.answered(integrate, 'abc', {'input_tokens': 250}, 'common')
-    # The delta review is an integrate request with a review instruction: a later stage too.
-    review = {**integrate, 'review_instruction': 'patch…', 'review_issues': ['x']}
-    assert thread.follow_up(review, 'common') == {'follow_up': STAGE_FOLLOW_UP, **review,
-                                                  'data': {'candidates': [1], 'already_in_conversation': ['records']}}
-    # The same stage asked differently, or other instructions (the light reading), start a new session.
-    assert thread.follow_up({**integrate, 'data': {'candidates': [2]}}, 'common') is None
-    assert thread.follow_up(review, 'light instructions') is None
+    assert thread.follow_up(repaired) is None
 
 
 def test_a_claude_call_keeps_its_session_under_an_id_of_ours_and_a_follow_up_resumes_it():
@@ -314,7 +285,7 @@ def test_a_claude_call_keeps_its_session_under_an_id_of_ours_and_a_follow_up_res
         def cleanup(self): pass
     # Claude reports each call's own usage, so a follow-up's usage is taken as it is, not as a difference.
     thread = Thread(Directory(), cumulative_usage=False)
-    first = {'stage': 'extract', 'data': {'records': [1]}}
+    first = {'stage': 'story', 'data': {'records': [1]}}
     thread.answered(first, 'sid', {'input_tokens': 100}, 'common')
     again = {**first, 'repair': 'fix it'}
     assert thread.follow_up(again, 'common') == {'follow_up': thread.follow_up(again, 'common')['follow_up'], 'repair': 'fix it'}

@@ -116,22 +116,23 @@ def _all_citations(value: Any):
 
 
 def _candidate_groups(response: dict) -> list[tuple[str, list[dict]]]:
-    # A review answer in patch mode carries the same sections one level down, under `patch`.
-    body = {**response, **response["patch"]} if isinstance(response.get("patch"), dict) else response
-    names = (("event_candidates", tr("사건 후보", "Event candidates")), ("edge_candidates", tr("관계 후보", "Relation candidates")),
-             ("existing_event_matches", tr("기존 사건 연결", "Links to existing events")), ("open_items", tr("미해결 항목", "Open items")),
-             ("events_to_add", tr("추가 사건", "Events to add")), ("events_to_update", tr("수정 사건", "Events to update")),
-             ("edges_to_add", tr("추가 관계", "Relations to add")), ("edges_to_invalidate", tr("무효화 관계", "Relations to invalidate")),
-             ("candidate_resolutions", tr("후보 처리", "Candidate resolutions")), ("change_attributions", tr("변경 근거", "Change attributions")),
-             ("review_issues", tr("검토 쟁점", "Review issues")), ("review_resolutions", tr("검토 결론", "Review resolutions")))
-    return [(title, body[key]) for key, title in names if isinstance(body.get(key), list) and body[key]]
+    """The sections of a story answer (and of an older extraction answer, for evals saved before)."""
+    names = (("work", tr("작업 이름", "Work named")), ("story", tr("이야기 사건", "Story events")),
+             ("requests", tr("요청과 답", "Requests and their answers")), ("links", tr("관계", "Links")),
+             ("event_candidates", tr("사건 후보", "Event candidates")), ("edge_candidates", tr("관계 후보", "Relation candidates")),
+             ("existing_event_matches", tr("기존 사건 연결", "Links to existing events")), ("open_items", tr("미해결 항목", "Open items")))
+    return [(title, response[key]) for key, title in names if isinstance(response.get(key), list) and response[key]]
 
 
 def _candidate(item: dict, records: dict[str, dict]) -> str:
     title = item.get("title") or item.get("text") or item.get("id") or item.get("candidate_id") or tr("후보", "candidate")
-    fields = [f"{key}: {item[key]}" for key in ("kind", "status", "actor", "basis", "relation", "disposition")
-              if key in item]
-    details = item.get("summary") or item.get("reason") or item.get("rationale") or ""
+    fields = [f"{key}: {item[key]}" for key in ("id", "kind", "status", "actor", "basis", "relation", "disposition", "from", "to")
+              if key in item and item[key] != title]
+    # A story answer cites block IDs and names work items; the blocks' text is in the request.
+    for key in ("blocks", "work", "checked_by", "answered_by"):
+        if item.get(key):
+            fields.append(f"{key}: {dumps(item[key])}")
+    details = item.get("summary") or item.get("why") or item.get("reason") or item.get("rationale") or ""
     citations = "".join(_citation(c, records) for c in item.get("evidence", []) if isinstance(c, dict))
     return (f"<article><h4>{_escape(title)}</h4><p class='muted'>{_escape(' · '.join(fields))}</p>"
             f"<p>{_escape(details)}</p>{citations}</article>")

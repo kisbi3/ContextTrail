@@ -123,16 +123,11 @@ def codex_thread_id(text: str) -> str | None:
     return None
 
 
-# What a follow-up call sends instead of the whole request: only the parts that grew. Anything else changed
-# (the records were trimmed, the instructions differ) starts a new session.
-FOLLOW_UP_KEYS = ("evidence_rounds", "evidence_requests", "repair")
+# What a follow-up call sends instead of the whole request: only the repair. Anything else changed (the
+# instructions differ, the request was asked differently) starts a new session.
+FOLLOW_UP_KEYS = ("repair",)
 FOLLOW_UP = ("Follow-up to your previous answer in this conversation. The request above still holds; only what is "
              "new is below. Answer again with the complete JSON the schema asks for.")
-# The next stage of the same work unit, sent into the conversation that holds the earlier stage's request and
-# answer (so they are cached input, not resent). The whole new request follows; it alone is to be answered.
-STAGE_FOLLOW_UP = ("The next stage of the same work unit, in this conversation. The records and your earlier answer "
-                   "above are context only; answer the request below on its own, with the complete JSON its schema "
-                   "asks for.")
 
 
 class Thread:
@@ -145,54 +140,22 @@ class Thread:
         self.sent: dict | None = None
         self.usage: dict | None = None
         self.system: str | None = None
-        self.first_sent: dict | None = None  # the session's first request: what a later stage need not repeat
 
     def follow_up(self, message: dict, system: str | None = None) -> dict | None:
-        """What to send into the open session for `message`: the part it has not seen (an evidence round, a
-        repair), the whole request of a later stage of the same unit under `STAGE_FOLLOW_UP`, or None when the
-        session must start again (different instructions, or the same stage asked differently)."""
+        """What to send into the open session for `message`: the repair it has not seen, or None when the session
+        must start again (different instructions, or the request asked differently)."""
         if self.session is None or self.sent is None or system != self.system:
             return None
         changed = {key for key in message.keys() | self.sent.keys() if message.get(key) != self.sent.get(key)}
-        if not changed:
+        if not changed or not changed <= set(FOLLOW_UP_KEYS) or message.get("repair") is None:
             return None
-        if not changed <= set(FOLLOW_UP_KEYS):
-            # A later stage of the unit (integrate after extract; the delta review, which is an integrate request
-            # with a review instruction) continues; the same stage asked differently (a trimmed request) does not.
-            later = (message.get("stage") != self.sent.get("stage")
-                     or bool(message.get("review_instruction")) != bool(self.sent.get("review_instruction")))
-            if not later:
-                return None
-            # What the session's first request already holds (the records view, the graph views) is not sent
-            # again: the part of `data` whose values are the same is named instead.
-            first = (self.first_sent or {}).get("data") or {}
-            data = message.get("data")
-            if isinstance(data, dict) and first:
-                held = [key for key, value in data.items() if key in first and first[key] == value]
-                if held:
-                    slim = {key: value for key, value in data.items() if key not in held}
-                    slim["already_in_conversation"] = held
-                    return {"follow_up": STAGE_FOLLOW_UP, **message, "data": slim}
-            return {"follow_up": STAGE_FOLLOW_UP, **message}
-        before = self.sent.get("evidence_rounds") or []
-        rounds = message.get("evidence_rounds") or []
-        if rounds[:len(before)] != before:
-            return None
-        delta: dict = {"follow_up": FOLLOW_UP}
-        if len(rounds) > len(before):
-            delta["new_evidence_rounds"] = rounds[len(before):]
-        for key in ("evidence_requests", "repair"):
-            if key in changed and message.get(key) is not None:
-                delta[key] = message[key]
-        return delta
+        return {"follow_up": FOLLOW_UP, "repair": message["repair"]}
 
     def answered(self, message: dict, session: str | None, usage: dict | None,
                  system: str | None = None) -> dict | None:
         """Record the call; returns its own usage. A resumed session reports the session's running total, so a
         follow-up's usage is the difference from the previous call's."""
         previous = self.usage if self.session and session == self.session else None
-        if not (self.session and session == self.session):
-            self.first_sent = message if session else None
         self.session, self.sent, self.usage = session, message if session else None, usage
         self.system = system if session else None
         if previous is None or usage is None or not self.cumulative_usage:
@@ -201,7 +164,7 @@ class Thread:
                 else value for key, value in usage.items()}
 
     def reset(self) -> None:
-        self.session = self.sent = self.usage = self.first_sent = self.system = None
+        self.session = self.sent = self.usage = self.system = None
 
     def close(self) -> None:
         self.directory.cleanup()

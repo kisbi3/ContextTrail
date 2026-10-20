@@ -1,6 +1,6 @@
 """Studio execution graph for synthetic walkthroughs and bounded live Codex runs.
 
-Both modes use the production scan, planning, extraction, integration and store
+Both modes use the production scan, planning, story reading, publishing and store
 methods. A live scope is fixed by the server operator, never by Studio input.
 """
 from __future__ import annotations
@@ -12,7 +12,6 @@ import tempfile
 import threading
 import uuid
 
-from contexttrail.schema import draft_delta
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, TypedDict
@@ -21,10 +20,8 @@ from concurrent.futures import ThreadPoolExecutor
 from langgraph.graph import END, START, StateGraph
 from langsmith import traceable, tracing_context
 
-from contexttrail.analysis import (AnalysisConfig, Engine, IdAliases, PreparedExtraction,
-                                  PreparedIntegration, _incomplete_input, _rehydrate,
-                                  build_task, integrate_request_data, review_signal_items, no_change_to_verify_limitation,
-                                  CHANGE_KINDS, NO_CHANGE_TO_VERIFY_REASON, REVIEW_SIGNALS)
+from contexttrail.analysis import (AnalysisConfig, Engine, IdAliases, PreparedExtraction, _incomplete_input,
+                                  _rehydrate, build_task)
 from contexttrail.analysis import link_request_turns as analysis_link_request_turns
 from contexttrail.analysis import (MIN_UNIT_CALLS, calibration, call_cap, plan_summary,
                                   skipped_unit_message)
@@ -37,7 +34,8 @@ from contexttrail.model import Snapshot
 from contexttrail.render import graph_summary
 from contexttrail.runners.cli_runner import CLIRunner
 from contexttrail.routing import RunnerPool, TaskValidationError
-from contexttrail.schema import EXTRACT_SCHEMA, EvidenceValidator, delta_schema
+from contexttrail.light import STORY_SCHEMA
+from contexttrail.schema import EvidenceValidator
 from contexttrail.store import Store
 from contexttrail.util import (CallLimitReached, Cancelled, FlowError, InputBudgetExceeded, ident, now,
                                private_dir)
@@ -97,39 +95,19 @@ class _CliInvocation:
     # Units skipped in this run for a failure of their own (`_skip_unit`).
     skipped: list[str] = field(default_factory=list)
     skip_error: str | None = None
-    # One worker extracts the next unit while this one is integrated (extract_workers == 1).
-    prefetch: tuple[int, Any] | None = None
-    prefetch_cancel: threading.Event | None = None
-    prefetch_pool: ThreadPoolExecutor | None = None
-
-    def stop_prefetch(self) -> None:
-        """Stop and wait for a next-unit extraction still running when the run ends."""
-        if self.prefetch_cancel is not None:
-            self.prefetch_cancel.set()
-        if self.prefetch is not None:
-            try:
-                self.prefetch[1].result()
-            except BaseException:
-                pass
-            self.prefetch = None
-        if self.prefetch_pool is not None:
-            self.prefetch_pool.shutdown(wait=True)
-            self.prefetch_pool = None
 
 
 _cli_invocations: dict[str, _CliInvocation] = {}
 _cli_invocations_lock = threading.Lock()
 _prepared_extractions: dict[tuple[str, int], PreparedExtraction] = {}
-_prepared_integrations: dict[tuple[str, int], PreparedIntegration] = {}
 _synthetic_runners: dict[str, RunnerPool] = {}
 _prepared_lock = threading.Lock()
 
 
 def _clear_prepared(run_id: str) -> None:
     with _prepared_lock:
-        for items in (_prepared_extractions, _prepared_integrations):
-            for key in [key for key in items if key[0] == run_id]:
-                items.pop(key, None)
+        for key in [key for key in _prepared_extractions if key[0] == run_id]:
+            _prepared_extractions.pop(key, None)
         _synthetic_runners.pop(run_id, None)
 
 
@@ -169,16 +147,7 @@ class StudioState(TypedDict, total=False):
     extracted: dict
     candidate_audit: dict
     candidate_count: int
-    validation_repair_reasons: list[str]
-    validation_repair_pending: bool
-    validation_repair_executed: bool
     current_calls: list[dict]
-    integrate_input: dict
-    model_delta: dict | None
-    prepared_integration: PreparedIntegration
-    semantic_review_pending: bool
-    semantic_review_executed: bool
-    semantic_review_issues: list[dict]
     new_graph: dict
     graph_change_audit: dict
     evidence: dict
@@ -212,8 +181,7 @@ def _context(state: StudioState) -> tuple[Engine, Store, Snapshot]:
     store = Store(scope.state_dir, scope.id)
     config = AnalysisConfig(codex_home=directory / "fixture-codex",
                             claude_home=directory / "fixture-claude",
-                            opencode_home=directory / "fixture-opencode",
-                            escalation_model="fixture-review")
+                            opencode_home=directory / "fixture-opencode")
     engine = Engine(scope, store, config)
     engine.detailed_trace = True
     return engine, store, engine.scan()
@@ -401,15 +369,15 @@ def plan_work_units(state: StudioState) -> StudioState:
 
 def _can_start(state: StudioState) -> bool:
     """Whether the calls left can carry the next unit: not started otherwise, so no unit is cut off half way by
-    the cap. A saved extraction that is still valid needs the integration only."""
+    the cap. A saved extraction that is still valid needs no call."""
     if state.get("mode") != "cli" or state["unit_index"] >= len(state["planned_units"]):
         return True
     session = _cli_session(state)
     planned = state["planned_units"][state["unit_index"]]
     unit = session.engine.store.unit(planned["id"]) or planned  # a batch may have extracted it since the plan
-    reusable = (unit["status"] in {"extracted", "draft"} and
+    reusable = (unit["status"] == "extracted" and
                 (unit.get("result") or {}).get("routing_signature") == session.engine._routing_signature())
-    return session.runners.budget.remaining() >= (1 if reusable else MIN_UNIT_CALLS)
+    return reusable or session.runners.budget.remaining() >= MIN_UNIT_CALLS
 
 
 def initial_route(state: StudioState) -> Literal["select_unit", "finish_run"]:
@@ -439,28 +407,27 @@ def prepare_extract_input(state: StudioState) -> StudioState:
     with _prepared_lock:
         _prepared_extractions[(state["run_id"], state["unit_index"])] = prepared
     cached = unit.get("result") or {}
-    reused = unit["status"] in {"extracted", "draft"} and (
-        cached.get("routing_signature") == engine._routing_signature())
+    reused = unit["status"] == "extracted" and cached.get("routing_signature") == engine._routing_signature()
     data = prepared.data
+    request = None if reused else engine.story_input(prepared, unit, pool, snapshot.id)[0]
     return {"extract_input": {
         "unit_id": unit["id"], "model_call_expected": not reused,
         "context_selection": copy.deepcopy(prepared.harness.selection_audit),
         "new_records": [{"source_id": item["source_id"], "provider": item["provider"],
                          "role": item["role"], "line_count": len(item["lines"])}
                         for item in data["new_records"]],
-        "context_only_source_ids": [item["source_id"] for item in data["context_only"]],
         "existing_event_ids": [item["id"] for item in data["existing_events"]],
         # Exactly what the Runner receives on the first attempt, short IDs included.
-        "request": None if reused else IdAliases().wire(build_task("extract", data, engine.config.output_language)),
-        "response_schema": None if reused else EXTRACT_SCHEMA,
+        "request": None if reused else IdAliases().wire(build_task("story", request, engine.config.output_language)),
+        "response_schema": None if reused else STORY_SCHEMA,
         "reuse_reason": tr("저장된 추출을 먼저 검증합니다. 근거가 바뀌었으면 새 요청을 만듭니다.",
                            "The saved extraction is checked first; a new request is built if the evidence has changed.")
                         if reused else None}}
 
 
 def _analysis_of(store: Store, state: StudioState) -> dict | None:
-    """The runner, model and effort of this unit's first model call in this run (the extraction, or the light
-    call), from the ledger; None when no call named a model (a mock, or a unit published from a saved extraction)."""
+    """The runner, model and effort of this unit's first model call in this run (the story call), from the
+    ledger; None when no call named a model (a mock, or a unit published from a saved extraction)."""
     for call in store.llm_calls(state["run_id"]):
         meta = call["metadata"]
         if call["unit_id"] == state["unit_id"] and meta.get("model"):
@@ -473,45 +440,9 @@ def _current_calls(store: Store, state: StudioState) -> list[dict]:
     return [{"stage": call["stage"], "status": call["status"],
              "attempt": call["attempt"],
              "routing_role": call["metadata"].get("routing_role"),
-             "read_rounds_used": call["details"].get("read_rounds_used", 0),
              "repair_rounds_used": call["details"].get("repair_rounds_used", 0)}
             for call in store.llm_calls(state["run_id"])
             if call["unit_id"] == state["unit_id"]]
-
-
-# A prefetch is only started while the call budget still has room for this unit's integration
-# and review and the next unit's extraction, so it never costs the current unit its calls.
-PREFETCH_MIN_CALLS = 8
-
-
-def _prefetch_next(state: StudioState, engine: Engine, store: Store, snapshot_id: str,
-                   pool: dict) -> None:
-    """Start extracting the next planned unit in the background, against the graph as it is now.
-
-    Like a batch of workers, the next unit is extracted before this one is published; the
-    integration that follows sees the published graph. Runs only with one extract worker, and
-    not when no integrate call follows (`draft_only`, the economy default): then there is no call
-    to overlap, and the extraction is the only one that can link the next unit to this one's events,
-    so it has to see them published.
-    """
-    session = _cli_session(state)
-    following = state["unit_index"] + 1
-    budget = session.runners.budget
-    if (engine.config.extract_workers != 1 or engine.config.integrate_output == "draft_only"
-            or following >= len(state["planned_units"])
-            or session.cancel.is_set() or session.prefetch is not None
-            or budget.maximum - budget.started < PREFETCH_MIN_CALLS or not session.runners.parallel_safe()):
-        return
-    if session.prefetch_pool is None:
-        session.prefetch_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pf-prefetch")
-        session.prefetch_cancel = threading.Event()
-    base = copy.deepcopy(store.graph())
-    unit = state["planned_units"][following]
-    future = session.prefetch_pool.submit(
-        contextvars.copy_context().run, engine._extract_unit, unit, pool, base, snapshot_id,
-        state["run_id"], session.runners, session.prefetch_cancel, state["limitations"],
-        defer_escalation=True)
-    session.prefetch = (following, future)
 
 
 def extract_model_and_validate(state: StudioState) -> StudioState:
@@ -524,15 +455,6 @@ def extract_model_and_validate(state: StudioState) -> StudioState:
         prepared = _prepared_extractions.pop((state["run_id"], state["unit_index"]), None)
     if state.get("mode") == "cli":
         session = _cli_session(state)
-        if session.prefetch is not None and session.prefetch[0] == state["unit_index"]:
-            future = session.prefetch[1]
-            session.prefetch = None
-            session.update(tr(f"구간 추출 결과 대기 · {state['unit_index'] + 1}/{len(state['planned_units'])}",
-                              f"Waiting for unit extraction · {state['unit_index'] + 1}/{len(state['planned_units'])}"))
-            try:
-                session.batch_outcomes = {state["unit_index"]: future.result()}
-            except Exception as exc:
-                session.batch_outcomes = {state["unit_index"]: exc}
         if session.batch_outcomes is None or state["unit_index"] not in session.batch_outcomes:
             width = engine.config.extract_workers
             offset = state["unit_index"]
@@ -543,8 +465,7 @@ def extract_model_and_validate(state: StudioState) -> StudioState:
             if width == 1:
                 outcomes: list[dict | BaseException] = [engine._extract_unit(
                     batch[0], pool, base, snapshot.id, state["run_id"], session.runners,
-                    session.cancel, state["limitations"], defer_escalation=True,
-                    prepared=prepared)]
+                    session.cancel, state["limitations"], prepared=prepared)]
             else:
                 with ThreadPoolExecutor(max_workers=width, thread_name_prefix="pf-extract") as executor:
                     futures = [executor.submit(contextvars.copy_context().run, engine._extract_unit,
@@ -570,19 +491,13 @@ def extract_model_and_validate(state: StudioState) -> StudioState:
         if session.cancel.is_set():
             raise Cancelled(tr("분석 중단", "Analysis stopped"))
         session.reused += int(extracted["reused"])
-        _prefetch_next(state, engine, store, snapshot.id, pool)
     else:
         extracted = engine._extract_unit(unit, pool, engine.store.graph(), snapshot.id,
                                          state["run_id"], _runners(state, engine),
-                                         threading.Event(), snapshot.limitations,
-                                         defer_escalation=True, prepared=prepared)
+                                         threading.Event(), snapshot.limitations, prepared=prepared)
     output = extracted["output"]
-    cached = extracted["cached"]
     return {"extracted": extracted,
             "candidate_count": len(output["event_candidates"]) + len(output["edge_candidates"]),
-            "validation_repair_reasons": cached["routing_reasons"],
-            "validation_repair_pending": extracted.get("escalation_pending", False),
-            "validation_repair_executed": cached.get("escalated", False),
             "current_calls": _current_calls(store, state)}
 
 
@@ -603,8 +518,6 @@ def validate_candidates(state: StudioState) -> StudioState:
     assigned = set(state["source_ids"])
     return {"candidate_audit": {
         "validation": "passed", "unit_id": state["unit_id"],
-        "validation_repair_reasons": state["validation_repair_reasons"],
-        "validation_repair_executed": state["validation_repair_executed"],
         "events": [{"candidate_id": item["id"], "title": item["title"],
                     "kind": item["kind"], "status": item["status"],
                     "actor": item["actor"], "basis": item["basis"],
@@ -622,140 +535,17 @@ def validate_candidates(state: StudioState) -> StudioState:
         "limitations": output["limitations"]}}
 
 
-def prepare_integrate_input(state: StudioState) -> StudioState:
-    engine, store, snapshot = _context(state)
-    if snapshot.id != state["snapshot_id"]:
-        raise FlowError(tr("통합 입력의 snapshot이 변경됐습니다.", "The integrate input's snapshot has changed."))
-    pool = {r.source_id: r for r in snapshot.records}
-    unit = state["planned_units"][state["unit_index"]]
-    cancel = _cli_session(state).cancel if state.get("mode") == "cli" else threading.Event()
-    prepared = engine._prepare_integration(unit, state["extracted"], pool, store.graph(),
-                                           snapshot.id, state["run_id"],
-                                           _runners(state, engine), cancel)
-    with _prepared_lock:
-        _prepared_integrations[(state["run_id"], state["unit_index"])] = prepared
-    if prepared.data is None:
-        return {"integrate_input": {"unit_id": unit["id"], "model_call_expected": False,
-                                    "reason": tr("통합할 사건·관계 후보가 없습니다.",
-                                                 "No event or relation candidates to integrate."),
-                                    "base_graph_version": prepared.graph_version}}
-    return {"integrate_input": {
-        "unit_id": unit["id"], "model_call_expected": True,
-        "context_selection": copy.deepcopy(prepared.harness.selection_audit),
-        "base_graph_version": prepared.graph_version,
-        "validated_candidate_count": len(prepared.data["validated_candidates"]["event_candidates"]),
-        # Exactly what the Runner receives: with a draft, the draft as the model sees it (`draft_for_model`).
-        "request": IdAliases().wire(build_task("integrate", integrate_request_data(
-            prepared.data, draft_delta(prepared.data["validated_candidates"], prepared.graph_version, snapshot.id)
-            if engine.config.integrate_output != "full" else None), engine.config.output_language)),
-        "response_schema": delta_schema(engine.config.integrate_evidence == "reuse")}}
-
-
-def integrate_model_and_validate(state: StudioState) -> StudioState:
+def publish_draft(state: StudioState) -> StudioState:
+    """Code, not a model: the unit's candidates as a delta against the latest graph, under the checks."""
     engine, store, snapshot = _context(state)
     if snapshot.id != state["snapshot_id"]:
         raise FlowError(tr("Studio fixture snapshot이 변경됐습니다.", "The Studio fixture snapshot has changed."))
     pool = {r.source_id: r for r in snapshot.records}
     unit = state["planned_units"][state["unit_index"]]
     cancel = _cli_session(state).cancel if state.get("mode") == "cli" else threading.Event()
-    if state.get("mode") == "cli":
-        _cli_session(state).update(tr(f"근거 확인·흐름 통합 중 · {state['unit_index'] + 1}/{len(state['planned_units'])}",
-                                      f"Checking evidence and integrating the flow · {state['unit_index'] + 1}/{len(state['planned_units'])}"))
-    with _prepared_lock:
-        prepared = _prepared_integrations.pop((state["run_id"], state["unit_index"]), None)
     new_graph, evidence, dependencies = engine._integrate_unit(
-        unit, state["extracted"], pool, engine.store.graph(), snapshot.id,
-        state["run_id"], _runners(state, engine), cancel, prepared=prepared)
+        unit, state["extracted"], pool, engine.store.graph(), snapshot.id, state["run_id"], cancel)
     return {"new_graph": new_graph, "evidence": evidence, "dependencies": dependencies,
-            "model_delta": prepared.delta if prepared is not None else None,
-            "prepared_integration": prepared,
-            "current_calls": _current_calls(store, state)}
-
-
-def route_semantic_review(state: StudioState) -> StudioState:
-    delta = state.get("model_delta")
-    signals = review_signal_items(delta)
-    reasons = list(signals)
-    engine, store, _ = _context(state)
-    prepared = state.get("prepared_integration")
-    issues = list(delta.get("review_issues", [])) if delta else []
-    candidate_set = (prepared.data or {}).get("validated_candidates", {}) if prepared else {}
-    candidates = {item["id"]: (kind, item) for kind, key in (
-        ("event_candidate", "event_candidates"), ("edge_candidate", "edge_candidates"),
-        ("open_item_candidate", "open_items")) for item in candidate_set.get(key, [])}
-    # An observed result can only verify a change: when the delta adds none, the review's answer is always
-    # "no change to link" (on this repository, 5 of 16 reviews), so code resolves it and no model is called.
-    change_added = any(item.get("kind") in CHANGE_KINDS for item in (delta or {}).get("events_to_add", []))
-    code_resolved: list[dict] = []
-    if delta:
-        for operation, signal, question in REVIEW_SIGNALS:
-            for item in signals.get(signal, []):
-                attribution = next((row for row in delta["change_attributions"]
-                                    if row["operation"] == operation and row["item_id"] == item["id"]), None)
-                if not attribution:
-                    continue
-                candidate_id = next((cid for cid in attribution["candidate_ids"] if cid in candidates), None)
-                if candidate_id is None:
-                    continue
-                kind = candidates[candidate_id][0]
-                issue_id = ident("review_", state["unit_id"], operation, signal, item["id"])
-                if signal == "unlinked_observed_outcome" and not change_added:
-                    code_resolved.append({"issue_id": issue_id, "status": "resolved", "origin": "code",
-                        "reason": NO_CHANGE_TO_VERIFY_REASON, "evidence": None,
-                        "evidence_ids": prepared.validator.citations(item.get("evidence", [])) if prepared else [],
-                        "limitation": no_change_to_verify_limitation(item)})
-                    continue
-                issues.append({"id": issue_id,
-                    "origin": "code_signal", "stage": "integrate",
-                    "target_kind": kind, "target_id": candidate_id,
-                    "signal": signal, "question": question,
-                    "evidence": item.get("evidence", [])})
-    if prepared:
-        prepared.review_issue_inputs = issues
-        prepared.code_resolutions = code_resolved
-    audit_issues = [{**issue, "evidence_ids": prepared.validator.citations(issue["evidence"]),
-                     "evidence": None} for issue in issues] if prepared else issues
-    prepared.review_audit = {"triggered": reasons, "issues": audit_issues}
-    pending = bool(issues and engine.config.semantic_review)
-    if not pending:
-        graph = copy.deepcopy(state["new_graph"])
-        graph["limitations"] = list(dict.fromkeys(graph["limitations"] + [row["limitation"] for row in code_resolved]))
-        audit = {"triggered": reasons, "issues": audit_issues, "executed": False,
-            "status": "skipped_disabled" if issues else "resolved_in_code" if code_resolved else "not_needed",
-            "resolutions": [{k: v for k, v in row.items() if k != "limitation"} for row in code_resolved],
-            "unresolved_issue_ids": [item["id"] for item in issues]}
-        graph["semantic_review_audit"] = audit
-        graph["semantic_review_history"] = [*graph.get("semantic_review_history", []),
-            {"unit_id": state["unit_id"], **audit}]
-        if prepared:
-            prepared.review_audit = audit
-        return {"new_graph": graph, "semantic_review_pending": False,
-                "semantic_review_executed": False, "semantic_review_reasons": reasons,
-                "semantic_review_issues": audit_issues,
-                "evidence": {**state["evidence"], **prepared.validator.evidence} if prepared else state["evidence"],
-                "current_calls": _current_calls(store, state)}
-    return {"semantic_review_pending": pending,
-            "semantic_review_executed": False,
-            "semantic_review_reasons": reasons,
-            "semantic_review_issues": audit_issues,
-            "evidence": {**state["evidence"], **prepared.validator.evidence} if prepared else state["evidence"],
-            "current_calls": _current_calls(store, state)}
-
-
-def semantic_review_route(state: StudioState) -> Literal["semantic_review_model_validate", "link_request_turns"]:
-    return "semantic_review_model_validate" if state.get("semantic_review_pending") else "link_request_turns"
-
-
-def semantic_review_model_validate(state: StudioState) -> StudioState:
-    engine, store, snapshot = _context(state)
-    if snapshot.id != state["snapshot_id"]:
-        raise FlowError(tr("의미 재검토 snapshot이 변경됐습니다.", "The semantic review's snapshot has changed."))
-    runners = _runners(state, engine)
-    prepared = state["prepared_integration"]
-    graph = engine._review_delta(prepared, store.graph(), snapshot.id, state["run_id"], runners)
-    return {"new_graph": graph,
-            "evidence": {**state["evidence"], **prepared.validator.evidence},
-            "semantic_review_executed": prepared.review_audit.get("executed", False),
             "current_calls": _current_calls(store, state)}
 
 
@@ -777,7 +567,6 @@ def summarize_graph_changes(state: StudioState) -> StudioState:
     old_edges = {item["id"]: item for item in before["edges"]}
     return {"graph_change_audit": {
         "base_graph_version": before["version"],
-        "model_delta": state["model_delta"],
         "events_added": [{"id": item["id"], "title": item["title"],
                           "status": item["status"], "evidence_ids": item["evidence_ids"]}
                          for item in after["events"] if item["id"] not in old_events],
@@ -794,11 +583,7 @@ def summarize_graph_changes(state: StudioState) -> StudioState:
         "edges_invalidated": [item["id"] for item in after["edges"]
                               if item["id"] in old_edges and old_edges[item["id"]]["active"]
                               and not item["active"]],
-        "candidate_resolutions": after.get("last_candidate_resolutions", []),
-        "semantic_review": after.get("semantic_review_audit", {"status": "not_run"}),
-        "review_issues": after.get("semantic_review_audit", {}).get("issues", []),
-        "review_resolutions": after.get("semantic_review_audit", {}).get("resolutions", []),
-        "unresolved_review_issue_ids": after.get("semantic_review_audit", {}).get("unresolved_issue_ids", [])}}
+        "candidate_resolutions": after.get("last_candidate_resolutions", [])}}
 
 
 def publish_result(state: StudioState) -> StudioState:
@@ -854,12 +639,12 @@ def publish_result(state: StudioState) -> StudioState:
         for event in graph["events"]:
             if event["id"] not in known:
                 event["analysis"] = analysis
-    # `--unit-summary`: the line the extraction wrote about this unit, with the events it added (what it covers).
+    # The story's line about this unit, with the events it added (what it covers).
     summary = state["extracted"]["cached"].get("unit_summary")
     added = sorted({event["id"] for event in graph["events"]} - {event["id"] for event in base["events"]})
     if summary and added:
         graph.setdefault("unit_summaries", {})[state["unit_id"]] = {"text": summary, "event_ids": added}
-    # Pipeline v2: the assistant's report blocks no story event rests on (`docs/plans/PIPELINE_V2.md`), as source lines.
+    # The assistant's report blocks no story event rests on (`docs/plans/PIPELINE_V2.md`), as source lines.
     unclaimed = state["extracted"]["cached"].get("unclaimed_blocks")
     if unclaimed:
         graph.setdefault("unclaimed_reports", {})[state["unit_id"]] = unclaimed
@@ -874,8 +659,6 @@ def publish_result(state: StudioState) -> StudioState:
                           f"Units done {completed}/{state['total_planned_units']} · graph v{published['version']}"))
     unit_result = {"provider": state["provider"], "source_count": len(state["source_ids"]),
                    "candidate_count": state["candidate_count"],
-                   "validation_repair_executed": state["validation_repair_executed"],
-                   "validation_repair_reasons": state["validation_repair_reasons"],
                    "calls": _current_calls(store, state),
                    "graph_version": published["version"]}
     return {"completed_units": completed,
@@ -884,8 +667,6 @@ def publish_result(state: StudioState) -> StudioState:
 
 
 def advance_unit(state: StudioState) -> StudioState:
-    engine, _, _ = _context(state)
-    engine.close_unit_thread(state["planned_units"][state["unit_index"]]["id"])  # the unit's conversation is done
     return {"unit_index": state["unit_index"] + 1, "unit_skipped": None}
 
 
@@ -896,7 +677,6 @@ def next_unit_route(state: StudioState) -> Literal["select_unit", "finish_run"]:
 def finish_run(state: StudioState) -> StudioState:
     try:
         engine, store, _ = _context(state)
-        engine.close_unit_thread()
         graph = store.graph()
         calls = store.llm_calls(state["run_id"])
         if state.get("mode") == "cli":
@@ -1017,7 +797,6 @@ def _skip_unit(state: StudioState, exc: BaseException) -> StudioState:
     session.issues = limitations
     with _prepared_lock:
         _prepared_extractions.pop((state["run_id"], state["unit_index"]), None)
-        _prepared_integrations.pop((state["run_id"], state["unit_index"]), None)
     session.update(tr(f"작업 단위 건너뜀 · {state['unit_index'] + 1}/{len(state['planned_units'])} · "
                       + ("입력 예산 초과" if kind == "input_budget" else "검증 실패"),
                       f"Work unit skipped · {state['unit_index'] + 1}/{len(state['planned_units'])} · "
@@ -1040,9 +819,8 @@ def _skippable(node):
     return run
 
 
-_UNIT_NODES = {"prepare_extract_input", "extract_model_and_validate", "validate_candidates",
-               "prepare_integrate_input", "integrate_model_and_validate", "route_semantic_review",
-               "semantic_review_model_validate", "link_request_turns", "summarize_graph_changes", "publish_result"}
+_UNIT_NODES = {"prepare_extract_input", "extract_model_and_validate", "validate_candidates", "publish_draft",
+               "link_request_turns", "summarize_graph_changes", "publish_result"}
 
 workflow = StateGraph(StudioState)
 for name, node in (("prepare_run", prepare_run), ("scan_sources", scan_sources),
@@ -1050,10 +828,7 @@ for name, node in (("prepare_run", prepare_run), ("scan_sources", scan_sources),
                    ("prepare_extract_input", prepare_extract_input),
                    ("extract_model_and_validate", extract_model_and_validate),
                    ("validate_candidates", validate_candidates),
-                   ("prepare_integrate_input", prepare_integrate_input),
-                   ("integrate_model_and_validate", integrate_model_and_validate),
-                   ("route_semantic_review", route_semantic_review),
-                   ("semantic_review_model_validate", semantic_review_model_validate),
+                   ("publish_draft", publish_draft),
                    ("link_request_turns", link_request_turns),
                    ("summarize_graph_changes", summarize_graph_changes),
                    ("publish_result", publish_result), ("advance_unit", advance_unit),
@@ -1067,11 +842,8 @@ workflow.add_conditional_edges("plan_work_units", initial_route)
 workflow.add_edge("select_unit", "prepare_extract_input")
 workflow.add_edge("prepare_extract_input", "extract_model_and_validate")
 workflow.add_edge("extract_model_and_validate", "validate_candidates")
-workflow.add_edge("validate_candidates", "prepare_integrate_input")
-workflow.add_edge("prepare_integrate_input", "integrate_model_and_validate")
-workflow.add_edge("integrate_model_and_validate", "route_semantic_review")
-workflow.add_conditional_edges("route_semantic_review", semantic_review_route)
-workflow.add_edge("semantic_review_model_validate", "link_request_turns")
+workflow.add_edge("validate_candidates", "publish_draft")
+workflow.add_edge("publish_draft", "link_request_turns")
 workflow.add_edge("link_request_turns", "summarize_graph_changes")
 workflow.add_edge("summarize_graph_changes", "publish_result")
 workflow.add_edge("publish_result", "advance_unit")
@@ -1117,7 +889,6 @@ def run_engine(engine: Engine, runner_factory: Callable[[], Any], *,
                 raise
             return {"status": status, "graph": engine.store.graph(), **details}
         finally:
-            session.stop_prefetch()
             with _cli_invocations_lock:
                 _cli_invocations.pop(run_id, None)
             if trace_client is not None:

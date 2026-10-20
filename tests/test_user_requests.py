@@ -1,6 +1,6 @@
 from dataclasses import replace
 
-from contexttrail.analysis import add_user_requests, link_request_turns
+from contexttrail.analysis import link_request_turns
 from contexttrail.model import SourceRecord, is_user_prompt
 from contexttrail.schema import EvidenceValidator, record_evidence
 
@@ -18,24 +18,20 @@ def test_only_typed_messages_count_as_user_prompts():
     assert not is_user_prompt(replace(record("f", "user", "두 번째 조각"), lineage={"fragment_of": "x", "fragment_index": 2}))
 
 
-def candidate(key, actor, source, text):
-    return {"id": key, "kind": "action", "title": text, "summary": "", "actor": actor, "status": "reported_complete",
-            "basis": "explicit_statement", "session_ids": ["s"], "worktree_ids": [], "recorded_at": None,
-            "occurred_at": None, "evidence": [{"source_id": source, "start_line": 1, "end_line": 1, "quote": text}]}
-
-
-def test_extraction_gets_a_question_for_each_user_message_it_skipped():
-    ask, other, reply = (record("ask", "user", "문서도 고쳐 줘"), record("other", "user", "좋아. 그렇게 해줘."),
-                         record("reply", "assistant", "문서를 고쳤습니다."))
-    pool = {r.source_id: r for r in (ask, other, reply)}
-    validator = EvidenceValidator(pool, {key: [(1, 1)] for key in pool})
-    output = {"event_candidates": [candidate("tmp:1", "assistant", "reply", "문서를 고쳤습니다."),
-                                   candidate("tmp:2", "user", "other", "좋아. 그렇게 해줘.")]}
-    assert add_user_requests(output, [ask, other, reply], validator) == ["ask"]
-    added = output["event_candidates"][-1]
-    assert (added["id"], added["kind"], added["status"], added["title"]) == (
-        "tmp:user_request_1", "question", "asked", "문서도 고쳐 줘")
-    assert add_user_requests({"event_candidates": []}, [ask], validator) == []  # no integration to link it
+def test_the_story_gets_a_question_for_each_user_message_whatever_it_wrote():
+    from contexttrail.light import skeleton, story_extraction, written_blocks
+    found = [record("ask", "user", "문서도 고쳐 줘"), record("other", "user", "좋아. 그렇게 해줘."),
+             record("reply", "assistant", "문서를 고쳤습니다.")]
+    pool = {r.source_id: r for r in found}
+    provided = {key: [(1, 1)] for key in pool}
+    items, edges = skeleton(found)
+    # The story wrote nothing about either message: code makes the requests all the same.
+    output, _ = story_extraction({"work": [], "story": [], "links": [], "turn_summary": None}, items, edges,
+                                 {"id": "u", "sources": list(pool)}, "snap", pool, provided,
+                                 EvidenceValidator(pool, provided), written_blocks(found))
+    assert [(c["id"], c["kind"], c["status"], c["actor"], c["title"]) for c in output["event_candidates"]] == [
+        ("tmp:Q1", "question", "asked", "user", "문서도 고쳐 줘"),
+        ("tmp:Q2", "question", "asked", "user", "좋아. 그렇게 해줘.")]
 
 
 def test_new_events_hang_from_the_user_message_of_their_turn():

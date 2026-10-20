@@ -18,40 +18,15 @@ def harness(laboratory):
     return h,records
 
 
-def test_read_range_and_dependency(laboratory):
+def test_provided_range_and_dependency(laboratory):
     h,records=harness(laboratory)
-    result=h.read({'kind':'read_records','ids':['s1'],'start_line':2,'end_line':2,'query':None,'unit_id':None})
-    assert result[0]['lines']==[{'line':2,'text':'two'}]
+    result=h.provide('s1',2,2)
+    assert result['lines']==[{'line':2,'text':'two'}]
     assert h.dependencies['s1']==records[0].content_hash
     validator=EvidenceValidator(h.pool,h.provided)
     validator.citations([{'source_id':'s1','start_line':2,'end_line':2,'quote':'two'}])
     with pytest.raises(FlowError,match='not provided to the model'):
         validator.citations([{'source_id':'s1','start_line':1,'end_line':1,'quote':'one'}])
-
-
-def test_search_events_is_bounded_to_visible_event_manifest_and_unit(laboratory):
-    _, store, engine, records, make = laboratory
-    records.append(make("source text"))
-    events = [{"id": f"ev_{i}", "title": "SQLite storage decision", "summary": "retain evidence",
-               "recorded_at": None, "evidence_ids": [], "session_ids": [], "worktree_ids": []}
-              for i in range(210)]
-    graph = {**store.graph(), "events": events}
-    h = Harness(FixtureRunner(), {r.source_id: r for r in records}, graph, store,
-                AnalysisConfig(), threading.Event(), unit_id="unit-test")
-    h.context(records[:1])
-    found = h.read({"kind": "search_events", "ids": [], "query": "SQLite storage",
-                    "unit_id": "unit-test", "start_line": None, "end_line": None})
-    assert len(found) == 8
-    assert all("id" in item and "reason" in item and "description" in item for item in found)
-    assert h.read({"kind": "search_events", "ids": [], "query": "SQLite",
-                   "unit_id": "another-unit", "start_line": None, "end_line": None}) == [
-                       {"denied": "search_events takes only query and the current unit_id; ids and the line range must be empty."}]
-    malformed = {"kind": "search_events", "ids": ["ev_1"], "query": "SQLite",
-                 "unit_id": "unit-test", "start_line": None, "end_line": None}
-    assert "denied" in h.read(malformed)[0]
-    malformed = {"kind": "read_records", "ids": ["s1"], "start_line": 1,
-                 "end_line": 1, "query": "SQLite", "unit_id": "unit-test"}
-    assert "denied" in h.read(malformed)[0]
 
 
 def test_unique_exact_quote_can_narrow_the_claimed_line_range(laboratory):
@@ -80,13 +55,9 @@ def test_unique_exact_substring_citation_expands_to_canonical_source_lines(labor
     assert validator.normalizations[0]["requested_quote_hash"]
 
 
-def test_canonicalized_extraction_survives_candidate_validation_and_integration_prep(laboratory):
-    _, store, engine, _, make = laboratory
-    record = make("prefix: unique decision phrase here; trailing context\nsecond line")
-    unit_id, snapshot_id = "unit-substring", "snapshot-substring"
-    citation = {"source_id": record.source_id, "start_line": 1, "end_line": 2,
-                "quote": "unique decision phrase here"}
-    output = {"status": "complete", "read_requests": [], "snapshot_id": snapshot_id,
+def extraction_of(record, citation, unit_id, snapshot_id):
+    """An extraction with one decision candidate resting on `citation`."""
+    return {"status": "complete", "read_requests": [], "snapshot_id": snapshot_id,
         "unit_id": unit_id, "event_candidates": [{"id": "tmp:decision", "kind": "decision",
             "title": "Decision", "summary": "A decision", "actor": "user", "status": "adopted",
             "basis": "explicit_statement", "session_ids": [record.session_id],
@@ -94,18 +65,27 @@ def test_canonicalized_extraction_survives_candidate_validation_and_integration_
             "occurred_at": None, "evidence": [citation]}],
         "edge_candidates": [], "existing_event_matches": [], "open_items": [],
         "limitations": [], "unprocessed_record_ids": []}
+
+
+def test_canonicalized_extraction_survives_candidate_validation_and_publishing_the_draft(laboratory):
+    _, store, engine, _, make = laboratory
+    record = make("prefix: unique decision phrase here; trailing context\nsecond line")
+    unit_id, snapshot_id = "unit-substring", "snapshot-substring"
+    citation = {"source_id": record.source_id, "start_line": 1, "end_line": 2,
+                "quote": "unique decision phrase here"}
+    output = extraction_of(record, citation, unit_id, snapshot_id)
     initial = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 2)]},
                                 assigned_source_ids={record.source_id})
     initial.check_extraction(output, unit_id, snapshot_id, store.graph())
     assert citation["start_line"] == 1 and citation["end_line"] == 1
     assert citation["quote"] == "prefix: unique decision phrase here; trailing context"
-    extracted = {"output": output, "evidence": initial.evidence, "dependencies": {}}
+    extracted = {"output": output, "evidence": initial.evidence, "dependencies": {}, "cached": {}}
     unit = {"id": unit_id, "sources": [record.source_id]}
-    from contexttrail.routing import RunnerPool
-    runners = RunnerPool(FixtureRunner, engine.config)
-    prepared = engine._prepare_integration(unit, extracted, {record.source_id: record},
-        store.graph(), snapshot_id, "run-substring", runners, threading.Event())
-    assert prepared.data["validated_candidates"]["event_candidates"][0]["evidence"][0] == citation
+    graph, evidence, _ = engine._integrate_unit(unit, extracted, {record.source_id: record},
+        store.graph(), snapshot_id, "run-substring", threading.Event())
+    [event] = graph["events"]
+    [saved] = [evidence[i] for i in event["evidence_ids"]]
+    assert (saved["start_line"], saved["end_line"], saved["quote"]) == (1, 1, citation["quote"])
 
 
 def test_unique_substring_citation_rejects_duplicate_or_invented_text(laboratory):
@@ -277,21 +257,6 @@ def test_a_quote_written_for_another_record_is_classified_as_such(laboratory):
     assert [item["category"] for item in validator.mismatch_audit()] == ["other_record"]
 
 
-def test_nearest_lines_come_from_provided_lines_only_and_clip_a_long_one(laboratory):
-    _, store, _, records, make = laboratory
-    records.extend([make("filler line one\nfiller line two\na distinctive marker lives here"),
-                    make("context " * 80 + "a distinctive marker lives here" + " trailing" * 40, key="long")])
-    h = Harness(FixtureRunner(), {r.source_id: r for r in records}, store.graph(), store, AnalysisConfig(),
-                threading.Event())
-    h.provided = {r.source_id: [(1, 1)] for r in records}
-    assert [item["line"] for item in h.nearest_lines("s1", "a distinctive marker lives here")] == [1]
-    assert h.nearest_lines("s1", "a distinctive marker lives here") == [
-        {"source_id": "s1", "line": 1, "text": "filler line one", "clipped": False}]
-    [clipped] = h.nearest_lines("long", "a distinctive marker lives here")
-    assert clipped["clipped"] is True and len(clipped["text"]) == 400
-    assert "a distinctive marker lives here" in clipped["text"]
-
-
 def test_validation_lists_multiple_bad_citations(laboratory):
     _, _, _, _, make = laboratory
     record = make("first\nsecond")
@@ -302,13 +267,6 @@ def test_validation_lists_multiple_bad_citations(laboratory):
             {'evidence': [{'source_id':record.source_id,'start_line':2,'end_line':2,'quote':'also wrong'}]},
         ]})
     assert failure.value.args[0].count('quote ') == 2
-
-
-@pytest.mark.parametrize('kind,value',[('read_records','/etc/passwd'),('read_records','../../outside'),('read_diff','s1'),('read_file_at_revision','HEAD:/etc/passwd'),('read_existing_event','unknown')])
-def test_manifest_escape_denied(laboratory,kind,value):
-    h,_=harness(laboratory)
-    result=h.read({'kind':kind,'ids':[value],'start_line':1,'end_line':1,'query':None,'unit_id':None})
-    assert 'denied' in result[0]
 
 
 def test_preserved_excerpt_cannot_read_gap(laboratory):
@@ -363,9 +321,13 @@ def test_earlier_unit_cannot_discover_or_read_later_session_record(laboratory):
                 AnalysisConfig(), threading.Event())
     context = h.context([before])
     assert after.source_id not in {r["id"] for r in context["manifest"]["records"]}
+    assert after.source_id not in {r["source_id"] for r in context["context_only"]}
     assert "future_event" not in {e["id"] for e in context["existing_events"]}
-    assert "denied" in h.read({"kind": "read_records", "ids": [after.source_id],
-                               "start_line": 1, "end_line": 1, "query": None, "unit_id": None})[0]
+    assert "future_event" not in {e["id"] for e in context["manifest"]["events"]}
+    # Nothing of the later record was shown, so no answer can cite it.
+    with pytest.raises(FlowError, match="not provided to the model"):
+        EvidenceValidator(h.pool, h.provided).citations([{"source_id": after.source_id, "start_line": 1,
+                                                          "end_line": 1, "quote": after.content}])
 
 
 def test_unavailable_saved_evidence_with_unknown_time_is_hidden_everywhere(laboratory):
@@ -388,12 +350,8 @@ def test_unavailable_saved_evidence_with_unknown_time_is_hidden_everywhere(labor
     assert h.selection_audit["excluded_events"] == [
         {"event_id": "orphan_event", "reason": "unsafe_or_unavailable_evidence"}]
     assert h.selection_audit["delivered_chars"]["total"] > 0
-    search = h.read({"kind": "search_events", "ids": [], "query": "preserved secret",
-                     "unit_id": "unit-current", "start_line": None, "end_line": None})
-    assert search == []
-    read = h.read({"kind": "read_existing_event", "ids": ["orphan_event"],
-                   "query": None, "unit_id": None, "start_line": None, "end_line": None})
-    assert "denied" in read[0]
+    assert context["manifest"]["events"] == [] and context["existing_evidence"] == {}
+    assert source.source_id not in h.provided
 
 
 def test_extracted_file_clue_recovers_old_decision_among_recent_events(laboratory):
@@ -453,9 +411,9 @@ def test_future_git_revision_file_is_not_readable(laboratory):
                 AnalysisConfig(), threading.Event())
     context = h.context([chat])
     file_id = ident("file_", "abcdef", "future.py")
+    assert file_id in h.file_manifest  # known from the pinned diff, yet not offered to an earlier unit
     assert file_id not in {item["id"] for item in context["manifest"]["files_at_revision"]}
-    assert "denied" in h.read({"kind": "read_file_at_revision", "ids": [file_id],
-                               "start_line": 1, "end_line": 1, "query": None, "unit_id": None})[0]
+    assert later.source_id not in h.provided
 
 
 def test_context_only_record_cannot_be_the_only_source_of_new_event(laboratory):
@@ -465,46 +423,14 @@ def test_context_only_record_cannot_be_the_only_source_of_new_event(laboratory):
     pool = {r.source_id: r for r in (assigned, context)}
     h = Harness(FixtureRunner(), pool, store.graph(), store, AnalysisConfig(), threading.Event())
     h.context([assigned])
-    assigned_input, context_input = h.provide("assigned"), h.provide("context")
-    runner = FixtureRunner()
+    h.provide("assigned"), h.provide("context")
     def extract(record):
-        return runner.run({"stage": "extract", "data": {"snapshot_id": "snap_test",
-            "unit_id": "unit_test", "new_records": [record]}}, {}, threading.Event())
+        citation = {"source_id": record.source_id, "start_line": 1, "end_line": 1, "quote": record.content}
+        return extraction_of(record, citation, "unit_test", "snap_test")
     validator = EvidenceValidator(h.pool, h.provided, assigned_source_ids={"assigned"})
-    validator.check_extraction(extract(assigned_input), "unit_test", "snap_test", store.graph())
+    validator.check_extraction(extract(assigned), "unit_test", "snap_test", store.graph())
     with pytest.raises(FlowError, match="sources of this work unit"):
-        validator.check_extraction(extract(context_input), "unit_test", "snap_test", store.graph())
-
-
-def test_needs_evidence_round_trip_then_complete(laboratory):
-    _,store,engine,records,make=laboratory
-    records.append(make(CASES[0][0]))
-    class Reader(FixtureRunner):
-        def run(self,task,schema,cancel):
-            output=super().run(task,schema,cancel)
-            if task['stage']=='extract' and 'evidence_rounds' not in task:
-                output.update(status='needs_evidence',event_candidates=[],read_requests=[{'kind':'read_records','ids':['s1'],'start_line':1,'end_line':1,'query':None,'unit_id':None}])
-            return output
-    runner=Reader();result=engine.analyze(lambda:runner)
-    assert result['status']=='complete' and runner.calls==3
-    assert runner.tasks[1]['evidence_rounds'][0][0]['results'][0]['source_id']=='s1'
-
-
-def test_after_the_last_evidence_round_the_answer_must_be_complete(laboratory):
-    _,store,engine,records,make=laboratory;records.append(make(CASES[0][0]))
-    class Asking(FixtureRunner):
-        """Asks for evidence whenever the schema it is given still allows it."""
-        def run(self,task,schema,cancel):
-            output=super().run(task,schema,cancel)
-            if task['stage']=='extract' and 'needs_evidence' in schema['properties']['status']['enum']:
-                output.update(status='needs_evidence',event_candidates=[],read_requests=[{'kind':'read_records','ids':['s1'],'start_line':1,'end_line':1,'query':None,'unit_id':None}])
-            return output
-    runner=Asking();result=engine.analyze(lambda:runner)
-    assert result['status']=='complete' and runner.calls==4   # two rounds, the forced answer, the integration
-    assert len(runner.tasks[2]['evidence_rounds'])==2
-    assert runner.tasks[2]['evidence_requests'].startswith('None left')
-    assert 'evidence_requests' not in runner.tasks[1]
-    assert store.graph()['version']==1
+        validator.check_extraction(extract(context), "unit_test", "snap_test", store.graph())
 
 
 def test_the_calls_of_one_task_share_the_runners_conversation(laboratory):
@@ -520,27 +446,14 @@ def test_the_calls_of_one_task_share_the_runners_conversation(laboratory):
         def run(self,task,schema,cancel,thread=None):
             self.used.append((task['stage'],thread))
             output=super().run(task,schema,cancel)
-            if task['stage']=='extract' and 'evidence_rounds' not in task:
-                output.update(status='needs_evidence',event_candidates=[],read_requests=[{'kind':'read_records','ids':['s1'],'start_line':1,'end_line':1,'query':None,'unit_id':None}])
+            if 'repair' not in task:
+                del output['turn_summary']   # the first answer fails its checks
             return output
     runner=Threaded();result=engine.analyze(lambda:runner)
     assert result['status']=='complete'
-    extract=[thread for stage,thread in runner.used if stage=='extract']
-    assert len(extract)==2 and extract[0] is extract[1]          # the evidence round continued the conversation
-    assert all(t.closed==1 for t in runner.threads)              # and every conversation was closed after its task
-
-
-def test_read_rounds_are_bounded(laboratory):
-    _,store,engine,records,make=laboratory;records.append(make(CASES[0][0]))
-    class Endless(FixtureRunner):
-        """Ignores the schema and keeps asking."""
-        def run(self,task,schema,cancel):
-            output=super().run(task,schema,cancel)
-            output.update(status='needs_evidence',event_candidates=[],read_requests=[{'kind':'read_records','ids':['s1'],'start_line':1,'end_line':1,'query':None,'unit_id':None}])
-            return output
-    runner=Endless();result=engine.analyze(lambda:runner)
-    assert result['status']=='failed' and runner.calls==6  # 4 in the full reading, then the light reading and its repair
-    assert store.graph()['version']==0
+    story=[thread for stage,thread in runner.used if stage=='story']
+    assert len(story)==2 and story[0] is story[1]                # the repair continued the conversation
+    assert len(runner.threads)==1 and runner.threads[0].closed==1  # which was closed after its task
 
 
 ESCAPED_PATCH = ('text(await tools.apply_patch("*** Begin Patch\\n+if [ -e \\"$bin/contexttrail\\" ]; then\\n'
@@ -690,26 +603,18 @@ def test_cited_focus_survives_canonicalization_and_publish(laboratory):
     _, store, engine, _, make = laboratory
     record = make("prefix: unique decision phrase here; trailing context\nsecond line")
     unit_id, snapshot_id = "unit-focus", "snapshot-focus"
-    output = {"status": "complete", "read_requests": [], "snapshot_id": snapshot_id,
-        "unit_id": unit_id, "event_candidates": [{"id": "tmp:decision", "kind": "decision",
-            "title": "Decision", "summary": "A decision", "actor": "user", "status": "adopted",
-            "basis": "explicit_statement", "session_ids": [record.session_id],
-            "worktree_ids": [record.worktree_id], "recorded_at": record.recorded_at,
-            "occurred_at": None, "evidence": [{"source_id": record.source_id, "start_line": 1,
-                                               "end_line": 1, "quote": "unique decision phrase here"}]}],
-        "edge_candidates": [], "existing_event_matches": [], "open_items": [],
-        "limitations": [], "unprocessed_record_ids": []}
+    output = extraction_of(record, {"source_id": record.source_id, "start_line": 1, "end_line": 1,
+                                    "quote": "unique decision phrase here"}, unit_id, snapshot_id)
     initial = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 2)]},
                                 assigned_source_ids={record.source_id})
     initial.check_extraction(output, unit_id, snapshot_id, store.graph())
     [(evidence_id, item)] = initial.evidence.items()
     assert item["focus"] == [[8, 35]]
-    extracted = {"output": output, "evidence": initial.evidence, "dependencies": {}}
-    from contexttrail.routing import RunnerPool
-    prepared = engine._prepare_integration({"id": unit_id, "sources": [record.source_id]}, extracted,
-        {record.source_id: record}, store.graph(), snapshot_id, "run-focus",
-        RunnerPool(FixtureRunner, engine.config), threading.Event())
-    assert prepared.validator.evidence[evidence_id]["focus"] == [[8, 35]]
+    extracted = {"output": output, "evidence": initial.evidence, "dependencies": {}, "cached": {}}
+    graph, evidence, _ = engine._integrate_unit({"id": unit_id, "sources": [record.source_id]}, extracted,
+        {record.source_id: record}, store.graph(), snapshot_id, "run-focus", threading.Event())
+    assert graph["events"][0]["evidence_ids"] == [evidence_id]
+    assert evidence[evidence_id]["focus"] == [[8, 35]]
     store.publish(store.graph(), [], {}, {evidence_id: item}, expected_version=0)
     store.publish(store.graph(), [], {}, {evidence_id: {**item, "focus": [[0, 6]]}}, expected_version=1)
     assert store.evidence(evidence_id)["focus"] == [[0, 6], [8, 35]]
@@ -733,102 +638,19 @@ def _lean_fixture(laboratory):
     return store, [*earlier, assigned], assigned
 
 
-def test_lean_context_sends_cited_lines_not_whole_records(laboratory):
+def test_context_sends_cited_lines_not_whole_records(laboratory):
     store, records, assigned = _lean_fixture(laboratory)
-    def build(mode):
-        h = Harness(FixtureRunner(), {r.source_id: r for r in records}, store.graph(), store,
-                    AnalysisConfig(context_mode=mode), threading.Event())
-        return h, h.context([assigned])
-    full_h, full = build("full")
-    lean_h, lean = build("lean")
-    assert lean_h.selection_audit["delivered_chars"]["total"] < full_h.selection_audit["delivered_chars"]["total"] * 0.6
+    h = Harness(FixtureRunner(), {r.source_id: r for r in records}, store.graph(), store,
+                AnalysisConfig(), threading.Event())
+    lean = h.context([assigned])
+    earlier_chars = sum(len(r.content) for r in records if r is not assigned)
+    assert h.selection_audit["delivered_chars"]["total"] < earlier_chars * 0.6
     cited = [item for item in lean["context_only"] if item.get("context_reason") == "cited_lines"]
     assert cited and all(item["lines"][0]["line"] == 20 - LEAN_CITED_LINES and item["lines"][-1]["line"] == 20 + LEAN_CITED_LINES for item in cited)
     assert not any(len(item["lines"]) == 40 for item in lean["context_only"]
                    if item["source_id"] not in {"old10", "old11"})  # the two preceding records stay whole
     assert all(item.get("quote_in_context_only") or "quote" in item for item in lean["existing_evidence"].values())
     assert len(lean["existing_events"]) <= 12
-
-
-def test_lean_context_is_the_default_and_full_changes_the_routing_signature(laboratory):
-    _, store, engine, _, _ = laboratory
-    assert engine.config.context_mode == "lean"
-    lean = engine._routing_signature()
-    engine.config.context_mode = "full"
-    assert engine._routing_signature() != lean
-    with pytest.raises(FlowError, match="context_mode"):
-        AnalysisConfig(context_mode="tiny").validate()
-
-
-def test_integrate_evidence_is_full_by_default_and_only_full_or_reuse(laboratory):
-    _, _, engine, _, _ = laboratory
-    assert engine.config.integrate_evidence == "full"
-    # It changes only the integration request, so a finished extraction is never resent.
-    signature = engine._routing_signature()
-    engine.config.integrate_evidence = "reuse"
-    assert engine._routing_signature() == signature
-    with pytest.raises(FlowError, match="integrate_evidence"):
-        AnalysisConfig(integrate_evidence="partial").validate()
-
-
-def _reuse_case(laboratory):
-    """One event candidate and the GraphDelta a reuse-mode model returns with no quotes at all."""
-    _, store, _, records, make = laboratory
-    record = make("동시 쓰기 때문에 SQLite로 바꾸기로 했습니다.")
-    records.append(record)
-    citation = {"source_id": record.source_id, "start_line": 1, "end_line": 1, "quote": record.content}
-    candidate = {"id": "tmp:sqlite", "kind": "revision", "title": "SQLite로 전환", "summary": "동시 쓰기 실패 때문",
-                 "actor": "user", "status": "adopted", "basis": "explicit_statement",
-                 "session_ids": [record.session_id], "worktree_ids": [], "recorded_at": None,
-                 "occurred_at": None, "evidence": [citation]}
-    candidates = {"unit_id": "unit", "event_candidates": [candidate], "edge_candidates": [],
-                  "existing_event_matches": [], "open_items": [], "limitations": [], "unprocessed_record_ids": []}
-    delta = {"status": "complete", "read_requests": [], "snapshot_id": "snap", "base_graph_version": 0,
-             "events_to_add": [{**{k: v for k, v in candidate.items() if k != "id"},
-                                "id": "tmp:switch", "evidence": []}],
-             "events_to_update": [], "edges_to_add": [], "edges_to_invalidate": [],
-             "open_items_to_upsert": [], "open_items_to_resolve": [],
-             "candidate_resolutions": [{"candidate_id": "tmp:sqlite", "candidate_kind": "event",
-                 "disposition": "added", "target_ids": ["tmp:switch"], "reason": "결정을 뒤집었습니다.",
-                 "evidence": []}],
-             "change_attributions": [{"operation": "events_to_add", "item_id": "tmp:switch",
-                 "candidate_ids": ["tmp:sqlite"], "reason": "결정을 뒤집었습니다.", "evidence": []}],
-             "review_issues": [], "review_resolutions": [], "limitations": []}
-    validator = EvidenceValidator({record.source_id: record}, {record.source_id: [(1, 1)]})
-    return validator, delta, candidates, store.graph(), citation
-
-
-def test_reuse_fills_the_same_citation_dicts_the_candidate_already_carried(laboratory):
-    validator, delta, candidates, graph, citation = _reuse_case(laboratory)
-    result = validator.apply_delta(delta, graph, "snap", "run", candidates, evidence_reuse=True)
-    assert delta["events_to_add"][0]["evidence"] == [citation]
-    assert delta["candidate_resolutions"][0]["evidence"] == [citation]
-    assert delta["change_attributions"][0]["evidence"] == [citation]
-    assert [item for item in validator.normalizations
-            if item["mode"] == "evidence_reused_from_candidates"] == [
-        {"mode": "evidence_reused_from_candidates", "items": 3}]
-    [event] = result["events"]
-    assert event["evidence_ids"] == validator.citations([citation])
-    # A second apply of the same delta fills nothing and records nothing more.
-    validator.normalizations.clear()
-    validator.apply_delta(delta, graph, "snap", "run", candidates, evidence_reuse=True)
-    assert not [item for item in validator.normalizations
-                if item["mode"] == "evidence_reused_from_candidates"]
-
-
-def test_reuse_rejects_an_item_no_candidate_supports(laboratory):
-    validator, delta, candidates, graph, _ = _reuse_case(laboratory)
-    delta["candidate_resolutions"][0].update(disposition="excluded", target_ids=[])
-    with pytest.raises(FlowError, match="events_to_add tmp:switch"):
-        validator.apply_delta(delta, graph, "snap", "run", candidates, evidence_reuse=True)
-
-
-def test_reuse_still_verifies_the_quote_the_model_did_write(laboratory):
-    validator, delta, candidates, graph, _ = _reuse_case(laboratory)
-    delta["events_to_add"][0]["evidence"] = [{"source_id": "s1", "start_line": 1, "end_line": 1,
-                                              "quote": "원문에 없는 다른 문장입니다"}]
-    with pytest.raises(FlowError, match="quote "):
-        validator.apply_delta(delta, graph, "snap", "run", candidates, evidence_reuse=True)
 
 
 def _tool_restore_case(make, candidate_cites_result=True):
@@ -907,29 +729,6 @@ def test_documentation_only_edits_are_flagged_in_tool_steps(laboratory):
                    tool_call_id="c")
     steps = {s["call"]: s for s in tool_steps([doc, code])}
     assert steps[doc.source_id]["doc"] is True and "doc" not in steps[code.source_id]
-
-
-def test_the_stages_of_one_unit_share_the_runners_conversation_and_it_closes_after_the_unit(laboratory):
-    _,store,engine,records,make=laboratory
-    records.append(make(CASES[0][0])); records.append(replace(make(CASES[4][0],key='s2'),recorded_at='2026-09-22T10:05:00Z'))
-    engine.config.integrate_output='full'  # so the unit integrates with a call of its own
-    engine.config.unit_thread=True
-    class Conversation:
-        def __init__(self): self.closed=0
-        def close(self): self.closed+=1
-    class Threaded(FixtureRunner):
-        threads=[]; used=[]   # the pool makes one instance per role; the unit's conversation must still be shared
-        def thread(self):
-            Threaded.threads.append(Conversation()); return Threaded.threads[-1]
-        def run(self,task,schema,cancel,thread=None):
-            Threaded.used.append((task['stage'],thread)); return super().run(task,schema,cancel)
-    result=engine.analyze(Threaded)
-    assert result['status']=='complete'
-    stages=[stage for stage,_ in Threaded.used]
-    assert 'extract' in stages and 'integrate' in stages
-    assert len({id(thread) for _,thread in Threaded.used})==1      # one conversation for the unit's stages
-    assert len(Threaded.threads)==1 and Threaded.threads[0].closed==1  # closed once, after the unit
-    assert engine.unit_threads=={}
 
 
 def test_a_citation_with_no_quote_and_lines_outside_the_record_is_refused(laboratory):

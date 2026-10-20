@@ -14,24 +14,23 @@ from contexttrail.evaluation import call_timeline, demo_fixture, run_eval, summa
 from contexttrail.util import Cancelled, FlowError
 
 
-def test_stage_models_are_distinct_and_integration_uses_quotes(laboratory):
+def fail_publish_once(engine):
+    """The unit's extraction is saved, then the run stops before its graph is published (once)."""
+    integrate = engine._integrate_unit
+    def fail(*args, **kwargs):
+        engine._integrate_unit = integrate
+        raise FlowError('publish unavailable')
+    engine._integrate_unit = fail
+
+
+def test_the_story_call_runs_on_the_extract_model(laboratory):
     _, store, engine, records, make = laboratory
     records.append(make(CASES[0][0]))
-    # A long unrelated record must not be automatically copied into integration.
-    records.append(make('UNCITED_SENTINEL-' * 500, key='uncited', role='assistant'))
     engine.config.extract_model = 'mock-small'
-    engine.config.integrate_model = 'mock-strong'
-    runners = []
-    def factory():
-        r = FixtureRunner(); runners.append(r); return r
-    result = engine.analyze(factory)
+    result = engine.analyze(FixtureRunner)
     assert result['status'] == 'complete'
     calls = store.llm_calls()
-    assert [c['metadata']['requested_model'] for c in calls] == ['mock-small', 'mock-strong']
-    task = next(t for r in runners for t in r.tasks if t['stage'] == 'integrate')
-    assert 'new_records' not in task['data']
-    assert 'UNCITED_SENTINEL' not in str(task)
-    assert task['data']['candidate_evidence']
+    assert [(c['stage'], c['metadata']['requested_model']) for c in calls] == [('story', 'mock-small')]
     assert all(c['details']['actual_model'] is None for c in calls)
 
 
@@ -45,7 +44,7 @@ def test_parallel_extract_overlap_and_serial_graph_publish(laboratory):
     class Parallel(FixtureRunner):
         def run(self, task, schema, cancel):
             nonlocal active, peak
-            if task['stage'] == 'extract':
+            if task['stage'] == 'story':
                 with lock:
                     active += 1; peak = max(peak, active)
                 barrier.wait(timeout=3)
@@ -55,68 +54,28 @@ def test_parallel_extract_overlap_and_serial_graph_publish(laboratory):
     result = engine.analyze(Parallel)
     assert result['status'] == 'complete', result
     assert peak == 2
-    assert [e['title'] for e in result['graph']['events']] == [CASES[0][2], CASES[1][2]]
+    # The person's message is a request titled by its words; the assistant's alternative is the story's event.
+    assert [e['title'] for e in result['graph']['events']] == [CASES[0][0], CASES[1][2]]
     assert result['graph']['version'] == 2
-    assert len({c['metadata']['worker_id'] for c in store.llm_calls() if c['stage'] == 'extract'}) == 2
-    assert len({c['metadata']['worker_id'] for c in store.llm_calls() if c['stage'] == 'integrate'}) == 1
+    assert len({c['metadata']['worker_id'] for c in store.llm_calls() if c['stage'] == 'story'}) == 2
     assert engine.analyze(lambda: pytest.fail('noop'))['runner_calls'] == 0
 
 
-def test_valid_revision_candidate_skips_extract_semantic_review(laboratory):
-    _, store, engine, records, make = laboratory
-    records.append(make(CASES[4][0]))
-    engine.config.extract_model = 'small'
-    engine.config.escalation_model = 'strong'
-    engine.config.integrate_model = 'strong'
-    result = engine.analyze(FixtureRunner)
-    assert result['status'] == 'complete'
-    calls = store.llm_calls()
-    # Extraction does not escalate. A lone revision has nothing to revise, so the delta is reviewed.
-    assert [c['metadata']['routing_role'] for c in calls] == ['extract', 'integrate', 'integrate_review']
-    assert not store.units()[0]['result']['escalated']
-
-
-def test_no_escalation_without_selected_model(laboratory):
-    _, store, engine, records, make = laboratory
-    records.append(make(CASES[0][0]))
-    assert engine.analyze(FixtureRunner)['runner_calls'] == 2
-    assert not any(c['metadata']['routing_role'] == 'escalation' for c in store.llm_calls())
-
-
-def test_each_stage_runs_at_its_reasoning_effort(laboratory):
+def test_the_story_call_runs_at_its_reasoning_effort(laboratory):
     _, store, engine, records, make = laboratory
     records.append(make(CASES[0][0]))
     class Effortful(FixtureRunner):
         effort = None
-    assert (engine.config.extract_effort, engine.config.integrate_effort) == ('medium', 'medium')  # defaults
-    engine.config.integrate_effort = 'high'
+    assert engine.config.extract_effort == 'medium'  # default
+    engine.config.extract_effort = 'high'
     assert engine.analyze(Effortful)['status'] == 'complete'
     assert [(c['metadata']['routing_role'], c['metadata']['reasoning_effort']) for c in store.llm_calls()] == [
-        ('extract', 'medium'), ('integrate', 'high')]
-
-
-def test_validation_failure_escalates_but_cannot_bypass_validation(laboratory):
-    _, store, engine, records, make = laboratory
-    records.append(make(CASES[0][0]))
-    engine.config.extract_model, engine.config.escalation_model = 'small', 'strong'
-    class WrongSmall(FixtureRunner):
-        def run(self, task, schema, cancel):
-            output = super().run(task, schema, cancel)
-            if self.model == 'small' and task['stage'] == 'extract':
-                output['event_candidates'][0]['evidence'][0]['quote'] = 'invented'
-            return output
-    result = engine.analyze(WrongSmall)
-    assert result['status'] == 'complete', result
-    calls = store.llm_calls()
-    assert [c['status'] for c in calls[:3]] == ['validation_error', 'validation_error', 'complete']
-    assert calls[2]['metadata']['routing_reasons'] == ['bounded_validation_failure']
-    assert result['runner_calls'] == 4
+        ('extract', 'high')]
 
 
 def test_infrastructure_failure_does_not_trigger_model_fallback(laboratory):
     _, store, engine, records, make = laboratory
     records.append(make(CASES[0][0]))
-    engine.config.escalation_model = 'strong'
     class Fail(FixtureRunner):
         def run(self, task, schema, cancel):
             raise FlowError('timeout/account failure')
@@ -125,47 +84,35 @@ def test_infrastructure_failure_does_not_trigger_model_fallback(laboratory):
     assert len(store.llm_calls()) == 1
 
 
-def test_empty_output_does_not_trigger_extract_semantic_review(laboratory):
+def test_a_short_unit_takes_one_call_and_is_not_sent_again(laboratory):
     _, store, engine, records, make = laboratory
     records.append(make('감사합니다.'))
-    engine.config.escalation_model = 'strong'
     result = engine.analyze(FixtureRunner)
     assert result['status'] == 'complete' and result['runner_calls'] == 1
     assert engine.analyze(lambda: pytest.fail('cached empty'))['status'] == 'noop'
 
 
-def test_extraction_is_reused_after_post_delta_review_failure(laboratory):
+def test_extraction_is_reused_after_a_publish_failure(laboratory):
     _, store, engine, records, make = laboratory
     records.append(make(CASES[0][0]))
-    first = engine.analyze(FixtureRunner)
-    assert first['status'] == 'complete'
-    records[0] = make(CASES[4][0])
-    engine.config.escalation_model = 'strong'
-    class FailReview(FixtureRunner):
-        def run(self, task, schema, cancel):
-            if task['stage'] == 'integrate' and task['data'].get('review_issues'):
-                raise FlowError('review unavailable')
-            return super().run(task, schema, cancel)
-    failed = engine.analyze(FailReview)
+    fail_publish_once(engine)
+    failed = engine.analyze(FixtureRunner)
     assert failed['status'] == 'failed' and store.units()[0]['status'] == 'extracted'
     second = engine.analyze(FixtureRunner)
     assert second['status'] == 'complete' and second['reused_extractions'] == 1
-    assert [c['metadata']['routing_role'] for c in store.llm_calls(second['run_id'])] == ['integrate', 'integrate_review']
+    assert store.llm_calls(second['run_id']) == []
 
 
 def test_pending_cache_is_invalidated_on_extract_model_change(laboratory):
     _, store, engine, records, make = laboratory
     records.append(make(CASES[0][0]))
     engine.config.extract_model = 'small-A'
-    class FailIntegration(FixtureRunner):
-        def run(self, task, schema, cancel):
-            if task['stage'] == 'integrate': raise FlowError('integration unavailable')
-            return super().run(task, schema, cancel)
-    engine.analyze(FailIntegration)
+    fail_publish_once(engine)
+    engine.analyze(FixtureRunner)
     engine.config.extract_model = 'small-B'
     second = engine.analyze(FixtureRunner)
     assert second['status'] == 'complete' and second['reused_extractions'] == 0
-    assert second['runner_calls'] == 2
+    assert second['runner_calls'] == 1
     # Integrated units remain untouched after subsequent configuration changes.
     engine.config.extract_model = 'small-C'
     assert engine.analyze(lambda: pytest.fail('integrated unchanged'))['status'] == 'noop'
@@ -173,17 +120,27 @@ def test_pending_cache_is_invalidated_on_extract_model_change(laboratory):
 
 def test_global_call_cap_across_parallel_workers(laboratory):
     _, store, engine, records, make = laboratory
-    engine.config.extract_workers, engine.config.max_calls = 2, 3
+    engine.config.extract_workers, engine.config.max_calls = 2, 1
     records.extend([make(CASES[0][0], key='a', session='one'), make(CASES[4][0], key='b', session='two')])
-    first = engine.analyze(FixtureRunner)
-    # Two extractions and the first integration use the cap; the second unit's saved extraction is not
-    # integrated with no call left, and the unit is not started.
-    assert first['runner_calls'] == 3
-    assert len(store.llm_calls()) == 3
+    # The second worker asks for its call only once the first has its own, so the one call is the first unit's.
+    first_call = threading.Event()
+    prepare = engine._prepare_extraction
+    def prepare_after_first(unit, *args, **kwargs):
+        if unit['sources'] == ['b']:
+            assert first_call.wait(timeout=3)
+        return prepare(unit, *args, **kwargs)
+    engine._prepare_extraction = prepare_after_first
+    class First(FixtureRunner):
+        def run(self, task, schema, cancel):
+            first_call.set()
+            return super().run(task, schema, cancel)
+    first = engine.analyze(First)
+    # One call between the two workers; the second unit is not read with no call left.
+    assert first['runner_calls'] == 1
+    assert len(store.llm_calls()) == 1
     assert first['status'] == 'partial' and first['completed_units'] == 1
     engine.config.max_calls = 10
     second = engine.analyze(FixtureRunner)
-    # The first unit's events changed the second one's context, so its extraction is made again.
     assert second['status'] == 'complete' and second['completed_units'] == 1
 
 
@@ -221,13 +178,11 @@ def test_ops_reports_unknown_usage_and_no_fabricated_cost(laboratory):
     records.append(make(CASES[0][0]))
     engine.analyze(FixtureRunner)
     report = summarize_calls(store.llm_calls())
-    assert report['usage_missing_calls'] == 2 and report['provider_usage_sums'] is None
+    assert report['usage_missing_calls'] == 1 and report['provider_usage_sums'] is None
     assert report['billed_cost'] is None
     assert sum(group['calls'] for group in report['by_role'].values()) == report['host_calls']
     assert all({'calls', 'duration_ms', 'output_chars', 'input_tokens', 'output_tokens'} <= set(group)
                for group in report['by_role'].values())
-    integrate = report['by_role']['integrate']['quote_chars']
-    assert integrate['candidate_resolutions'] > 0 and integrate['change_attributions'] > 0
 
 
 def test_output_quote_chars_counts_sizes_per_section():
@@ -237,29 +192,12 @@ def test_output_quote_chars_counts_sizes_per_section():
     assert output_quote_chars(output) == {'events_to_add': 6, 'change_attributions': 3}
 
 
-def test_review_summary_counts_statuses_without_issue_text():
-    from contexttrail.evaluation import review_summary
-    graph = {'semantic_review_history': [
-        {'status': 'not_needed', 'issues': [], 'resolutions': []},
-        {'status': 'reviewed', 'issues': [{'signal': 'unlinked_revision', 'question': 'secret'}],
-         'resolutions': [{'status': 'modified', 'reason': 'secret'}]}]}
-    summary = review_summary(graph)
-    assert summary == {'units': 2, 'statuses': {'not_needed': 1, 'reviewed': 1},
-                       'resolutions': {'modified': 1}, 'signals': {'unlinked_revision': 1}}
-    assert 'secret' not in str(summary)
-
-
-def test_ops_count_why_the_quotes_did_not_match(laboratory):
-    _, store, engine, records, make = laboratory
-    records.append(make(CASES[0][0]))
-    class BadQuote(FixtureRunner):
-        def run(self, task, schema, cancel):
-            output = super().run(task, schema, cancel)
-            if task["stage"] == "extract" and "repair" not in task:
-                output["event_candidates"][0]["evidence"][0]["quote"] = "우선 JSON 파일로 저장하겠습니다"
-            return output
-    engine.analyze(lambda: BadQuote())
-    assert summarize_calls(store.llm_calls())["quote_mismatch_categories"] == {"not_found": 1}
+def test_ops_count_why_the_quotes_did_not_match():
+    # A ledger row as an answer whose quote was not in its cited lines leaves it (the reason, never the quote).
+    call = {'stage': 'story', 'status': 'validation_error', 'metadata': {'routing_role': 'extract'},
+            'details': {'error': 'quote not found uniquely in the cited lines: src_1:1-1 (0 matches)',
+                        'quote_mismatch_audit': [{'category': 'not_found', 'source_id': 'src_1'}]}}
+    assert summarize_calls([call])["quote_mismatch_categories"] == {"not_found": 1}
 
 
 def test_ops_timeline_excludes_raw_inputs_outputs_and_errors():
@@ -276,64 +214,22 @@ def test_ops_timeline_excludes_raw_inputs_outputs_and_errors():
 
 
 def test_eval_frozen_fixture_and_independent_ab_states(tmp_path):
-    cfg = AnalysisConfig(extract_model='small', integrate_model='strong', extract_workers=2)
+    cfg = AnalysisConfig(extract_model='small', extract_workers=2)
     first = run_eval('demo', tmp_path/'A', 'mock', cfg)
-    second = run_eval('demo', tmp_path/'B', 'mock', AnalysisConfig(extract_model='strong', integrate_model='strong'))
+    second = run_eval('demo', tmp_path/'B', 'mock', AnalysisConfig(extract_model='strong'))
     assert first['source_snapshot_id'] == second['source_snapshot_id']
     assert first['fixture_digest'] == second['fixture_digest']
     assert first['initial_graph_version'] == second['initial_graph_version'] == 0
+    # Every expectation of the synthetic demo holds: the requests, the alternative, each edit verified by the
+    # check that tried it, and the report answering the second request.
+    expected = demo_fixture()['expectations']
+    assert first['expectations']['passed'] == second['expectations']['passed'] == (
+        len(expected['events']) + len(expected['relations']))
     assert first['expectations']['failed'] == second['expectations']['failed'] == 0
     assert first['noop_check'] == {'status': 'noop', 'runner_calls': 0}
     assert (tmp_path/'A/state/state.sqlite').is_file() and (tmp_path/'B/state/state.sqlite').is_file()
     for path in (tmp_path/'A').glob('*.json'):
         assert path.stat().st_mode & 0o077 == 0
-
-
-def test_reuse_evidence_shrinks_the_integrate_quotes_and_keeps_the_graph(tmp_path):
-    full = run_eval('demo', tmp_path/'full', 'mock', AnalysisConfig())
-    reuse = run_eval('demo', tmp_path/'reuse', 'mock', AnalysisConfig(integrate_evidence='reuse'))
-    assert full['first_run']['status'] == reuse['first_run']['status'] == 'complete'
-    assert (reuse['expectations']['passed'], reuse['expectations']['failed']) == (
-        full['expectations']['passed'], 0)
-    quoted = lambda report, role: sum(report['ops']['by_role'][role].get('quote_chars', {}).values())
-    for role in ('integrate', 'integrate_review'):
-        assert quoted(reuse, role) < quoted(full, role)
-    assert not {'events_to_add', 'candidate_resolutions', 'change_attributions'} & set(
-        reuse['ops']['by_role']['integrate'].get('quote_chars', {}))
-    # The same graph and the same citations, whatever the integrator had to write.
-    def claims(name):
-        data = json.loads((tmp_path/name/'flow.json').read_text())
-        graph, evidence = data['graph'], data['evidence']
-        titles = {event['id']: event['title'] for event in graph['events']}
-        return ([(e['title'], e['kind'], e['status'], e['evidence_ids']) for e in graph['events']],
-                sorted((titles.get(e['from_event_id'], e['from_event_id']),
-                        titles.get(e['to_event_id'], e['to_event_id']), e['relation'], e['active'],
-                        tuple(e['evidence_ids'])) for e in graph['edges']),
-                sorted((item['source_id'], item['start_line'], item['end_line'], item['quote'])
-                       for item in evidence.values()))
-    assert claims('reuse') == claims('full')
-
-
-def test_review_patch_shrinks_the_review_answer_and_keeps_the_graph(tmp_path):
-    full = run_eval('demo', tmp_path/'full', 'mock', AnalysisConfig(review_output='full'))
-    patch = run_eval('demo', tmp_path/'patch', 'mock', AnalysisConfig())
-    assert full['first_run']['status'] == patch['first_run']['status'] == 'complete'
-    assert (patch['expectations']['passed'], patch['expectations']['failed']) == (
-        full['expectations']['passed'], 0)
-    chars = lambda report: report['ops']['by_role']['integrate_review']['output_chars']
-    assert 0 < chars(patch) < chars(full)
-    assert full['semantic_review']['statuses'] == patch['semantic_review']['statuses']
-    def claims(name):
-        data = json.loads((tmp_path/name/'flow.json').read_text())
-        graph, evidence = data['graph'], data['evidence']
-        titles = {event['id']: event['title'] for event in graph['events']}
-        return ([(e['title'], e['kind'], e['status'], e['evidence_ids']) for e in graph['events']],
-                sorted((titles.get(e['from_event_id'], e['from_event_id']),
-                        titles.get(e['to_event_id'], e['to_event_id']), e['relation'], e['active'],
-                        tuple(e['evidence_ids'])) for e in graph['edges']),
-                sorted((item['source_id'], item['start_line'], item['end_line'], item['quote'])
-                       for item in evidence.values()))
-    assert claims('patch') == claims('full')
 
 
 def test_eval_requires_explicit_live_consent(tmp_path):
@@ -359,9 +255,9 @@ def test_fixture_cannot_enable_revision_path_reads():
 
 def test_eval_and_ops_cli(tmp_path, capsys):
     out = tmp_path/'eval'
-    # The integrate call (and its model) is the full path's; workers side by side see no unit before them.
-    assert main(['eval', '--runner', 'mock', '--output', str(out), '--workers', '2', '--no-economy',
-                 '--extract-model', 'small', '--integrate-model', 'strong']) == 0
+    # Workers side by side see no unit before them.
+    assert main(['eval', '--runner', 'mock', '--output', str(out), '--workers', '2',
+                 '--extract-model', 'small']) == 0
     report = json.loads((out/'report.json').read_text())
     assert report['mode'] == 'synthetic_mock' and report['expectations']['failed'] == 0
     assert main(['demo','--path',str(tmp_path/'demo'),'--no-tui']) == 0
@@ -370,9 +266,9 @@ def test_eval_and_ops_cli(tmp_path, capsys):
     assert main(['ops',str(tmp_path/'demo/sample-project'),'--details']) == 0
     timeline = json.loads(capsys.readouterr().out)
     assert timeline['summary']['host_calls'] == len(timeline['calls'])
-    # The next unit's extraction may start while the first is integrated.
-    stages = [call['stage'] for call in timeline['calls']]
-    assert stages[0] == 'extract' and 'integrate' in stages
+    # One story call per unit, and no other.
+    assert timeline['calls'] and {call['stage'] for call in timeline['calls']} == {'story'}
+    assert len(timeline['calls']) == len({call['unit_id'] for call in timeline['calls']})
 
 
 def test_eval_preview_explains_full_prompt_without_model_calls(tmp_path, capsys):
@@ -382,13 +278,14 @@ def test_eval_preview_explains_full_prompt_without_model_calls(tmp_path, capsys)
     assert result['runner_calls'] == 0
     assert len(result['units']) >= 1
     page = (output / 'input-preview.html').read_text()
-    assert '공통 system 지시문' in page
-    assert '새 기록 new_records' in page
+    assert 'system 지시문' in page
+    assert '쓴 글 written' in page
+    assert '작업 개요 work' in page
     assert '기존 사건 선택 이유' in page
     assert '입력이 만들어지는 순서' in page
     assert '출력 JSON Schema' in page
     task = json.loads((output / 'unit-01-task.json').read_text())
-    assert task['data']['new_records']
+    assert task['data']['written'] and task['data']['work']
     assert html.escape(task['system'].splitlines()[0]) in page
 
 
@@ -403,11 +300,8 @@ def test_cached_extra_evidence_is_visible_on_resume(laboratory):
     records.append(make('old context', key='old'))
     engine.analyze(FixtureRunner)
     records.append(make(CASES[0][0], key='new'))
-    class FailIntegration(FixtureRunner):
-        def run(self, task, schema, cancel):
-            if task['stage'] == 'integrate': raise FlowError('stop before publish')
-            return super().run(task, schema, cancel)
-    engine.analyze(FailIntegration)
+    fail_publish_once(engine)
+    engine.analyze(FixtureRunner)
     unit = next(u for u in store.units() if u['status'] == 'extracted')
     old = records[0]
     validator = EvidenceValidator({'old': old}, {'old': [(1, 1)]})
@@ -420,7 +314,7 @@ def test_cached_extra_evidence_is_visible_on_resume(laboratory):
     store.save_unit(unit['id'], unit['sources'], deps, 'extracted', cached)
     result = engine.analyze(FixtureRunner)
     assert result['status'] == 'complete', result
-    assert result['reused_extractions'] == 1 and result['runner_calls'] == 1
+    assert result['reused_extractions'] == 1 and result['runner_calls'] == 0
 
 
 def _fixture_record(source_id, role, content, call_id=None):
@@ -457,11 +351,13 @@ def test_source_anchored_expectation_needs_no_title(monkeypatch, tmp_path):
     first = data['expectations']['events'][0]
     data['expectations'] = {'events': [{'label': 'first', 'source_ids': first['source_ids'],
                                         'status': first['status']}]}
+    # A hand-cut fixture that lost the call of a tool result.
+    data['records'] = [record for record in data['records'] if record['source_id'] != 'eval-s9']
     monkeypatch.setattr('contexttrail.evaluation.load_fixture', lambda _: data)
     report = run_eval('demo', tmp_path / 'eval', 'mock', AnalysisConfig())
     assert report['expectations']['passed'] == 1 and report['expectations']['failed'] == 0
-    # The synthetic demo has tool results without calls; the report says so instead of hiding it.
-    assert report['fixture_integrity']['tool_results_without_call']
+    # The report says the fixture has a tool result without its call instead of hiding it.
+    assert report['fixture_integrity']['tool_results_without_call'] == ['eval-s10']
     assert set(report['fixture_integrity']['limitations']) <= set(report['limitations'])
 
 
@@ -474,10 +370,10 @@ def test_forbidden_relation_flags_an_overclaimed_check(monkeypatch, tmp_path):
     events = data['expectations']['events']
     data['expectations'] = {
         'events': events + [{'label': 'ghost', 'source_ids': ['eval-s0'], 'status': 'withdrawn'}],
-        'relations': [{'from': 'event2', 'to': 'event3', 'relation': 'verifies'},
-                      {'from': 'event2', 'to': 'event3', 'relation': ['follows', 'verifies']}],
-        'forbidden_relations': [{'from': 'event5', 'relation': 'verifies'},
-                                {'from': 'event2', 'to': 'event3', 'relation': 'verifies'},
+        'relations': [{'from': 'edit_json', 'to': 'test_failed', 'relation': 'verifies'},
+                      {'from': 'edit_json', 'to': 'test_failed', 'relation': ['follows', 'verifies']}],
+        'forbidden_relations': [{'from': 'report', 'relation': 'verifies'},
+                                {'from': 'edit_json', 'to': 'test_failed', 'relation': 'verifies'},
                                 {'from': 'ghost', 'relation': 'verifies'}]}
     monkeypatch.setattr('contexttrail.evaluation.load_fixture', lambda _: data)
     report = run_eval('demo', tmp_path / 'eval', 'mock', AnalysisConfig())
@@ -494,7 +390,7 @@ def test_event_expectation_can_accept_any_of_several_sources(monkeypatch, tmp_pa
         validate_expectations({'events': [{'label': 'a', 'source_ids_any': []}]}, {'s'})
     data = demo_fixture()
     data['expectations'] = {'events': [
-        {'label': 'either', 'source_ids_any': ['eval-s0', 'eval-s1'], 'status': 'adopted'},
+        {'label': 'either', 'source_ids_any': ['eval-s0', 'eval-s1'], 'status': 'asked'},
         {'label': 'neither', 'source_ids_any': ['eval-s5', 'eval-s6'], 'status': 'adopted'}]}
     monkeypatch.setattr('contexttrail.evaluation.load_fixture', lambda _: data)
     report = run_eval('demo', tmp_path / 'eval', 'mock', AnalysisConfig())

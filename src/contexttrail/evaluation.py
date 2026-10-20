@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .analysis import AnalysisConfig, Engine, _evidence_ids, tool_steps
-from .demo import CASES, FixtureRunner
+from .demo import CASES, FixtureRunner, step_text, story_steps
 from .eval_review import EvalCallRecorder, render_eval_review
 from .git_context import Scope
 from .i18n import tr
@@ -88,11 +88,8 @@ def summarize_calls(calls: list[dict]) -> dict:
             'usage_missing_calls': len(calls) - usage_known,
             'provider_usage_sums': tokens or None, 'billed_cost': None,
             'langsmith_trace_statuses': dict(trace_statuses),
-            'escalated_units': len({c['unit_id'] for c in calls
-                                   if c['metadata'].get('routing_role') == 'escalation'}),
             'validation_error_calls': statuses.get('validation_error', 0),
             'repair_calls': sum(c['metadata'].get('repair_round', 0) > 0 for c in calls),
-            'evidence_request_calls': statuses.get('needs_evidence', 0),
             'citation_normalizations': sum(c['details'].get('citation_normalizations', 0) for c in calls),
             'validation_error_kinds': dict(Counter(kind for c in calls if c['status'] == 'validation_error'
                                                    for kind in error_kinds(c['details'].get('error', '')))),
@@ -111,15 +108,6 @@ def summarize_calls(calls: list[dict]) -> dict:
                       tr('call 비율을 원문/토큰 절감 비율로 해석하지 마세요. 의미 품질은 별도 평가가 필요합니다.',
                          'Do not read the call ratio as a saving in source text or tokens. Semantic quality'
                          ' needs a separate evaluation.')]}
-
-
-def review_summary(graph: dict) -> dict:
-    """How often delta review ran and what it did, without issue text."""
-    history = graph.get("semantic_review_history", [])
-    return {"units": len(history),
-            "statuses": dict(Counter(item.get("status") for item in history)),
-            "resolutions": dict(Counter(r.get("status") for item in history for r in item.get("resolutions", []))),
-            "signals": dict(Counter(i.get("signal") for item in history for i in item.get("issues", [])))}
 
 
 def call_timeline(calls: list[dict]) -> list[dict]:
@@ -151,26 +139,33 @@ def call_timeline(calls: list[dict]) -> list[dict]:
 
 # The synthetic story crosses the three tools: the failed test in a Codex session motivates the
 # decision taken in an opencode session, and the result is reported in a Claude Code session.
-DEMO_PROVIDERS = ('codex', 'codex', 'codex', 'codex', 'opencode', 'claude', 'claude')
-
-
 def demo_fixture() -> dict:
-    records, expected = [], []
-    for i, case in enumerate(CASES):
-        text, kind, title, status, actor, _ = case
-        role = 'tool_result' if actor == 'tool' else actor
-        provider = DEMO_PROVIDERS[i]
-        records.append({'source_id': f'eval-s{i}', 'provider': provider,
-                        'session_id': f'eval-{provider}', 'role': role,
-                        'content': text, 'cwd': '/fixture/project', 'worktree_id': 'wt_fixture',
-                        'tool_call_id': f'eval-call-{i}' if role == 'tool_result' else None,
-                        'recorded_at': f'2026-09-22T10:0{i}:00Z',
-                        'locator': {'kind': 'frozen_fixture', 'line': i + 1}})
-        expected.append({'label': f'event{i}', 'title_contains': title, 'status': status,
-                         'kind': kind, 'actor': actor, 'source_ids': [f'eval-s{i}']})
+    """The synthetic story (`demo.story_steps`) as frozen records, with what an analysis of it should find: the two
+    requests, the alternative proposed, each edit and the check that tried it, and the report that answered."""
+    records = []
+    for n, step in enumerate(story_steps()):
+        text = step_text(step, CASES)
+        records.append({'source_id': f'eval-s{n}', 'provider': step['session'], 'session_id': f'eval-{step["session"]}',
+                        'role': step['role'], 'cwd': '/fixture/project', 'worktree_id': 'wt_fixture',
+                        'content': f'Tool: {step["tool"]}\n{text}' if step['role'] == 'tool_call' else text,
+                        'tool_call_id': step.get('call'), 'recorded_at': f'2026-09-22T10:{n:02d}:00Z',
+                        'locator': {'kind': 'frozen_fixture', 'line': n + 1}})
+    def event(label, n, kind, status, actor, title=None):
+        return {'label': label, 'kind': kind, 'status': status, 'actor': actor, 'source_ids': [f'eval-s{n}'],
+                **({'title_contains': title} if title else {})}
+    expected = [event('request_json', 0, 'question', 'asked', 'user', CASES[0][0]),
+                event('proposal', 1, 'proposal', 'proposed', 'assistant', CASES[1][2]),
+                event('edit_json', 2, 'action', 'applied', 'assistant'),
+                event('test_failed', 5, 'outcome', 'observed_failure', 'assistant'),
+                event('request_sqlite', 6, 'question', 'asked', 'user', CASES[4][0]),
+                event('edit_sqlite', 7, 'action', 'applied', 'assistant'),
+                event('test_passed', 10, 'outcome', 'observed_success', 'assistant'),
+                event('report', 11, 'outcome', 'reported_complete', 'assistant', CASES[5][2])]
     return {'format': 'contexttrail-eval-v1', 'name': 'synthetic-storage-revision', 'records': records,
             'expectations': {'events': expected, 'relations': [
-                {'from': 'event3', 'to': 'event4', 'relation': 'motivates'}]},
+                {'from': 'edit_json', 'to': 'test_failed', 'relation': 'verifies'},
+                {'from': 'edit_sqlite', 'to': 'test_passed', 'relation': 'verifies'},
+                {'from': 'request_sqlite', 'to': 'report', 'relation': 'answers'}]},
             'notes': '合成 / synthetic fixture. Mock passes do not measure LLM understanding.'}
 
 
@@ -443,8 +438,7 @@ def run_eval(fixture: str, output: Path, runner_name: str, config: AnalysisConfi
     engine = Engine(scope, store, config)
     engine.scan = lambda: snapshot
     engine.review_capture = EvalCallRecorder(output)
-    drafts = config.integrate_output == 'draft_only'
-    factory = ((lambda: FixtureRunner(links_in_extraction=drafts)) if runner_name == 'mock'
+    factory = (FixtureRunner if runner_name == 'mock'
                else lambda: CLIRunner(runner_name, model=model, timeout=timeout))
     first = engine.analyze(factory, update=progress)
     calls = store.llm_calls(first['run_id'])
@@ -463,7 +457,7 @@ def run_eval(fixture: str, output: Path, runner_name: str, config: AnalysisConfi
               'config': {k: str(v) if isinstance(v, Path) else v for k, v in dataclasses.asdict(config).items()},
               'first_run': {k: v for k, v in first.items() if k != 'graph'},
               'noop_check': {'status': second['status'], 'runner_calls': second['runner_calls']} if second else None,
-              'ops': summarize_calls(calls), 'semantic_review': review_summary(graph), 'expectations': check_expectations(folded_view(graph), evidence, data.get('expectations')),
+              'ops': summarize_calls(calls), 'expectations': check_expectations(folded_view(graph), evidence, data.get('expectations')),
               'style': {**style_checks(graph, evidence, snapshot.records), 'output_language': config.output_language},
               'fixture_integrity': integrity,
               'limitations': [tr('유효한 JSON/인용/기대 사건 검사만으로 의미적 정답을 보장하지 않습니다.',

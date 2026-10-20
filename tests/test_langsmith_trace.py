@@ -47,7 +47,7 @@ def test_langsmith_trace_content_is_explicit(monkeypatch, include_content):
 
 
 @pytest.mark.parametrize('trace_fails', [False, True])
-def test_analysis_records_extract_and_integrate_in_langsmith(laboratory, monkeypatch, trace_fails):
+def test_analysis_records_the_story_call_in_langsmith(laboratory, monkeypatch, trace_fails):
     scope, store, lab_engine, records, make = laboratory
     records.append(make('우선 JSON 파일로 저장하자.'))
     captured = []
@@ -63,8 +63,7 @@ def test_analysis_records_extract_and_integrate_in_langsmith(laboratory, monkeyp
     engine.scan = lab_engine.scan
     result = engine.analyze(FixtureRunner)
     assert result['status'] in {'complete', 'partial'}
-    assert ('extract', 'complete') in captured
-    assert ('integrate', 'complete') in captured
+    assert captured == [('story', 'complete')]
     expected = 'failed' if trace_fails else 'sent'
     assert all(c['details'].get('langsmith_trace') == expected for c in store.llm_calls())
 
@@ -91,18 +90,18 @@ def test_run_trace_follows_the_real_nodes_and_hides_text_unless_asked(laboratory
     assert engine.analyze(FixtureRunner)['status'] == 'complete'
     wait_for_all_tracers()
     names = {run['name'] for run in sent.values()}
-    assert {'ContextTrail analysis', 'scan_sources', 'extract_model_and_validate', 'build_extract_request',
-            'validate_extract_claims', 'publish_result', 'ContextTrail extract'} <= names
+    assert {'ContextTrail analysis', 'scan_sources', 'extract_model_and_validate', 'build_story_request',
+            'validate_story_claims', 'publish_draft', 'publish_result', 'ContextTrail story'} <= names
     # Each model call sits under the node that made it, in the same trace and project.
-    call = next(run for run in sent.values() if run['name'] == 'ContextTrail extract')
+    call = next(run for run in sent.values() if run['name'] == 'ContextTrail story')
     parent = sent[str(call['parent_run_id'])]
     assert parent['name'] == 'extract_model_and_validate' and call['trace_id'] == parent['trace_id']
     assert call['project_name'] == 'synthetic-project'
     publish = next(run for run in sent.values() if run['name'] == 'publish_result')
-    assert publish['outputs']['graph_summary']['events'] == 1
+    assert publish['outputs']['graph_summary']['events'] == 1  # the request
     serialized = json.dumps(sent, default=str, ensure_ascii=False)
     assert (CASES[0][0] in serialized) is include_content
-    assert ('JSON 저장 채택' in serialized) is include_content
+    assert ('합성 구간: 작업 기록만' in serialized) is include_content  # the model's own words (its turn summary)
     assert 'synthetic-key' not in serialized
 
 

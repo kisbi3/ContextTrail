@@ -4,7 +4,6 @@ import copy
 import functools
 import json
 import dataclasses
-import difflib
 import os
 import re
 import threading
@@ -18,18 +17,17 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from .freshness import INDEX_KEY, build_index
-from .git_context import Scope, collect_git, git
+from .git_context import Scope, collect_git
 from .i18n import tr
 from .langsmith_trace import LangSmithTracer
 from .model import IMAGE_NOTE, Snapshot, SourceRecord, is_queued_message, is_user_prompt, question_reply
 from .routing import ROUTING_VERSION, RunnerPool, TaskValidationError
 from .runners.cli_runner import EFFORTS
-from .schema import (DELTA_SCHEMA, EDIT_TOOL_NAMES, EXTRACT_SCHEMA, EvidenceValidator, delta_schema, docs_only,
-                     delta_for_model, draft_delta, edited_files, merge_review_patch, reconcile_review_patch,
-                     record_evidence, review_patch_audit, review_patch_schema, validate_shape)
+from .schema import (EDIT_TOOL_NAMES, EvidenceValidator, docs_only, draft_delta, edited_files, record_evidence,
+                     refresh_matched, validate_shape)
 from .sources import collect_logs
 from .store import Store, in_journal
-from .util import BrokenOutput, Cancelled, FlowError, InputBudgetExceeded, digest, dumps, ident, input_tokens, now
+from .util import BrokenOutput, Cancelled, FlowError, InputBudgetExceeded, digest, dumps, ident, input_tokens
 
 
 @dataclass
@@ -43,40 +41,12 @@ class AnalysisConfig:
     task_chars: int = 240_000
     unit_records: int = 200
     context_events: int = 24
-    context_mode: str = "lean"
-    # One Codex conversation per unit shared by its stages (`Engine.unit_thread`); measured a net loss in time and
-    # cost on 2026-10-16 (`docs/plans/PERFORMANCE_PLAN.md` §21), so off unless asked for (`--unit-thread`).
-    unit_thread: bool = False
-    # Hidden, per run (`--unit-summary`, an experiment): the extraction also writes one line saying what the unit's
-    # stretch of work was about; stored in the graph's `unit_summaries` and drawn above the stretch.
-    unit_summary: bool = False
-    # Hidden, per run (`--pipeline v2`, an experiment, `docs/plans/PIPELINE_V2.md`): code keeps the work it found, the
-    # model writes only the story from what was written (evidence blocks) and the work outline.
-    pipeline: str = "v1"
-    read_rounds: int = 2
-    read_chars: int = 36_000
     runner_name: str | None = None
     base_model: str | None = None
+    # The story call's model and effort (`--extract-model`, `--extract-effort`); the runner's default model when unset.
     extract_model: str | None = None
-    integrate_model: str | None = None
-    escalation_model: str | None = None
-    # medium throughout since 2026-09-27: high made integration and review calls take 2-3 minutes each.
+    # medium since 2026-09-27.
     extract_effort: str = "medium"
-    integrate_effort: str = "medium"
-    # reuse lets the integrator leave out quotes an input candidate already carries; the code cites those.
-    integrate_evidence: str = "full"
-    escalation_effort: str = "medium"
-    semantic_review: bool = True
-    # `patch`: the review answers only what it changes instead of rewriting the whole GraphDelta.
-    review_output: str = "patch"
-    # `patch`: code adds every candidate as extracted and the integrator answers only its changes;
-    # `draft`: the same, with no integrate call while the graph is still empty; `draft_only`: no integrate call
-    # whenever the code-built draft passes the checks (`--economy`), so links across units are only those the
-    # extraction itself proposes.
-    integrate_output: str = "draft"
-    # `light` (`--light`): code builds the skeleton from the tool steps and one model call writes titles, summaries
-    # and the events code cannot see, citing records by ID only (light.py); no integrate or review call.
-    analysis_mode: str = "full"
     extract_workers: int = 1
     max_calls: int = 30
     # Work units for this run (never saved). Unset, the call cap alone bounds a run.
@@ -126,14 +96,12 @@ class AnalysisConfig:
             if self.trigger == "hook":
                 raise FlowError(tr("자동 갱신은 오래된 것부터 처리합니다: --recent/--since를 쓸 수 없습니다.",
                                    "Automatic analysis goes oldest first: --recent/--since cannot be used."))
-        for value in (self.extract_model, self.integrate_model, self.escalation_model):
-            if value is not None and (not value.strip() or any(ord(c) < 32 for c in value)):
-                raise FlowError(tr("모델 식별자는 비어 있거나 제어 문자를 포함할 수 없습니다.",
-                                   "A model identifier cannot be empty or contain control characters."))
-        for value in (self.extract_effort, self.integrate_effort, self.escalation_effort):
-            if value not in EFFORTS:
-                raise FlowError(tr("추론 수준은 " + ", ".join(EFFORTS) + " 중 하나여야 합니다.",
-                                 "The reasoning effort must be one of " + ", ".join(EFFORTS) + "."))
+        if self.extract_model is not None and (not self.extract_model.strip() or any(ord(c) < 32 for c in self.extract_model)):
+            raise FlowError(tr("모델 식별자는 비어 있거나 제어 문자를 포함할 수 없습니다.",
+                               "A model identifier cannot be empty or contain control characters."))
+        if self.extract_effort not in EFFORTS:
+            raise FlowError(tr("추론 수준은 " + ", ".join(EFFORTS) + " 중 하나여야 합니다.",
+                             "The reasoning effort must be one of " + ", ".join(EFFORTS) + "."))
         if self.langsmith_include_content and not self.langsmith_enabled:
             raise FlowError(tr("모델 입력·출력 추적에는 --langsmith도 필요합니다.",
                                "Tracing model inputs and outputs also requires --langsmith."))
@@ -146,23 +114,6 @@ class AnalysisConfig:
                                "The LangSmith project name is empty or contains control characters."))
         if min(self.history_limit, self.unit_chars, self.record_chars, self.task_chars, self.unit_records) <= 0:
             raise FlowError(tr("입력 예산은 양수여야 합니다.", "Input budgets must be positive."))
-        if self.context_mode not in {"full", "lean"}:
-            raise FlowError(tr("context_mode는 full 또는 lean이어야 합니다.", "context_mode must be full or lean."))
-        if self.integrate_evidence not in {"full", "reuse"}:
-            raise FlowError(tr("integrate_evidence는 full 또는 reuse이어야 합니다.",
-                               "integrate_evidence must be full or reuse."))
-        if self.review_output not in {"full", "patch"}:
-            raise FlowError(tr("review_output은 full 또는 patch이어야 합니다.", "review_output must be full or patch."))
-        if self.pipeline not in {"v1", "v2"}:
-            raise FlowError(tr("pipeline은 v1 또는 v2이어야 합니다.", "pipeline must be v1 or v2."))
-        if self.pipeline == "v2":
-            # The story is published as written: no integrate call and no review (as with --light).
-            self.integrate_output, self.semantic_review = "draft_only", False
-        if self.analysis_mode not in {"full", "light"}:
-            raise FlowError(tr("analysis_mode는 full 또는 light이어야 합니다.", "analysis_mode must be full or light."))
-        if self.integrate_output not in {"full", "patch", "draft", "draft_only"}:
-            raise FlowError(tr("integrate_output은 full, patch, draft 또는 draft_only이어야 합니다.",
-                               "integrate_output must be full, patch, draft or draft_only."))
         if self.audit and self.trigger == "hook":
             raise FlowError(tr("자동 갱신은 감사(--audit)를 하지 않습니다.", "Automatic updates never run an audit (--audit)."))
         if self.record_chars > self.unit_chars or self.unit_chars >= self.task_chars:
@@ -204,38 +155,16 @@ def prompt(name: str) -> str:
     return files("contexttrail").joinpath("prompts", name + ".md").read_text(encoding="utf-8")
 
 
-# Sent only in reuse mode, so the default integration request is the same bytes as before.
-EVIDENCE_POLICY_REUSE = (
-    "In events_to_add, edges_to_add, events_to_update, candidate_resolutions and change_attributions you may "
-    "leave evidence empty when the only support is evidence an input candidate already carries; the code then "
-    "cites that candidate's evidence. Quote only support the candidates do not already have.")
-
-
 def build_task(stage: str, data: dict, language: str | None = None) -> dict:
-    """One source of truth for the Runner request and the local input preview."""
-    if stage == "story":
-        return {"system": prompt("story"), "stage": stage, "instructions": "", "data": data,
-                "output_language": language or DEFAULT_LANGUAGE,
-                "wire_contract": "Use the IDs shown in the input (B1 blocks, Q1 requests, K1 work items, R1 runs, "
-                                 "E3 events and open requests, your own N1 for new story events). Every field of the schema is present; why and turn_summary may be null."}
-    if stage == "light":
-        return {"system": prompt("light"), "stage": stage, "instructions": "", "data": data,
-                "output_language": language or DEFAULT_LANGUAGE,
-                "wire_contract": "Use IDs in the short form shown in the input (S12). Every field of the schema is "
-                                 "present; start_line and end_line are null when an event rests on whole records."}
-    # An audit adds its own rules after the stage's; an ordinary request is the same bytes as before.
-    instructions = prompt(stage) + ("\n\n" + prompt("audit") if data.get("journal_audit") else "")
-    return {"system": prompt("common"), "stage": stage, "instructions": instructions, "data": data,
-            # Titles and summaries follow the project's language, whatever the records use (common.md).
+    """One source of truth for the Runner request and the local input preview. The story call is the only stage; an
+    audit adds its own rules after the story's, so an ordinary request is the same bytes as before."""
+    if stage != "story":
+        raise FlowError(f"unknown analysis stage: {stage}")
+    system = prompt("story") + ("\n\n" + prompt("audit") if data.get("journal_audit") else "")
+    return {"system": system, "stage": stage, "instructions": "", "data": data,
             "output_language": language or DEFAULT_LANGUAGE,
-            "wire_contract": "Use IDs in the short form shown in the input (S12, E3). "
-                "evidence is an array of source_id/start_line/end_line/quote. Line numbers follow the provided lines; "
-                "quote is contiguous exact source text within that range: whole lines joined by newlines, or a "
-                "distinctive part of at least 8 characters. Copy escapes visible in the source (\\\" \\n and so on) "
-                "as they are. Do not recreate context_only material as new events. "
-                "With needs_evidence, still include every schema field and leave candidate/change arrays empty. "
-                "null in events_to_update.changes means unchanged; quote again the source a changed claim needs. "
-                "Every session_ids/worktree_ids value matches the cited sources exactly."}
+            "wire_contract": "Use the IDs shown in the input (B1 blocks, Q1 requests, K1 work items, R1 runs, "
+                             "E3 events and open requests, your own N1 for new story events). Every field of the schema is present; why and turn_summary may be null."}
 
 
 def _trace_operation(enabled: bool, name: str, inputs: dict,
@@ -282,7 +211,6 @@ def _incomplete_input(issues: list[str]) -> bool:
         r"Git history is limited to the latest \d+ commits per worktree\.",
         r"Merge commit [0-9a-f]+ is read as its diff against the first parent only\.",
         r"re-analyzing an already integrated work unit: .+",
-        r"light analysis: the full extraction of this unit still failed validation after the repair round, so the unit was read with the code-built skeleton and one light call\.",
         r"corrected the processed ledger of \d+ already integrated records \(not resent\)\.",
         r"audit: .+",
         # A unit skipped for a failure of its own (validation after repair, input over budget) and held back.
@@ -303,7 +231,6 @@ AUDIT_PREFIX, AUDIT_NOTES = "audit_", 40
 LEAN_CONTEXT_CHARS, LEAN_CROSS_RECORDS = 8_000, 3
 LEAN_INDEX_RECORDS, LEAN_INDEX_EVENTS, LEAN_INDEX_FILES = 100, 30, 50  # the event index is by relevance; it must not grow with the graph
 # Repair hints: a few provided lines per failed quote, ranked by how close they are to it.
-NEAREST_LINES, NEAREST_POOL, NEAREST_LINE_CHARS = 3, 12, 400
 # What the extraction input carries besides the records: short IDs, a tool-step outline
 # and the user's messages. Part of the cache signature, so older extractions are redone.
 EXTRACT_INPUT_VERSION = "aliases_steps_requests_read_heads_v2"
@@ -587,8 +514,8 @@ def mark_steps(records: list[SourceRecord]) -> None:
 
 
 # A long tool result, injected instruction or summary is shown as its head and tail; the lines
-# between are listed as omitted and read with read_records on request. What the person typed,
-# the assistant's words and tool calls (patches included) are always shown whole.
+# between are listed as omitted and cannot be cited. What the person typed, the assistant's words
+# and tool calls (patches included) are always shown whole.
 VIEW_HEAD_CHARS, VIEW_TAIL_CHARS = 2_000, 1_000
 # A record line the model is shown is cut here (a minified file or a one-line JSON result otherwise
 # slips past the head/tail view whole); what is cut is readable by line range, and a quote from the
@@ -651,42 +578,6 @@ def shown_quote(quote: str, focus: list[list[int]] | None) -> str:
     return piece[:SHOWN_QUOTE_CHARS].rstrip("\n") or piece[:SHOWN_QUOTE_CHARS]
 
 
-# What a request over the budget loses, in order; each name is one `trim_step`.
-TRIM_STEPS = ("context_background", "existing_evidence_quotes", "context_cited_lines", "manifest_index")
-
-
-def trim_step(data: dict, done: list[str]) -> str | None:
-    """Apply the next trim to a request's data in place; None when nothing is left to cut."""
-    for step in TRIM_STEPS:
-        if step in done:
-            continue
-        if step == "context_background":
-            before = data.get("context_only") or []
-            kept = [item for item in before if item.get("context_reason") == "cited_lines" or "context_reason" not in item]
-            if len(kept) < len(before):
-                data["context_only"] = kept
-                return step
-        elif step == "existing_evidence_quotes":
-            entries = data.get("existing_evidence") or {}
-            quoted = [item for item in entries.values() if "quote" in item]
-            if quoted:
-                for item in quoted:
-                    item.pop("quote", None)
-                    item["quote_omitted_for_budget"] = True
-                return step
-        elif step == "context_cited_lines":
-            if data.get("context_only"):
-                data["context_only"] = []
-                return step
-        elif step == "manifest_index":
-            manifest = data.get("manifest") or {}
-            if manifest.get("records") or manifest.get("events"):
-                manifest["records"], manifest["events"] = manifest.get("records", [])[:20], manifest.get("events", [])[:20]
-                manifest["index_cut_for_budget"] = True
-                return step
-    return None
-
-
 def unit_cost(record: SourceRecord) -> int:
     """Characters this record puts into a unit's input."""
     view = _view(record)
@@ -724,8 +615,7 @@ def _shown(record: SourceRecord, harness: "Harness", *, read: bool = False, cont
     if tail <= total:
         shown["lines"] += harness.provide(record.source_id, tail, total)["lines"]
     shown["omitted"] = {"start_line": head + 1, "end_line": tail - 1,
-                        "chars": len("\n".join(record.content.splitlines()[head:tail - 1])),
-                        "read": "read_records with this source_id and a line range"}
+                        "chars": len("\n".join(record.content.splitlines()[head:tail - 1]))}
     return shown
 
 
@@ -755,16 +645,17 @@ def _required_edits(steps: list[dict]) -> dict[str, tuple[str, str | None]]:
             for step in steps if step["hint"] == "edit" and not step["failed"]}
 
 
-# A unit takes an extraction and an integration call, and at worst read rounds, a repair each
-# and a review: a run bounded by units gets this many calls per unit unless a cap was given.
-CALLS_PER_UNIT = 6
-# A unit is not started with fewer calls left than it needs at the least: an extraction and an integration
-# (one when its extraction is saved and still valid).
-MIN_UNIT_CALLS = 2
+# A unit takes one story call, at worst a repair and a retry of an unreadable answer: a run bounded by units gets
+# this many calls per unit unless a cap was given.
+CALLS_PER_UNIT = 3
+# A unit is not started with fewer calls left than it needs at the least: its story call (none when its saved
+# extraction is still valid).
+MIN_UNIT_CALLS = 1
 PLAN_CHOICES = (5, 15, 30)
-# Conservative estimate for the prompt, schema, context, and optional read, repair, or review
-# calls a work unit may need. Actual usage depends on the input and the configured model.
-_FIXED_TOKENS, _TYPICAL_RATIO, _TOKENS_PER_MINUTE = 30_000, 3.0, 20_000
+# Estimate for the story call of a work unit: it reads what was written and the work outline, not the tool output,
+# so about a quarter of the estimate from the unit's characters (measured 0.20-0.26 on two projects, 2026-10-20).
+# Actual usage depends on the input and the configured model.
+_FIXED_TOKENS, _TYPICAL_RATIO, _TOKENS_PER_MINUTE = 30_000, 0.25, 15_000
 
 
 def call_cap(config: "AnalysisConfig", limit: int | None) -> int:
@@ -873,14 +764,15 @@ def _estimated_tokens(chars: int) -> int:
     return int(chars * 1.4 / 2.4) + _FIXED_TOKENS
 
 
-# One or two units say little: a unit that needed read rounds and a repair can cost three times another.
+# One or two units say little: a unit that needed a repair costs twice another.
 MIN_PAST_UNITS = 3
 
 
 def calibration(units: list[dict], calls: list[dict], pool: dict[str, SourceRecord]) -> dict | None:
     """How past integrated units of this project compare with the estimate: tokens and time.
 
-    Only units whose every call reported its input tokens count; None until MIN_PAST_UNITS do.
+    Only units read with the story call whose every call reported its input tokens count (a unit of the old
+    extract and integrate calls cost about ten times as much); None until MIN_PAST_UNITS do.
     """
     by_unit: dict[str, list[dict]] = {}
     for call in calls:
@@ -892,7 +784,7 @@ def calibration(units: list[dict], calls: list[dict], pool: dict[str, SourceReco
                 or not all(i in pool for i in unit["sources"])):
             continue
         tokens = [input_tokens(row["details"].get("usage")) for row in rows]
-        if any(t is None for t in tokens):
+        if any(t is None for t in tokens) or any(row["stage"] != "story" for row in rows):
             continue
         estimate += _estimated_tokens(sum(unit_cost(pool[i]) for i in unit["sources"]))
         actual += sum(tokens)
@@ -919,7 +811,7 @@ def plan_summary(units: list[dict], pool: dict[str, SourceRecord], max_calls: in
     def figures(count: int) -> dict:
         total = sum(tokens[:count])
         return {"units": count, "input_tokens": total, "minutes": max(1, round(total / per_minute)) if count else 0}
-    reach = min(len(units), limit if limit else max(1, max_calls // 2))
+    reach = min(len(units), limit if limit else max(1, max_calls))
     counts = sorted({n for n in PLAN_CHOICES if n < len(units)} |
                     ({len(units)} if 0 < len(units) <= max(PLAN_CHOICES) else set()))
     return {"units": len(units), "units_this_run": reach,
@@ -1017,23 +909,27 @@ def uncited_edits(required: dict[str, tuple[str, str | None]], saved: dict[str, 
     return {call: pair for call, pair in required.items() if call not in cited and pair[1] not in cited}
 
 
-def match_noted_duplicates(output: dict, graph: dict, saved: dict[str, dict]) -> int:
-    """Candidates that repeat a note: same kind, and exactly the lines of one note event. Each becomes an
-    `existing_event_matches` entry (the draft then settles it as that note's duplicate). Returns how many."""
-    def spans(citations: list[dict]) -> frozenset:
-        return frozenset((c["source_id"], c["start_line"], c["end_line"]) for c in citations)
-    notes = [(event, spans([saved[i] for i in event.get("evidence_ids", []) if i in saved]))
-             for event in graph["events"] if event.get("origin") == "note"]
+def match_noted_steps(output: dict, graph: dict, saved: dict[str, dict], note_ids: set[str],
+                      edit_calls: frozenset[str] = frozenset()) -> int:
+    """In an audit, a candidate that records a step a note recorded: the same kind, sharing a cited record with exactly
+    one of the note events (a note cites the record holding its quote, code cites the whole step), and citing no edit
+    (`edit_calls`) that note leaves out (settling it would leave that edit in no event). Each becomes an
+    `existing_event_matches` entry, so the draft settles it as that note's duplicate and its relations land on the
+    note. Returns how many."""
+    notes = [(event, frozenset(saved[i]["source_id"] for i in event.get("evidence_ids", []) if i in saved))
+             for event in graph["events"] if event["id"] in note_ids]
     matched = {item["candidate_id"] for item in output["existing_event_matches"]}
     added = 0
     for candidate in output["event_candidates"]:
         if candidate["id"] in matched or not candidate["evidence"]:
             continue
-        same = [event for event, lines in notes if event["kind"] == candidate["kind"] and lines == spans(candidate["evidence"])]
+        cited = {c["source_id"] for c in candidate["evidence"]}
+        same = [event for event, records in notes if event["kind"] == candidate["kind"] and records & cited
+                and cited & edit_calls <= records]
         if len(same) == 1:
             output["existing_event_matches"].append({
                 "candidate_id": candidate["id"], "existing_event_id": same[0]["id"],
-                "reason": "audit: same kind and same cited lines as this note event",
+                "reason": "audit: the same kind as this note event, citing a record it cites",
                 "evidence": copy.deepcopy(candidate["evidence"])})
             added += 1
     return added
@@ -1051,17 +947,38 @@ def match_existing_duplicates(output: dict, graph: dict, saved: dict[str, dict])
         cited = records([saved[i] for i in event.get("evidence_ids", []) if i in saved])
         if cited:
             existing.setdefault((event["kind"], cited), []).append(event["id"])
+    # The person's own events by the message they cite: a message one already records (a note's decision, say) is
+    # not made a request a second time.
+    theirs: dict[str, set[str]] = {}
+    for event in graph["events"]:
+        if event.get("actor") == "user":
+            for evidence_id in event.get("evidence_ids", []):
+                if evidence_id in saved:
+                    theirs.setdefault(saved[evidence_id]["source_id"], set()).add(event["id"])
     matched = {item["candidate_id"] for item in output["existing_event_matches"]}
     added = 0
     for candidate in output["event_candidates"]:
-        same = existing.get((candidate["kind"], records(candidate["evidence"])), [])
-        if candidate["id"] in matched or not candidate["evidence"] or len(same) != 1:
+        if candidate["id"] in matched or not candidate["evidence"]:
             continue
-        output["existing_event_matches"].append({
-            "candidate_id": candidate["id"], "existing_event_id": same[0],
-            "reason": "same kind and the same cited records as this event",
-            "evidence": copy.deepcopy(candidate["evidence"])})
+        same, reason = existing.get((candidate["kind"], records(candidate["evidence"])), []), \
+            "same kind and the same cited records as this event"
+        if not same and candidate["kind"] == "question" and candidate.get("actor") == "user":
+            same = sorted(set().union(*(theirs.get(r, set()) for r in records(candidate["evidence"]))))
+            reason = "the person's message an event of theirs already records"
+        if len(same) != 1:
+            continue
+        output["existing_event_matches"].append({"candidate_id": candidate["id"], "existing_event_id": same[0],
+                                                 "reason": reason, "evidence": copy.deepcopy(candidate["evidence"])})
         added += 1
+        kind = next(event["kind"] for event in graph["events"] if event["id"] == same[0])
+        if candidate["kind"] == "question" and kind != "question":
+            # Only a request is answered: the answers that would now leave the person's decision are not kept.
+            dropped = [edge for edge in output["edge_candidates"]
+                       if edge["from_event_id"] == candidate["id"] and edge["relation"] == "answers"]
+            if dropped:
+                output["edge_candidates"] = [edge for edge in output["edge_candidates"] if edge not in dropped]
+                output["limitations"].append(f"story: answers of {candidate['id']} not kept: the person's message is "
+                                             f"recorded as a {kind} event, which nothing answers.")
     return added
 
 
@@ -1081,40 +998,6 @@ def _one_line(text: str, limit: int = 240) -> str:
     # A request titled by its words, not by the image note Claude Code puts before an attached image.
     text = " ".join(IMAGE_NOTE.sub("", text).split()) or " ".join(text.split())
     return text if len(text) <= limit else text[:limit - 1] + "…"
-
-
-def add_user_requests(output: dict, assigned: list[SourceRecord], validator: EvidenceValidator) -> list[str]:
-    """A question candidate for each user message the extraction did not turn into a user event.
-
-    Only when the extraction has candidates of its own, so the integration call that follows
-    can link the message; otherwise the graph step adds the message without a model call.
-    """
-    if not output["event_candidates"]:
-        return []
-    covered = {citation["source_id"] for item in output["event_candidates"] if item["actor"] == "user"
-               for citation in item["evidence"]}
-    taken = {item["id"] for item in output["event_candidates"]}
-    added = []
-    for record in assigned:
-        if not is_user_prompt(record) or record.source_id in covered:
-            continue
-        evidence = record_evidence(record)
-        number = len(added) + 1
-        while f"tmp:user_request_{number}" in taken:
-            number += 1
-        candidate = {"id": f"tmp:user_request_{number}", "kind": "question",
-                     "title": _one_line(record.content), "summary": record.content.strip()[:4000],
-                     "actor": "user", "status": "asked", "basis": "explicit_statement",
-                     "session_ids": [record.session_id] if record.session_id else [],
-                     "worktree_ids": [record.worktree_id] if record.worktree_id else [],
-                     "recorded_at": record.recorded_at, "occurred_at": None,
-                     "evidence": [{"source_id": record.source_id, "start_line": 1,
-                                   "end_line": evidence["end_line"], "quote": evidence["quote"]}]}
-        validator.citations(candidate["evidence"])
-        output["event_candidates"].append(candidate)
-        taken.add(candidate["id"])
-        added.append(record.source_id)
-    return added
 
 
 def link_request_turns(graph: dict, base: dict, pool: dict[str, SourceRecord], unit_sources: list[str],
@@ -1273,7 +1156,7 @@ def _record_timestamp(value: str | None) -> float | None:
 # one real unit (28.7k of records became a 270k payload), lean on zero-AI previews of the two eval
 # fixtures (payload ≈ 1.3 × records + 32k), with margin for the capped context a later unit carries.
 PAYLOAD_SHARE = 0.6
-PAYLOAD_CONSTANTS = {"full": (3.5, 500, 40_000), "lean": (1.5, 500, 30_000)}
+PAYLOAD_FACTOR, PAYLOAD_OVERHEAD, PAYLOAD_FIXED = 1.5, 500, 30_000
 MIN_FILL = 0.4
 RESULT_CUT_HINTS = {"run", "test", "commit", "vcs"}
 
@@ -1282,8 +1165,8 @@ def payload_budget(config: AnalysisConfig) -> int:
     return int(config.task_chars * PAYLOAD_SHARE)
 
 
-def estimated_payload(record_chars: int, records: int, context_mode: str = "lean") -> int:
-    factor, overhead, fixed = PAYLOAD_CONSTANTS[context_mode]
+def estimated_payload(record_chars: int, records: int) -> int:
+    factor, overhead, fixed = PAYLOAD_FACTOR, PAYLOAD_OVERHEAD, PAYLOAD_FIXED
     return int(record_chars * factor) + records * overhead + fixed
 
 
@@ -1341,7 +1224,7 @@ def _session_unit_chunks(records: list[SourceRecord], config: AnalysisConfig,
             count, chars, limit = 0, 0, start
             while (limit < len(ordered) and count < config.unit_records
                    and chars + costs[limit] <= config.unit_chars
-                   and estimated_payload(chars + costs[limit], count + 1, config.context_mode) <= payload_budget(config)):
+                   and estimated_payload(chars + costs[limit], count + 1) <= payload_budget(config)):
                 chars += costs[limit]
                 count += 1
                 limit += 1
@@ -1399,37 +1282,6 @@ def _rehydrate(pool: dict[str, SourceRecord], provided: dict[str, list[tuple[int
         provided[source_id] = [(i["start_line"], i["end_line"]) for i in items]
 
 
-CANDIDATE_SECTIONS = ("event_candidates", "edge_candidates", "open_items", "existing_event_matches")
-
-
-def candidate_quotes(candidates: dict) -> set[tuple[str, int, int]]:
-    """The lines every citation the candidates carry points at, as (source_id, start_line, end_line)."""
-    found = set()
-    for key in CANDIDATE_SECTIONS:
-        for item in candidates.get(key, []):
-            for cite in item.get("evidence") or []:
-                if isinstance(cite, dict) and cite.get("quote"):
-                    found.add((cite.get("source_id"), cite.get("start_line"), cite.get("end_line")))
-    return found
-
-
-def candidates_for_model(candidates: dict, evidence: dict[str, dict]) -> dict:
-    """The validated candidates with each citation's quote shown as `shown_quote` (the cited part of the lines).
-
-    The checks canonicalized every quote to its whole lines, which for a long line means the whole
-    line; the model only needs the part that was cited, and a quote it copies from there still
-    resolves to the same lines. The code keeps the canonical candidates."""
-    focus = {(item["source_id"], item["start_line"], item["end_line"]): item.get("focus") for item in evidence.values()}
-    view = dict(candidates)
-    for key in CANDIDATE_SECTIONS:
-        view[key] = [{**item, "evidence": [
-            {**cite, "quote": shown_quote(cite["quote"], focus.get((cite.get("source_id"), cite.get("start_line"), cite.get("end_line"))))}
-            if isinstance(cite, dict) and isinstance(cite.get("quote"), str) else cite
-            for cite in item.get("evidence") or []]} if "evidence" in item else item
-            for item in candidates.get(key, [])]
-    return view
-
-
 def _prompt_evidence(evidence: dict[str, dict], context_only: list[dict] | None = None,
                      quoted: set[tuple[str, int, int]] | None = None) -> dict[str, dict]:
     """Send citation substance without repeating filesystem/source metadata per quote.
@@ -1480,9 +1332,6 @@ class Harness:
         self.pool = dict(records)
         self.provided: dict[str, list[tuple[int, int]]] = {}
         self.dependencies: dict[str, str] = {}
-        # Full read replies are transient. Persist only requests/digests for draft resume.
-        self.read_history: list[list[dict]] = []
-        self.read_manifest: list[dict] = []
         self.saved = store.evidence_many(_evidence_ids(graph))
         self.file_manifest: dict[str, tuple[str, str, str]] = {}
         self.file_source_ids: dict[str, str] = {}
@@ -1514,39 +1363,13 @@ class Harness:
                 lo <= start and end <= hi for lo, hi in self.provided.get(source_id, [])):
             raise FlowError("only the preserved cited lines of this record are readable.")
         text = "\n".join(lines[start - 1:end])
-        if len(text) > max(self.config.record_chars, self.config.read_chars):
+        if len(text) > self.config.record_chars:
             raise FlowError("requested text exceeds the limit. Request a smaller line range.")
         self.provided.setdefault(source_id, []).append((start, end))
         self.dependencies[source_id] = record.content_hash
         result = record_for_model(record)
         result["lines"] = [{"line": n, "text": shown_line(lines[n - 1])} for n in range(start, end + 1)]
         return result
-
-    def nearest_lines(self, source_id: str, quote: str, limit: int = NEAREST_LINES) -> list[dict]:
-        """Provided lines closest to a quote the model got wrong, as lines it can copy instead.
-
-        Only lines this record was shown are candidates, so the hint can name no text the
-        model has not seen. A long line is cut to a window around its best-matching position.
-        """
-        record = self.pool.get(source_id)
-        lines = record.content.splitlines() if record else []
-        numbers = sorted({n for lo, hi in self.provided.get(source_id, []) for n in range(lo, min(hi, len(lines)) + 1)})
-        # quick_ratio keeps a pass over a whole record cheap; the best few are ranked exactly.
-        coarse = sorted(numbers, key=lambda n: -difflib.SequenceMatcher(
-            None, quote, lines[n - 1], autojunk=False).quick_ratio())[:NEAREST_POOL]
-        ranked = sorted(coarse, key=lambda n: (-difflib.SequenceMatcher(
-            None, quote, lines[n - 1], autojunk=False).ratio(), n))[:limit]
-        results = []
-        for number in ranked:
-            line = lines[number - 1]
-            clipped = len(line) > NEAREST_LINE_CHARS
-            if clipped:
-                best = difflib.SequenceMatcher(None, quote, line, autojunk=False).find_longest_match(
-                    0, len(quote), 0, len(line)).b
-                begin = max(0, min(best - NEAREST_LINE_CHARS // 2, len(line) - NEAREST_LINE_CHARS))
-                line = line[begin:begin + NEAREST_LINE_CHARS]
-            results.append({"source_id": source_id, "line": number, "text": line, "clipped": clipped})
-        return results
 
     def context(self, assigned: list[SourceRecord], *, clues: str = "") -> dict:
         sessions = {r.session_id for r in assigned if r.session_id}
@@ -1623,7 +1446,7 @@ class Harness:
             return all(visible_evidence(i) for i in event.get("evidence_ids", []))
         visible_events = [e for e in self.graph["events"] if visible_event(e)]
         ordered = sorted(visible_events, key=rank, reverse=True)
-        lean = self.config.context_mode == "lean"
+        lean = True  # the graph-shaped context (`existing_*`) the story reads
         limit = min(self.config.context_events, LEAN_CONTEXT_EVENTS) if lean else self.config.context_events
         # Named events rank first (`clues`), so the first `kept` of `ordered` are the kept ones when visible.
         kept = sum(1 for e in ordered if e["id"] in self.keep_events)
@@ -1685,7 +1508,7 @@ class Harness:
         _rehydrate(self.pool, self.provided, related_evidence)
         previous = []
         context_budget = 0
-        context_limit = LEAN_CONTEXT_CHARS if lean else self.config.read_chars
+        context_limit = LEAN_CONTEXT_CHARS
         context_order = cross + nearby + [r for r in visible_records
                                            if r.source_id not in nearby_ids | cross_ids]
         for record in context_order:
@@ -1824,149 +1647,38 @@ class Harness:
                 merged.append([lo, hi, core_lo, core_hi])
         return [(lo, hi, core_lo, core_hi) for lo, hi, core_lo, core_hi in merged]
 
-    def read(self, request: dict) -> list[dict]:
-        required = {"kind", "ids", "start_line", "end_line", "query", "unit_id"}
-        if set(request) != required:
-            raise FlowError("an evidence request must carry every field of the schema's single object.")
-        if request["kind"] == "search_events":
-            if (request["ids"] != [] or not isinstance(request["query"], str) or
-                    not request["query"].strip() or len(request["query"]) > 500 or
-                    request["unit_id"] != self.unit_id or
-                    request["start_line"] is not None or request["end_line"] is not None):
-                return [{"denied": "search_events takes only query and the current unit_id; ids and the line range must be empty."}]
-        else:
-            if (request["kind"] not in {"read_records", "read_existing_event", "read_diff", "read_file_at_revision"} or
-                    not isinstance(request["ids"], list) or not 1 <= len(request["ids"]) <= 4 or
-                    request["query"] is not None or request["unit_id"] is not None):
-                return [{"denied": "read request has an invalid kind or IDs, or sets a search-only field."}]
-            start, end = request["start_line"], request["end_line"]
-            if (start is None) != (end is None) or (start is not None and start > end):
-                return [{"denied": "line range needs both ends or neither."}]
-        if request["kind"] == "search_events":
-            tokens = set(re.findall(r"[\w가-힣]{2,}", request["query"].casefold()))
-            matches = []
-            for event in self.graph["events"]:
-                if event["id"] not in self.allowed_event_ids:
-                    continue
-                words = set(re.findall(r"[\w가-힣]{2,}",
-                    (event.get("title", "") + " " + event.get("summary", "")).casefold()))
-                overlap = tokens & words
-                if overlap:
-                    matches.append((len(overlap), event, overlap))
-            matches.sort(key=lambda item: (item[0], item[1].get("recorded_at") or ""), reverse=True)
-            return [{"id": event["id"], "title": event["title"],
-                     "description": event.get("summary", "")[:240],
-                     "reason": "query terms matched: " + ", ".join(sorted(overlap))}
-                    for _, event, overlap in matches[:8]]
-        outputs = []
-        for value in request["ids"]:
-            try:
-                if request["kind"] == "read_existing_event":
-                    if value not in self.allowed_event_ids:
-                        raise FlowError("ID outside the allowed event manifest")
-                    event = next(e for e in self.graph["events"] if e["id"] == value)
-                    preserved = self.store.evidence_many(event["evidence_ids"])
-                    _rehydrate(self.pool, self.provided, preserved)
-                    snippets = []
-                    for item in preserved.values():
-                        sid = item["source_id"]
-                        if sid in self.pool and self.pool[sid].content_hash == item["content_hash"]:
-                            snippets.append({**self.provide(sid, item["start_line"], item["end_line"]), "context_only": True})
-                        else:
-                            # Original source changed: provide immutable saved excerpt under an explicit alias.
-                            alias = "saved:" + item["id"]
-                            source = item["source"]
-                            self.pool[alias] = SourceRecord(alias, source["provider"], source.get("session_id"),
-                                source["role"], item["quote"], {"kind": "preserved_excerpt", "original": source["locator"],
-                                "original_source_id": sid, "original_hash": item["content_hash"]},
-                                recorded_at=source.get("recorded_at"), cwd=source.get("cwd"),
-                                worktree_id=source.get("worktree_id"), derivation=source.get("derivation", "original"),
-                                lineage=source.get("lineage", {}), authoring=source.get("authoring", {}),
-                                fork=source.get("fork", {}), step=source.get("step", {}))
-                            snippets.append({**self.provide(alias), "context_only": True})
-                    outputs.append({"event": event, "evidence_records": snippets})
-                elif request["kind"] == "read_file_at_revision":
-                    allowed_files = dict((i, v) for i, v in self.file_manifest.items()
-                                         if i in self.allowed_file_ids)
-                    allowed_files = dict(list(allowed_files.items())[:100])
-                    if value not in allowed_files:
-                        raise FlowError("ID outside the allowed revision/file manifest")
-                    root, oid, filename = allowed_files[value]
-                    content = git(Path(root), "show", f"{oid}:{filename}", cap=1_000_000)
-                    if "\x00" in content:
-                        raise FlowError("binary file content is not provided.")
-                    self.pool[value] = SourceRecord(value, "git", None, "git", content,
-                        {"kind": "file_at_revision", "root": root, "commit": oid, "file": filename}, git={"head": oid})
-                    outputs.append(self.provide(value, request["start_line"], request["end_line"]))
-                else:
-                    if value not in self.allowed_record_ids:
-                        raise FlowError("ID outside the allowed snapshot record manifest")
-                    if request["kind"] == "read_diff" and self.pool[value].provider != "git":
-                        raise FlowError("ID is not a diff")
-                    outputs.append(self.provide(value, request["start_line"], request["end_line"]))
-            except (FlowError, StopIteration, KeyError) as exc:
-                outputs.append({"id": value, "denied": str(exc)[:300]})
-        return outputs
-
-    def restore_read_context(self, manifest: list[dict]) -> None:
-        """Re-read only authorized immutable references, verifying the original reply digest."""
-        for entry in manifest:
-            replies = [{"request": request, "results": self.read(request)} for request in entry["requests"]]
-            if digest(replies) != entry["reply_digest"]:
-                raise FlowError(tr("저장된 추가 근거가 변경/소실되어 추출을 다시 수행해야 합니다.",
-                                   "The saved extra evidence changed or is missing; the extraction must be redone."))
-            self.read_history.append(replies)
-            self.read_manifest.append(copy.deepcopy(entry))
-
     def task(self, stage: str, data: dict, checker: Callable[[dict], Any],
-             *, validator: EvidenceValidator | None = None, schema: dict | None = None,
-             merge: Callable[[dict], dict] | None = None, thread: Any = None) -> dict:
-        """`merge` folds the model's answer (a review patch) into what `checker` sees; the call
-        record and the repair round keep the answer the model actually wrote. `thread` is the unit's
-        conversation when its stages share one (`Engine.unit_thread`); it is left open for the next stage."""
-        schema = schema or (EXTRACT_SCHEMA if stage == "extract" else delta_schema(self.config.integrate_evidence == "reuse"))
+             *, validator: EvidenceValidator | None = None, schema: dict, thread: Any = None) -> dict:
+        """One model task: the call, and one repair round when its answer fails `checker`. `thread` is a runner
+        conversation to continue; by default the task keeps its own, so the repair resumes it."""
         task = _trace_operation(self.detailed_trace, f"build_{stage}_request",
                                 {"stage": stage, "data": data},
                                 lambda: build_task(stage, data, self.config.output_language))
-        # One conversation for this task's calls where the runner keeps one (Codex): a follow-up resumes it with
-        # only the new evidence or repair, so the earlier turns hit the prompt cache instead of being resent cold.
+        # One conversation for this task's calls where the runner keeps one (Codex): the repair resumes it with only
+        # the repair, so the earlier turn hits the prompt cache instead of being resent cold.
         own = thread is None
         if own:
             thread = self.runner.thread() if callable(getattr(self.runner, "thread", None)) else None
         try:
-            return self._task(stage, data, checker, task, schema, validator, merge, thread)
+            return self._task(stage, data, checker, task, schema, validator, thread)
         finally:
             if own and thread is not None:
                 thread.close()
 
-    def _task(self, stage, data, checker, task, schema, validator, merge, thread) -> dict:
+    def _task(self, stage, data, checker, task, schema, validator, thread) -> dict:
         run = self.runner.run if thread is None else functools.partial(self.runner.run, thread=thread)
-        read_count, repair_count, attempt = 0, 0, 0
+        repair_count, attempt = 0, 0
         broken_retried = False  # an unreadable answer is asked for once more, as a call of its own
         prompt_hash = digest([task["system"], task["instructions"], task["wire_contract"]])
         aliases = IdAliases()
         while True:
             if self.cancel.is_set():
                 raise Cancelled(tr("분석 중단", "Analysis stopped"))
-            if read_count >= self.config.read_rounds and "needs_evidence" in schema.get("properties", {}).get("status", {}).get("enum", []):
-                # The evidence rounds are used up: this call and any repair must answer from what was given, so a
-                # unit that keeps asking ends with an answer instead of a failure that throws every call away.
-                schema = final_schema(schema)
-                task["evidence_requests"] = READS_USED_UP
             # The Runner sees short IDs; everything the host checks or stores uses the full ones.
             sent = aliases.wire(task)
-            trimmed: list[str] = []
-            while len(dumps(sent)) > self.config.task_chars:
-                # Over the budget, the request loses its least necessary parts one step at a time; what was
-                # cut is recorded with the call. Only then does the unit fail.
-                if not trimmed:
-                    task = {**task, "data": copy.deepcopy(task["data"])}
-                step = trim_step(task["data"], trimmed)
-                if step is None:
-                    raise InputBudgetExceeded(tr("분석 입력 예산을 초과했습니다. 이 단위는 처리 완료로 저장하지 않습니다.",
-                                                 "The analysis input budget was exceeded; this unit is not saved as completed."))
-                trimmed.append(step)
-                sent = aliases.wire(task)
+            if len(dumps(sent)) > self.config.task_chars:
+                raise InputBudgetExceeded(tr("분석 입력 예산을 초과했습니다. 이 단위는 처리 완료로 저장하지 않습니다.",
+                                             "The analysis input budget was exceeded; this unit is not saved as completed."))
             attempt += 1
             call_id = "llm_" + uuid.uuid4().hex
             metadata = {
@@ -1984,8 +1696,6 @@ class Harness:
                 "schema_hash": digest(schema),
                 "input_digest": digest(sent),
                 "input_chars": len(dumps(sent)),
-                "input_trimmed": trimmed,
-                "read_round": read_count,
                 "repair_round": repair_count,
             }
             if self.budget is not None:
@@ -2054,55 +1764,18 @@ class Harness:
                 usage = {**usage, "continued_session": bool(getattr(self.runner, "last_continued", False))}
             # Requested IDs/aliases are not evidence of the provider's actual model.
             actual_model = getattr(self.runner, "last_model", None)
-            response_finalized = False
             try:
                 def check_contract() -> dict:
                     validate_shape(output, schema)
-                    if output["snapshot_id"] != data["snapshot_id"] or (
-                            stage == "extract" and output["unit_id"] != data["unit_id"]) or (
-                            stage == "integrate" and output["base_graph_version"] != data["base_graph_version"]):
-                        raise FlowError("reply unit/snapshot/graph base differs from the request.")
+                    if output["snapshot_id"] != data["snapshot_id"] or output["unit_id"] != data["unit_id"]:
+                        raise FlowError("reply unit/snapshot differs from the request.")
                     return {"schema": "passed", "snapshot_and_base_ids": "passed",
                             "response_status": output["status"]}
                 _trace_operation(self.detailed_trace, f"validate_{stage}_contract",
                                  {"response": output, "schema": schema}, check_contract)
-                if output["status"] == "needs_evidence":
-                    finish_call("needs_evidence", {
-                        "output_digest": output_digest, "output_chars": output_chars, "usage": usage, "actual_model": actual_model,
-                        "duration_ms": round((time.monotonic() - call_started) * 1000),
-                        "read_request_count": len(output.get("read_requests", [])),
-                    }, submitted)
-                    response_finalized = True
-                    if read_count >= self.config.read_rounds or not output["read_requests"]:
-                        raise FlowError("evidence request limit exceeded or empty request.")
-                    if len(output["read_requests"]) > 3:
-                        raise FlowError("at most 3 evidence requests per round.")
-                    before_provided, before_dependencies = copy.deepcopy(self.provided), dict(self.dependencies)
-                    before_pool = dict(self.pool)
-                    try:
-                        replies = _trace_operation(
-                            self.detailed_trace, "read_requested_evidence",
-                            {"requests": output["read_requests"]},
-                            lambda: [{"request": request, "results": self.read(request)}
-                                     for request in output["read_requests"]], run_type="tool")
-                        if len(dumps(replies)) > self.config.read_chars * 2:
-                            raise FlowError("evidence reply budget exceeded.")
-                    except BaseException:
-                        self.provided.clear(); self.provided.update(before_provided)
-                        self.dependencies.clear(); self.dependencies.update(before_dependencies)
-                        self.pool.clear(); self.pool.update(before_pool)
-                        raise
-                    task.setdefault("evidence_rounds", []).append(replies)
-                    self.read_history.append(copy.deepcopy(replies))
-                    self.read_manifest.append({"requests": copy.deepcopy(output["read_requests"]),
-                                               "reply_digest": digest(replies)})
-                    read_count += 1
-                    continue
                 if validator is not None:
                     validator.normalizations.clear()
                     validator.mismatches.clear()
-                if merge is not None:
-                    output = merge(output)
                 def validate_claims() -> dict:
                     checker(output)
                     # What the trace shows for a passing check: how citations were matched.
@@ -2114,7 +1787,7 @@ class Harness:
                 finish_call("complete", {
                     "output_digest": output_digest, "output_chars": output_chars, "usage": usage, "actual_model": actual_model,
                     "duration_ms": round((time.monotonic() - call_started) * 1000),
-                    "read_rounds_used": read_count, "repair_rounds_used": repair_count,
+                    "repair_rounds_used": repair_count,
                     "citation_normalizations": len(validator.normalizations) if validator else 0,
                     "citation_normalization_audit": copy.deepcopy(validator.normalizations) if validator else [],
                     "quote_mismatch_audit": validator.mismatch_audit() if validator else [],
@@ -2126,71 +1799,24 @@ class Harness:
                     # A check that breaks on an answer is that answer failing the checks, not a reason to stop the
                     # run with the call left open: it is recorded and gets the repair round like any other refusal.
                     exc = FlowError(f"answer check failed in code ({type(exc).__name__}): {exc}")
-                # If needs_evidence was already finalized, retain that observable state; the
-                # subsequent bounded-read failure is recorded by the next call/run error path.
-                if not response_finalized:
-                    finish_call("validation_error", {
-                        "output_digest": output_digest, "output_chars": output_chars, "usage": usage, "actual_model": actual_model,
-                        "duration_ms": round((time.monotonic() - call_started) * 1000),
-                        "error": str(exc)[:300],
-                        "citation_normalizations": len(validator.normalizations) if validator else 0,
-                        "citation_normalization_audit": copy.deepcopy(validator.normalizations) if validator else [],
-                        "quote_mismatch_audit": validator.mismatch_audit() if validator else [],
-                    }, submitted)
+                finish_call("validation_error", {
+                    "output_digest": output_digest, "output_chars": output_chars, "usage": usage, "actual_model": actual_model,
+                    "duration_ms": round((time.monotonic() - call_started) * 1000),
+                    "error": str(exc)[:300],
+                    "citation_normalizations": len(validator.normalizations) if validator else 0,
+                    "citation_normalization_audit": copy.deepcopy(validator.normalizations) if validator else [],
+                    "quote_mismatch_audit": validator.mismatch_audit() if validator else [],
+                }, submitted)
                 if repair_count >= 1:
                     raise TaskValidationError(str(exc), submitted) from exc
                 def prepare_repair() -> dict:
                     task["repair"] = {"instruction": prompt("repair").replace("{validation_errors}", str(exc)),
                                       "previous_output": submitted}
-                    exact_lines = []
-                    for mismatch in list(re.finditer(
-                            r"quote (?:differs from the frozen source|not found uniquely in the cited lines): "
-                            r"([^:]+):(\d+)-(\d+)", str(exc)))[:8]:
-                        source_id, start, end = mismatch.group(1), int(mismatch.group(2)), int(mismatch.group(3))
-                        if source_id in self.pool and any(lo <= start and end <= hi
-                                                          for lo, hi in self.provided.get(source_id, [])):
-                            exact_lines.append(self.provide(source_id, start, end))
-                    if exact_lines:
-                        task["repair"]["exact_source_lines"] = exact_lines
-                    nearest = []
-                    for item in [m for m in (validator.mismatches if validator else [])
-                                 if m["matches"] == 0][:8]:
-                        nearest.extend(self.nearest_lines(item["source_id"], item["quote"]))
-                    if nearest:
-                        task["repair"]["nearest_lines"] = nearest
                     return task["repair"]
                 _trace_operation(self.detailed_trace, "prepare_repair_request",
                                  {"validation_error": str(exc)[:400], "previous_output": submitted},
                                  prepare_repair)
                 repair_count += 1
-
-
-# Asked only with `--unit-summary`; otherwise the request carries nothing of it.
-UNIT_SUMMARY_REQUEST = ("Also answer unit_summary: one line in output_language, at most 80 characters, saying what this "
-                        "stretch of work was about and where it ended, from what the records show (for example \"7-day "
-                        "results checked, moved on to a one-month run\"); null when the records show nothing to summarise.")
-
-
-def with_unit_summary(schema: dict) -> dict:
-    """`schema` with a `unit_summary` answer (a line or null), for `--unit-summary`."""
-    widened = copy.deepcopy(schema)
-    widened["properties"]["unit_summary"] = {"type": ["string", "null"], "maxLength": 200}
-    widened["required"] = [*widened["required"], "unit_summary"]
-    return widened
-
-
-# Said in a unit's limitations when the full extraction failed validation twice and the unit was read the light way.
-LIGHT_FALLBACK_LIMITATION = ("light analysis: the full extraction of this unit still failed validation after the repair "
-                             "round, so the unit was read with the code-built skeleton and one light call.")
-READS_USED_UP = ("None left: answer with status complete from the records and evidence you have, and name what "
-                 "you could not check in limitations.")
-
-
-def final_schema(schema: dict) -> dict:
-    """`schema` with `complete` as the only status: the answer after the last evidence round."""
-    final = copy.deepcopy(schema)
-    final["properties"]["status"] = {**final["properties"]["status"], "enum": ["complete"]}
-    return final
 
 
 def output_quote_chars(output: object) -> dict[str, int]:
@@ -2205,106 +1831,6 @@ def output_quote_chars(output: object) -> dict[str, int]:
     return {key: n for key, value in output.items() if (n := quoted(value))}
 
 
-CHANGE_KINDS = ("action", "revision")
-NO_CHANGE_TO_VERIFY_REASON = ("The unit adds no change event, so this observed result verifies nothing in it; "
-                              "settled in code without a review call.")
-
-
-def no_change_to_verify_limitation(item: dict) -> str:
-    """The graph's note for an observed result that had no change to verify."""
-    return f"Observed result '{item.get('title', item.get('id'))}' is linked to no change: this unit added no change event it could verify."
-
-
-def unlinked_observed_outcomes(delta: dict | None) -> list[dict]:
-    """New observed results that no relation in the same delta leads to.
-
-    A new event can only be reached by a relation added with it, so an observed result
-    without one says what ran but not what it checked.
-    """
-    if not delta:
-        return []
-    reached = {edge["to_event_id"] for edge in delta["edges_to_add"]}
-    return [item for item in delta["events_to_add"] if item["kind"] == "outcome" and
-            item["status"] in {"observed_success", "observed_failure"} and item["id"] not in reached]
-
-
-def unlinked_revisions(delta: dict | None) -> list[dict]:
-    """New revisions that no revises relation in the same delta leads to."""
-    if not delta:
-        return []
-    revised = {edge["to_event_id"] for edge in delta["edges_to_add"] if edge["relation"] == "revises"}
-    return [item for item in delta["events_to_add"]
-            if item["kind"] == "revision" and item["id"] not in revised]
-
-
-# (operation, signal, question). Quotes are already checked in code, so a new observed
-# result alone is not flagged; what code cannot tell is whether a link is missing.
-REVIEW_SIGNALS = (
-    ("events_to_update", "existing_claim_or_status_update", "Is this a real status change, or the same content restated?"),
-    ("edges_to_invalidate", "existing_relation_invalidation", "Does the source directly support invalidating the existing relation?"),
-    ("events_to_add", "unlinked_observed_outcome",
-     "If the change this run result checked is in the source, should it be linked with verifies? "
-     "If not, is the reason in limitations?"),
-    ("events_to_add", "unlinked_revision",
-     "If the earlier event (attempt, change or result) this revision fixed is in the source, should it be linked "
-     "with revises? If not, is the reason in limitations?"),
-)
-
-
-def review_signal_items(delta: dict | None) -> dict[str, list[dict]]:
-    """Delta items each review signal points at; signals with nothing to check are left out."""
-    if not delta:
-        return {}
-    found = {"existing_claim_or_status_update": delta["events_to_update"],
-             "existing_relation_invalidation": delta["edges_to_invalidate"],
-             "unlinked_observed_outcome": unlinked_observed_outcomes(delta),
-             "unlinked_revision": unlinked_revisions(delta)}
-    return {signal: items for signal, items in found.items() if items}
-
-
-REVIEW_CHECKS = ("Compare the proposed GraphDelta with the supplied original evidence and relevant history. "
-                "Check duplicate versus genuine retry, state overstatement, and unsupported relation "
-                "invalidation. ")
-# The default: the review rewrites the delta, so the request and its schema are the integration ones.
-REVIEW_INSTRUCTION = REVIEW_CHECKS + ("Return the complete corrected GraphDelta and preserve one resolution "
-                                     "for every candidate.")
-# A resolution or attribution whose evidence is its candidate's own is sent without that copy (`delta_for_model`).
-SHOWN_WITHOUT_EVIDENCE = ("An added item shown as {id, candidate: unchanged} is the candidate of that id exactly as "
-                          "given; a candidate_resolution or change_attribution shown without evidence has its "
-                          "candidate's own evidence, in validated_candidates; a candidate_evidence entry marked "
-                          "quote_in_candidates has its quote in the candidate that cites those lines; a quote marked "
-                          "quote_is_part_of_lines is the cited part of longer lines, and a candidate's quote may be "
-                          "such a part: cite it as shown. ")
-# The patch-mode review judges the proposal on the candidates, their evidence and the existing events; the
-# records' context and the manifest, which the integration read, are not sent a third time.
-REVIEW_OMITTED = ("context_only", "manifest")
-# The default since 2026-09-29: the review sends back only what it changes, and the code merges it into the proposal.
-REVIEW_PATCH_INSTRUCTION = REVIEW_CHECKS + (
-    "Return only what changes: patch holds the new or replaced items, never an unchanged one, and an item "
-    "whose id is a proposed item's id replaces that item. List proposed items to drop in remove. Give "
-    "candidate_resolutions only for candidates whose resolution changes, and change_attributions only for "
-    "added or replaced items. " + SHOWN_WITHOUT_EVIDENCE + "The records' context and the manifest are not repeated "
-    "here: judge on the candidates, their evidence and the existing events shown. Still preserve one review "
-    "resolution for every issue.")
-
-INTEGRATE_PATCH_INSTRUCTION = (
-    "draft_graph_delta is the GraphDelta code built from the validated candidates: every candidate added "
-    "as extracted, and a candidate matched to one existing event recorded as its duplicate. Do the "
-    "integration task on it and return only what changes: patch holds the new or replaced items, never "
-    "an unchanged one, and an item whose id is a draft item's id replaces that item. List draft items to "
-    "drop in remove. Give candidate_resolutions only for candidates whose resolution changes, and "
-    "change_attributions only for added or replaced items. " + SHOWN_WITHOUT_EVIDENCE +
-    "review_resolutions stays empty. An empty patch and remove mean the draft stands as it is.")
-
-
-def integrate_request_data(data: dict, draft: dict | None) -> dict:
-    """The integrate request's data: with a draft (patch and draft modes) the model sees `delta_for_model`."""
-    if draft is None:
-        return data
-    return {**data, "draft_graph_delta": delta_for_model(draft, data["validated_candidates"]),
-            "integrate_instruction": INTEGRATE_PATCH_INSTRUCTION}
-
-
 @dataclass
 class PreparedExtraction:
     harness: Harness
@@ -2314,25 +1840,11 @@ class PreparedExtraction:
     graph_version: int
 
 
-@dataclass
-class PreparedIntegration:
-    harness: Harness
-    validator: EvidenceValidator
-    data: dict | None
-    graph_version: int
-    delta: dict | None = None
-    review_audit: dict = dataclasses.field(default_factory=dict)
-    review_issue_inputs: list[dict] = dataclasses.field(default_factory=list)
-    code_resolutions: list[dict] = dataclasses.field(default_factory=list)  # review issues settled without a model
-
-
 class Engine:
     def __init__(self, scope: Scope, store: Store, config: AnalysisConfig | None = None):
         self.scope, self.store = scope, store
         self.config = config or AnalysisConfig()
         self.config.validate()
-        if self.config.audit:
-            self.config.semantic_review = False  # an audit is the cheap net; review signals are only recorded
         self.tracer: LangSmithTracer | None = None
         self.detailed_trace = False
         self.review_capture: Callable[[dict], None] | None = None
@@ -2342,38 +1854,6 @@ class Engine:
         # wait (then what the run adds is out of order); set by `_plan_units`.
         self.selection: dict | None = None
         self.ahead_of_order = False
-        # One runner conversation per unit, shared by its extract, integrate and review calls when they go to the
-        # same adapter (Codex): the later stages resume the session, so the earlier request is cached input.
-        self.unit_threads: dict[str, tuple[Any, Any]] = {}
-
-    @staticmethod
-    def _adapter(runner: Any) -> tuple:
-        """What makes two runner instances the same adapter: the pool makes one instance per role, so identity is
-        the tool and model, not the object (the reasoning effort is a per-call setting the session can change)."""
-        return (type(runner), getattr(runner, "name", None), getattr(runner, "model", None))
-
-    def unit_thread(self, unit_id: str, runner: Any) -> Any:
-        """With `unit_thread` on, the unit's conversation for calls on `runner`: made on first use when the runner
-        keeps one, reused by the unit's later stages on the same adapter (tool and model), None for another
-        adapter (a stage model of its own). Any instance of the adapter can resume it: the session lives in the
-        thread's home. Off (the default), None: each task keeps its own conversation as before."""
-        if not self.config.unit_thread:
-            return None
-        owner, thread = self.unit_threads.get(unit_id, (None, None))
-        if thread is not None:
-            return thread if owner == self._adapter(runner) else None
-        if not callable(getattr(runner, "thread", None)):
-            return None
-        thread = runner.thread()
-        self.unit_threads[unit_id] = (self._adapter(runner), thread)
-        return thread
-
-    def close_unit_thread(self, unit_id: str | None = None) -> None:
-        """Close the unit's conversation (every unit's with no ID): its temporary home goes with it."""
-        for key in [unit_id] if unit_id else list(self.unit_threads):
-            owner_thread = self.unit_threads.pop(key, None)
-            if owner_thread is not None:
-                owner_thread[1].close()
 
     def scan(self) -> Snapshot:
         proven = [Path(p) for p in self.store.get_meta("known_worktree_roots", [])]
@@ -2419,26 +1899,13 @@ class Engine:
         return selection_plan_fields(self.selection, units, pool)
 
     def _routing_signature(self) -> str:
-        # the default mode adds nothing, so changing the default does not resend finished units
+        """What a unit was asked with: a saved extraction is reused only while this is unchanged."""
         from . import light
-        return digest([ROUTING_VERSION, "validation-failure-only-v3", CONTEXT_POLICY_VERSION, EXTRACT_INPUT_VERSION,
-                       prompt("common"), prompt("extract"), EXTRACT_SCHEMA,
-                       self.config.extract_model, self.config.escalation_model,
-                       self.config.runner_name, self.config.base_model, self.config.extract_effort,
-                       self.config.output_language, *([self.config.context_mode] if self.config.context_mode != "lean" else []),
-                       *(["audit-v1", prompt("audit")] if self.config.audit else []),
-                       *(["light-v1", prompt("light")] if self._light() else []),
-                       *(["unit-summary-v1", UNIT_SUMMARY_REQUEST] if self.config.unit_summary else []),
-                       *(["story-v1", prompt("story"), json.dumps(light.STORY_SCHEMA, sort_keys=True)]
-                         if self._story() else [])])
-
-    def _story(self) -> bool:
-        """Pipeline v2 applies to ordinary units; an audit reads noted sessions with the full extraction."""
-        return self.config.pipeline == "v2" and not self.config.audit
-
-    def _light(self) -> bool:
-        """Light analysis applies to ordinary units; an audit reads noted sessions with the full extraction."""
-        return self.config.analysis_mode == "light" and not self.config.audit
+        return digest([ROUTING_VERSION, CONTEXT_POLICY_VERSION, EXTRACT_INPUT_VERSION,
+                       "story-v2", prompt("story"), json.dumps(light.STORY_SCHEMA, sort_keys=True),
+                       self.config.extract_model, self.config.runner_name, self.config.base_model,
+                       self.config.extract_effort, self.config.output_language,
+                       *(["audit-v2", prompt("audit")] if self.config.audit else [])])
 
     def _prepare_extraction(self, unit: dict, pool: dict[str, SourceRecord], graph: dict,
                             snapshot_id: str, run_id: str, runners: RunnerPool,
@@ -2457,23 +1924,15 @@ class Engine:
             h.keep_events = set(notes)
             if omitted:
                 issues.append(f"audit: {omitted} older note events of these records are not shown to the model.")
-        earlier: dict[str, dict] = {}
-        if self._story():
-            # Earlier requests of these sessions still unanswered: shown whatever the event limit, so the story can
-            # answer them by ID (`docs/plans/REQUEST_ANSWERS.md` §3).
-            from . import light
-            earlier = light.open_requests(graph, assigned, lambda i: (h.saved.get(i) or {}).get("source"))
-            h.keep_events |= set(earlier)
+        # The session's last request before these records, whose turn they continue: shown whatever the event
+        # limit, so the story can answer it by ID (`docs/plans/REQUEST_ANSWERS.md` §13).
+        from . import light
+        earlier = light.open_requests(graph, assigned, lambda i: (h.saved.get(i) or {}).get("source"))
+        h.keep_events |= set(earlier)
         context = h.context(assigned, clues=" ".join([*notes, *earlier]))
         data, required = extract_request_data(unit, snapshot_id, assigned, h, context, issues)
         if earlier:
             data["open_requests"] = sorted(earlier)
-        if not self._light():
-            # The steps code sees in the tool calls (edits per turn, test results, commits) go with the request as
-            # a skeleton: the model keeps them as candidates and adds what code cannot see, so a unit's structure
-            # rests on the tool calls rather than on the model's reading of them.
-            from . import light
-            data["skeleton"] = light.request_data(unit, snapshot_id, data, light.skeleton(assigned)[0])["skeleton"]
         if self.config.audit:
             data["journal_audit"] = {"note_event_ids": notes}
             required = uncited_edits(required, h.saved)
@@ -2481,15 +1940,70 @@ class Engine:
                                       required_citations=required)
         return PreparedExtraction(h, validator, context, data, graph["version"])
 
+    def story_input(self, prepared: PreparedExtraction, unit: dict, pool: dict[str, SourceRecord],
+                    snapshot_id: str) -> tuple[dict, dict]:
+        """The story request (the data the runner receives) and the parts code reads the answer with: the work it
+        found (`light.skeleton`, `light.run_items`) and what was written, cut into blocks. In an audit, the items and
+        blocks a note already cites say so (`noted_by`)."""
+        from . import light
+        h, data = prepared.harness, prepared.data
+        assigned = [pool[i] for i in unit["sources"]]
+        items, edges = light.skeleton(assigned, split_at_runs=True)
+        blocks = light.written_blocks(assigned)
+        runs = light.run_items(assigned)
+        noted: dict[str, list[str]] = {}
+        note_ids = set((data.get("journal_audit") or {}).get("note_event_ids", []))
+        for event in h.graph["events"]:
+            if event["id"] in note_ids:
+                for evidence_id in event.get("evidence_ids", []):
+                    if evidence_id in h.saved:
+                        noted.setdefault(h.saved[evidence_id]["source_id"], []).append(event["id"])
+        request = light.story_request(unit, snapshot_id, data, items, assigned, blocks, runs, noted)
+        return request, {"assigned": assigned, "items": items, "edges": edges, "blocks": blocks, "runs": runs,
+                         "note_ids": note_ids}
+
+    def _read_story(self, prepared: PreparedExtraction, unit: dict, pool: dict[str, SourceRecord], graph: dict,
+                    snapshot_id: str) -> tuple[dict, list[str], list[str], dict]:
+        """One story call over the work code found. When the call fails its checks, the work is kept on its own and
+        the unit says so; when nothing of the unit passes, the unit fails (and is skipped), not the run."""
+        from . import light
+        h, validator = prepared.harness, prepared.validator
+        request, parts = self.story_input(prepared, unit, pool, snapshot_id)
+        try:
+            answer = h.task("story", request, light.story_check, validator=validator, schema=light.STORY_SCHEMA)
+            failed = False
+        except TaskValidationError:
+            answer, failed = {"work": [], "story": [], "requests": [], "links": [], "turn_summary": None}, True
+        earlier = light.open_requests(graph, parts["assigned"], lambda i: (h.saved.get(i) or {}).get("source"))
+        result, learned = light.story_extraction(answer, parts["items"], parts["edges"], unit, snapshot_id, h.pool,
+                                                 h.provided, validator, parts["blocks"], parts["runs"],
+                                                 self.config.output_language, earlier)
+        if failed:
+            result["limitations"].append(light.STORY_FALLBACK_LIMITATION)
+        # A unit read again (one of its records changed) or a step a note recorded: code settles a candidate that
+        # repeats an event as that event's duplicate, so nothing is added twice.
+        match_existing_duplicates(result, graph, h.saved)
+        if parts["note_ids"]:
+            edit_calls = frozenset(s for item in parts["items"] if item.get("edit") for s in item["sources"]
+                                   if s in h.pool and h.pool[s].role == "tool_call")
+            match_noted_steps(result, graph, h.saved, parts["note_ids"], edit_calls)
+        try:
+            validator.check_extraction(result, unit["id"], snapshot_id, graph)
+            return result, [], [], learned
+        except FlowError:
+            try:
+                kept, waived, dropped = validator.salvage_extraction(result, unit["id"], snapshot_id, graph)
+            except FlowError as exc:
+                raise TaskValidationError(f"story: nothing of this unit passed the checks: {exc}") from None
+            return kept, waived, dropped, learned
+
     def _extract_unit(self, unit: dict, pool: dict[str, SourceRecord], graph: dict,
                       snapshot_id: str, run_id: str, runners: RunnerPool,
-                      cancel: threading.Event, issues: list[str], *, defer_escalation: bool = False,
+                      cancel: threading.Event, issues: list[str], *,
                       prepared: PreparedExtraction | None = None) -> dict:
-        """Extract one unit against an immutable batch-base graph.
-
-        Workers may save their own extraction ledger; only the caller publishes graphs.
-        Validated extractions are reused if integration or post-delta review later fails.
-        """
+        """Read one unit against an immutable batch-base graph. Workers may save their own extraction ledger; only
+        the caller publishes graphs. A saved extraction is reused while the routing signature and the context it was
+        read with are unchanged."""
         if cancel.is_set():
             raise Cancelled(tr("분석 중단", "Analysis stopped"))
         prepared = prepared or self._prepare_extraction(unit, pool, graph, snapshot_id, run_id,
@@ -2498,36 +2012,12 @@ class Engine:
                 prepared.data["snapshot_id"] != snapshot_id):
             raise FlowError(tr("준비된 추출 입력의 작업·snapshot·graph 기준이 달라졌습니다.",
                                "The prepared extract input's unit, snapshot or graph base has changed."))
-        h, validator, context, data = (prepared.harness, prepared.validator,
-                                       prepared.context, prepared.data)
+        h, validator, context = prepared.harness, prepared.validator, prepared.context
         signature = self._routing_signature()
         cached = unit.get("result") or {}
         current_context_digest = digest(context)
-        reuse = bool(unit["status"] in {"extracted", "draft"} and
-                     cached.get("routing_signature") == signature and
-                     cached.get("context_digest") == current_context_digest)
-        reasons: list[str] = []
-        draft = None
-        light_fallback = False
-        summary: list[str | None] = [None]
-        story_notes: dict = {}
-
-        def take_summary(answer: dict) -> dict:
-            # The summary leaves the answer before the checks (which know the schema without it); the last one kept.
-            if self.config.unit_summary and "unit_summary" in answer:
-                text = answer.pop("unit_summary")
-                summary[0] = " ".join(text.split()) if isinstance(text, str) and text.strip() else None
-            return answer
-        output = None
-        waived: list[str] = list(cached.get("waived_citations", [])) if reuse else []
-        dropped: list[str] = list(cached.get("dropped_candidates", [])) if reuse else []
-        if reuse:
-            if unit["status"] == "draft":
-                try:
-                    h.restore_read_context(cached.get("read_manifest", []))
-                except FlowError:
-                    return self._extract_unit({**unit, "status": "invalidated", "result": None},
-                        pool, graph, snapshot_id, run_id, runners, cancel, issues)
+        if (unit["status"] == "extracted" and cached.get("routing_signature") == signature
+                and cached.get("context_digest") == current_context_digest):
             _rehydrate(h.pool, h.provided, cached.get("evidence", {}))
             validator.inherit_focus(cached.get("evidence", {}))
             for item in cached.get("evidence", {}).values():
@@ -2542,324 +2032,59 @@ class Engine:
                                             if call not in waived}
             validator.check_extraction(output, unit["id"], snapshot_id, graph)
             h.dependencies.update(unit["dependencies"])
-            if unit["status"] == "extracted":
-                return {"output": output, "evidence": validator.evidence, "dependencies": h.dependencies,
-                        "cached": {**cached, "payload": output}, "reused": True}
-            draft = output
-            reasons = list(cached.get("routing_reasons", []))
-        else:
-            self.store.save_unit(unit["id"], unit["sources"], h.dependencies, "parsed")
-            h.runner, h.routing_role = runners.get("extract"), "extract"
-            def read_light() -> tuple[dict, list[str], list[str]]:
-                """The light reading of the unit: code builds the skeleton, one call names and adds to it, and the
-                citations are cut by code, so nothing is asked again; what the checks refuse is left out."""
-                from . import light
-                items, edges = light.skeleton([pool[i] for i in unit["sources"]])
-                request = light.request_data(unit, snapshot_id, data, items)
-                if self.config.unit_summary:
-                    request["unit_summary_request"] = UNIT_SUMMARY_REQUEST
-                answer = h.task("light", request, lambda o: light.answer_check(take_summary(o)), validator=validator,
-                                schema=with_unit_summary(light.LIGHT_SCHEMA) if self.config.unit_summary else light.LIGHT_SCHEMA,
-                                thread=self.unit_thread(unit["id"], h.runner))
-                result = light.extraction(answer, items, edges, unit, snapshot_id, h.pool, h.provided, validator)
-                try:
-                    validator.check_extraction(result, unit["id"], snapshot_id, graph)
-                    return result, [], []
-                except FlowError:
-                    return validator.salvage_extraction(result, unit["id"], snapshot_id, graph)
-
-            def read_story() -> tuple[dict, list[str], list[str]]:
-                """Pipeline v2: the skeleton is the record of the work; one call writes the story over it. When the
-                call fails its checks, the work code found is kept on its own and the unit says so."""
-                from . import light
-                assigned = [pool[i] for i in unit["sources"]]
-                items, edges = light.skeleton(assigned, split_at_runs=True)
-                blocks = light.written_blocks(assigned)
-                runs = light.run_items(assigned)
-                request = light.story_request(unit, snapshot_id, data, items, assigned, blocks, runs)
-                try:
-                    answer = h.task("story", request, light.story_check, validator=validator, schema=light.STORY_SCHEMA,
-                                    thread=self.unit_thread(unit["id"], h.runner))
-                    failed = False
-                except TaskValidationError:
-                    answer, failed = {"work": [], "story": [], "links": [], "turn_summary": None}, True
-                earlier = light.open_requests(graph, assigned, lambda i: (h.saved.get(i) or {}).get("source"))
-                result, learned = light.story_extraction(answer, items, edges, unit, snapshot_id, h.pool, h.provided,
-                                                         validator, blocks, runs, self.config.output_language, earlier)
-                if failed:
-                    result["limitations"].append(light.STORY_FALLBACK_LIMITATION)
-                text = learned.get("turn_summary")
-                summary[0] = " ".join(text.split()) if isinstance(text, str) and text.strip() else None
-                story_notes["unclaimed_blocks"] = learned["unclaimed_blocks"]
-                # A unit read again (one of its records changed) or recorded by a note already: code settles a
-                # candidate that repeats an event as that event's duplicate, so nothing is added twice.
-                match_existing_duplicates(result, graph, h.saved)
-                try:
-                    validator.check_extraction(result, unit["id"], snapshot_id, graph)
-                    return result, [], []
-                except FlowError:
-                    try:
-                        return validator.salvage_extraction(result, unit["id"], snapshot_id, graph)
-                    except FlowError as exc:
-                        # Nothing passed: the unit fails (and is skipped), the run goes on.
-                        raise TaskValidationError(f"story: nothing of this unit passed the checks: {exc}") from None
-
-            if self._story():
-                output, waived, dropped = read_story()
-                draft = output
-            elif self._light():
-                output, waived, dropped = read_light()
-                draft = output
-            else:
-                try:
-                    asked = {**data, "unit_summary_request": UNIT_SUMMARY_REQUEST} if self.config.unit_summary else data
-                    output = h.task("extract", asked,
-                        lambda o: validator.check_extraction(take_summary(o), unit["id"], snapshot_id, graph), validator=validator,
-                        schema=with_unit_summary(EXTRACT_SCHEMA) if self.config.unit_summary else None,
-                        thread=self.unit_thread(unit["id"], h.runner))
-                    draft = output
-                    # Semantics are reviewed against the proposed GraphDelta. Extraction
-                    # calls route to a second model only after bounded contract failure.
-                    reasons = []
-                except TaskValidationError as exc:
-                    if self.config.escalation_model:
-                        reasons = ["bounded_validation_failure"]
-                        data["previous_validation_error"] = str(exc)[:400]
-                    else:
-                        try:
-                            output, waived, dropped = self._salvage_extraction(exc, validator, unit["id"], snapshot_id, graph)
-                        except TaskValidationError:
-                            if self.config.audit:
-                                raise
-                            # Nothing of the answer could be kept after the repair round. Rather than hold the unit
-                            # back, read it the light way: the same unit, one more call, citations the model cannot
-                            # get wrong. Smaller units would cut steps apart and multiply boxes; this keeps them.
-                            output, waived, dropped = read_light()
-                            output["limitations"] = list(dict.fromkeys(
-                                output.get("limitations", []) + [LIGHT_FALLBACK_LIMITATION]))
-                            light_fallback = True
-        should_escalate = bool(self.config.escalation_model and reasons)
-        if should_escalate:
-            if draft is not None:
-                saved_draft = {"payload": draft, "evidence": validator.evidence,
-                    "routing_signature": signature, "routing_reasons": reasons,
-                    "read_manifest": h.read_manifest, "context_digest": current_context_digest,
-                    "context_selection": context.get("context_selection", {})}
-                self.store.save_unit(unit["id"], unit["sources"], h.dependencies, "draft", saved_draft)
-                if defer_escalation:
-                    return {"output": draft, "evidence": validator.evidence,
-                            "dependencies": h.dependencies, "cached": saved_draft,
-                            "reused": reuse, "escalation_pending": True}
-            h.runner, h.routing_role, h.routing_reasons = runners.get("escalation"), "escalation", reasons
-            reviewed_data = {**data, "review_trigger": reasons,
-                             "review_instruction": "Re-extract the candidates against the source. The draft below is not the answer. "
-                                                   "Check an empty result for omissions too.",
-                             "draft_candidates": draft,
-                             "inherited_evidence_rounds": copy.deepcopy(h.read_history)}
-            try:
-                output = h.task("extract", reviewed_data,
-                    lambda o: validator.check_extraction(o, unit["id"], snapshot_id, graph), validator=validator)
-            except TaskValidationError as exc:
-                output, waived, dropped = self._salvage_extraction(exc, validator, unit["id"], snapshot_id, graph)
-        if output is None:
-            raise FlowError(tr("검증된 추출 결과가 없습니다.", "No validated extraction result."))
-        if self.config.audit:
-            # The notes' first publish made a request event of every message; code settles an exact repeat of a note.
-            requests_added = []
-            if match_noted_duplicates(output, graph, h.saved):
-                validator.check_extraction(output, unit["id"], snapshot_id, graph)
-                validator.normalizations.append({"mode": "audit_duplicate_of_note_matched"})
-        else:
-            requests_added = add_user_requests(output, [pool[i] for i in unit["sources"]], validator)
+            return {"output": output, "evidence": validator.evidence, "dependencies": h.dependencies,
+                    "cached": {**cached, "payload": output}, "reused": True}
+        self.store.save_unit(unit["id"], unit["sources"], h.dependencies, "parsed")
+        h.runner, h.routing_role = runners.get("extract"), "extract"
+        output, waived, dropped, learned = self._read_story(prepared, unit, pool, graph, snapshot_id)
+        text = learned.get("turn_summary")
+        summary = " ".join(text.split()) if isinstance(text, str) and text.strip() else None
         cached = {"payload": output, "evidence": validator.evidence, "routing_signature": signature,
-                  "user_requests_added": requests_added, "waived_citations": waived,
-                  "dropped_candidates": dropped,
-                  "routing_reasons": reasons, "escalated": should_escalate, "light_fallback": light_fallback,
-                  **({"unit_summary": summary[0]} if summary[0] else {}),
-                  **story_notes,
-                  "draft_payload": draft if should_escalate else None,
-                  "extraction_graph_version": graph["version"], "read_manifest": h.read_manifest,
+                  "waived_citations": waived, "dropped_candidates": dropped,
+                  **({"unit_summary": summary} if summary else {}),
+                  "unclaimed_blocks": learned["unclaimed_blocks"],
+                  "extraction_graph_version": graph["version"],
                   "context_selection": context.get("context_selection", {}),
                   "context_digest": current_context_digest}
-        # Reuse is decided above from `routing_signature` and `context_digest`,
-        # both already inside `cached`; the vestigial cache_key column is not used.
         self.store.save_unit(unit["id"], unit["sources"], h.dependencies, "extracted", cached)
         return {"output": output, "evidence": validator.evidence, "dependencies": h.dependencies,
-                "cached": cached, "reused": reuse}
+                "cached": cached, "reused": False}
 
-    @staticmethod
-    def _salvage_extraction(error: TaskValidationError, validator: EvidenceValidator, unit_id: str,
-                            snapshot_id: str, graph: dict) -> tuple[dict, list[str], list[str]]:
-        """Keep the candidates that pass after the repair round failed, or fail the unit as before."""
-        if error.output is None:
-            raise error
-        try:
-            return validator.salvage_extraction(error.output, unit_id, snapshot_id, graph)
-        except FlowError:
-            raise error from None
-
-    def _prepare_integration(self, unit: dict, extracted: dict, pool: dict[str, SourceRecord],
-                             graph: dict, snapshot_id: str, run_id: str, runners: RunnerPool,
-                             cancel: threading.Event) -> PreparedIntegration:
-        """Build the exact integration request against the latest graph."""
+    def _integrate_unit(self, unit: dict, extracted: dict, pool: dict[str, SourceRecord],
+                        graph: dict, snapshot_id: str, run_id: str,
+                        cancel: threading.Event) -> tuple[dict, dict, dict]:
+        """Publish the unit's extraction against the latest graph as the code-built delta (`draft_delta`: every
+        candidate added, one matched to exactly one existing event settled as its duplicate), under the same
+        checks; no model call. A draft the checks refuse fails the unit."""
         output = extracted["output"]
-        assigned = [pool[i] for i in unit["sources"]]
-        h = Harness(None, pool, graph, self.store, self.config, cancel, run_id, unit["id"], budget=runners.budget,
-                    routing_role="integrate", tracer=self.tracer,
+        h = Harness(None, pool, graph, self.store, self.config, cancel, run_id, unit["id"], tracer=self.tracer,
                     detailed_trace=self.detailed_trace, review_capture=self.review_capture)
-        clues = "\n".join([*(item["title"] + " " + item["summary"]
-                              for item in output["event_candidates"]),
-                           *(item["text"] for item in output["open_items"]),
-                           *(item["existing_event_id"] for item in output["existing_event_matches"])])
-        notes: list[str] = []
-        if self.config.audit:
-            notes, _ = audit_notes(graph, h.saved, set(unit["sources"]))
-            h.keep_events = set(notes)
-            clues = "\n".join([clues, *notes])
-        context = h.context(assigned, clues=clues)
         _rehydrate(h.pool, h.provided, extracted["evidence"])
         h.dependencies.update(extracted["dependencies"])
-        # Only exact quotes that are actually included in candidate_evidence count
-        # as visible to the integrator. Other raw records require a ReadRequest.
         for item in extracted["evidence"].values():
             h.provided.setdefault(item["source_id"], []).append((item["start_line"], item["end_line"]))
         validator = EvidenceValidator(h.pool, h.provided, assigned_source_ids=set(unit["sources"]))
         validator.inherit_focus(extracted["evidence"])
         validator.check_extraction(output, unit["id"], snapshot_id, graph)
         if any(output[k] for k in ("event_candidates", "edge_candidates", "existing_event_matches", "open_items")):
-            data = {"base_graph_version": graph["version"], "snapshot_id": snapshot_id,
-                    "validated_candidates": candidates_for_model(output, extracted["evidence"]),
-                    "candidate_evidence": _prompt_evidence(extracted["evidence"], quoted=candidate_quotes(output)),
-                    "assigned_source_ids": unit["sources"], **model_context(context)}
-            if self.config.integrate_evidence == "reuse":
-                data["evidence_policy"] = EVIDENCE_POLICY_REUSE
-            if self.config.audit:
-                data["journal_audit"] = {"note_event_ids": notes}
-        else:
-            data = None
-        return PreparedIntegration(h, validator, data, graph["version"])
-
-    def _integrate_unit(self, unit: dict, extracted: dict, pool: dict[str, SourceRecord],
-                        graph: dict, snapshot_id: str, run_id: str, runners: RunnerPool,
-                        cancel: threading.Event, *,
-                        prepared: PreparedIntegration | None = None) -> tuple[dict, dict, dict]:
-        """Serialize integration against the *latest* graph; do not resend all raw text."""
-        prepared = prepared or self._prepare_integration(unit, extracted, pool, graph,
-                                                          snapshot_id, run_id, runners, cancel)
-        if prepared.graph_version != graph["version"] or (prepared.data is not None and
-                prepared.data["snapshot_id"] != snapshot_id):
-            raise FlowError(tr("준비된 통합 입력의 snapshot 또는 graph 기준이 달라졌습니다.",
-                               "The prepared integrate input's snapshot or graph base has changed."))
-        h, validator, data = prepared.harness, prepared.validator, prepared.data
-        if data is not None:
-            candidate_set = data["validated_candidates"]
-            reuse = self.config.integrate_evidence == "reuse"
-            def check(o):
+            draft = draft_delta(output, graph["version"], snapshot_id)
+            if not self.config.audit:
+                # A reading of changed records updates what it repeats; an audit only adds.
+                refresh_matched(draft, output, graph)
+            try:
                 if self.config.audit:
-                    audit_guard(o, graph)
-                return validator.apply_delta(o, graph, snapshot_id, run_id, candidate_set, evidence_reuse=reuse)
-            mode = self.config.integrate_output
-            draft = draft_delta(candidate_set, graph["version"], snapshot_id) if mode != "full" else None
-            published = False
-            if (mode == "draft" and not graph["events"]) or mode == "draft_only":
-                # Nothing to join yet (or `--economy`): the draft is the delta, under the same checks.
-                try:
-                    check(copy.deepcopy(draft))
-                    delta, published = draft, True
-                    validator.normalizations.append({"mode": "integrate_draft_published",
-                                                     "items": len(draft["change_attributions"])})
-                except FlowError as exc:
-                    if self._story():
-                        raise TaskValidationError(f"draft failed its checks: {exc}") from None
-                    pass  # the integrator gets the draft to patch instead
-            if published:
-                pass
-            elif draft is not None:
-                h.runner = runners.get("integrate")
-                delta = h.task("integrate", integrate_request_data(data, draft),
-                               check, validator=validator, schema=review_patch_schema(reuse),
-                               merge=lambda answer: self._merge_review_patch(
-                                   answer, draft, validator, candidate_set, mode="integrate_patch_merged"),
-                               thread=self.unit_thread(unit["id"], h.runner))
-            else:
-                h.runner = runners.get("integrate")
-                delta = h.task("integrate", data, check, validator=validator, thread=self.unit_thread(unit["id"], h.runner))
-            prepared.delta = delta
-            if self.config.audit:
-                audit_guard(delta, graph)
-            new_graph = validator.apply_delta(delta, graph, snapshot_id, run_id, candidate_set,
-                                             evidence_reuse=reuse)
-            # What code dropped from the extraction is said whatever the integrator wrote.
+                    audit_guard(draft, graph)
+                new_graph = validator.apply_delta(draft, graph, snapshot_id, run_id, output)
+            except FlowError as exc:
+                raise TaskValidationError(f"draft failed its checks: {exc}") from None
+            # What code dropped from the extraction is said with the unit.
             new_graph["limitations"] = list(dict.fromkeys(new_graph["limitations"] +
                                                          extracted["cached"].get("dropped_candidates", [])))
         else:
             new_graph = copy.deepcopy(graph)
-            new_graph["limitations"] = list(dict.fromkeys(new_graph["limitations"] +
-                                                         extracted["output"]["limitations"]))
+            new_graph["limitations"] = list(dict.fromkeys(new_graph["limitations"] + output["limitations"]))
             new_graph["source_snapshot_id"] = snapshot_id
-        new_graph["semantic_review_audit"] = prepared.review_audit or {"status": "pending_route"}
         return new_graph, {**extracted["evidence"], **validator.evidence}, h.dependencies
-
-    def _review_delta(self, prepared: PreparedIntegration, graph: dict, snapshot_id: str,
-                      run_id: str, runners: RunnerPool) -> dict:
-        """Optionally review a risky, structurally valid proposed delta."""
-        delta, data = prepared.delta, prepared.data
-        reasons = list(review_signal_items(delta))
-        issues = list(prepared.review_issue_inputs)
-        executed = bool(issues and self.config.semantic_review and data is not None)
-        if executed:
-            harness, validator = prepared.harness, prepared.validator
-            harness.runner, harness.routing_role, harness.routing_reasons = runners.get("escalation"), "integrate_review", reasons
-            candidate_set = data["validated_candidates"]
-            proposal, patch_mode = delta, self.config.review_output == "patch"
-            base = {key: value for key, value in data.items() if key not in REVIEW_OMITTED} if patch_mode else data
-            review_data = {**base, "review_trigger": reasons, "review_issues": issues,
-                "proposed_graph_delta": delta_for_model(proposal, candidate_set) if patch_mode else proposal,
-                "review_instruction": REVIEW_PATCH_INSTRUCTION if patch_mode else REVIEW_INSTRUCTION}
-            def check_review(output: dict) -> None:
-                validator.apply_delta(output, graph, snapshot_id, run_id, candidate_set,
-                                      expected_review_issues=issues,
-                                      evidence_reuse=self.config.integrate_evidence == "reuse")
-            if patch_mode:
-                delta = harness.task("integrate", review_data, check_review, validator=validator,
-                                     schema=review_patch_schema(self.config.integrate_evidence == "reuse"),
-                                     merge=lambda answer: self._merge_review_patch(answer, proposal, validator, candidate_set),
-                                     thread=self.unit_thread(harness.unit_id, harness.runner))
-            else:
-                delta = harness.task("integrate", review_data, check_review, validator=validator,
-                                     thread=self.unit_thread(harness.unit_id, harness.runner))
-            prepared.delta = delta
-        resolutions = delta.get("review_resolutions", []) if executed else []
-        if executed:
-            resolutions = [{**item, "evidence_ids": validator.citations(item["evidence"]), "evidence": None}
-                           for item in resolutions]
-        resolutions += [{k: v for k, v in row.items() if k != "limitation"} for row in prepared.code_resolutions]
-        unresolved_ids = ([item["issue_id"] for item in resolutions if item["status"] == "unresolved"]
-                          if executed else [issue["id"] for issue in issues])
-        prepared.review_audit = {"triggered": reasons, "executed": executed,
-            "status": ("reviewed_with_unresolved" if unresolved_ids else "reviewed") if executed else
-                      "skipped_disabled" if issues else "not_needed",
-            "issues": issues, "resolutions": resolutions, "unresolved_issue_ids": unresolved_ids}
-        result = (prepared.validator.apply_delta(prepared.delta, graph, snapshot_id, run_id,
-                   data["validated_candidates"], expected_review_issues=issues if executed else None,
-                   evidence_reuse=self.config.integrate_evidence == "reuse")
-                  if data else copy.deepcopy(graph))
-        result["limitations"] = list(dict.fromkeys(result["limitations"] + [row["limitation"] for row in prepared.code_resolutions]))
-        result["semantic_review_audit"] = prepared.review_audit
-        result["semantic_review_history"] = [*graph.get("semantic_review_history", []),
-            {"unit_id": data["validated_candidates"]["unit_id"] if data else None,
-             **prepared.review_audit}]
-        return result
-
-    @staticmethod
-    def _merge_review_patch(answer: dict, proposal: dict, validator: EvidenceValidator,
-                            candidates: dict | None = None, mode: str = "review_patch_merged") -> dict:
-        """What the checker sees in patch mode: the proposal with the review's changes folded in."""
-        merged = merge_review_patch(proposal, answer)
-        settled = reconcile_review_patch(merged, proposal, candidates)
-        validator.normalizations.append({"mode": mode, **review_patch_audit(proposal, answer),
-                                         **{k: v for k, v in settled.items() if v}})
-        return merged
 
     def _plan_units(self, snapshot: Snapshot, issues: list[str], *,
                     repair: bool = False) -> tuple[list[dict], set[str], list[str]]:

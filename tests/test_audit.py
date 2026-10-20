@@ -31,7 +31,8 @@ def story(folder: Path) -> list[dict]:
         row(folder, 0, "user", text(0)),
         row(folder, 1, "assistant", text(1)),
         row(folder, 2, "assistant", [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "pytest -q"}}]),
-        row(folder, 3, "user", [{"type": "tool_result", "tool_use_id": "t1", "content": CASES[3][0]}]),
+        row(folder, 3, "user", [{"type": "tool_result", "tool_use_id": "t1", "is_error": True,
+                                 "content": "Error: Exit code 1\n" + CASES[3][0]}]),
         row(folder, 4, "user", text(4)),
         row(folder, 5, "assistant", text(5)),
         row(folder, 6, "assistant", [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "pytest -q"}}]),
@@ -65,12 +66,7 @@ def write_notes(scope, store, homes):
 
 
 def engine_for(scope, store, homes, **config) -> Engine:
-    config.setdefault("integrate_output", "draft")  # the default, which the suite's fixture otherwise overrides
     return Engine(scope, store, AnalysisConfig(**homes, audit=True, **config))
-
-
-def titles(graph):
-    return {event["title"] for event in graph["events"]}
 
 
 def test_an_audit_with_no_noted_session_has_nothing_to_read(project):
@@ -97,6 +93,12 @@ def test_an_audit_plans_the_noted_session_in_units_of_its_own(project):
     assert len(units[0]["sources"]) == len(waiting) == 8
 
 
+# What an audit of the story adds to the notes: the assistant's proposal and report (the story) and the passing run (the
+# work code finds). The person's two messages have their events already (the first is the noted decision, the second
+# the request the notes' publish made), and the failing run is noted.
+AUDIT_ADDS = {CASES[1][2], CASES[5][2], "검사 통과: pytest -q"}
+
+
 def test_an_audit_adds_only_what_the_notes_left_out(project):
     _, scope, store, homes = project
     first, second = write_notes(scope, store, homes)
@@ -106,21 +108,25 @@ def test_an_audit_adds_only_what_the_notes_left_out(project):
     result = engine_for(scope, store, homes).analyze(lambda: runner)
     assert result["status"] == "complete", result
     graph = store.graph()
-    # The story's other steps are new; the two noted steps are not written a second time.
+    # The story's other steps are new; the noted steps and the person's messages are not written a second time.
     added = [event for event in graph["events"] if event["id"] not in noted]
-    assert {event["title"] for event in added} == {CASES[n][2] for n in (1, 4, 5, 6)}
+    assert {event["title"] for event in added} == AUDIT_ADDS
     assert all(event["origin"] == "audit" for event in added)
-    assert CASES[0][2] not in titles(graph) and sum(e["title"] == "JSON storage adopted" for e in graph["events"]) == 1
+    assert not any(event["title"] == CASES[0][0] for event in added)  # the noted decision's message
+    assert sum(e["title"] == "JSON storage adopted" for e in graph["events"]) == 1
     # Nothing that existed was changed, and the notes keep their origin.
     after = {event["id"]: event for event in graph["events"]}
     assert all(after[i] == event for i, event in noted.items())
     assert {e["id"] for e in graph["events"] if e.get("origin") == "note"} == {first["id"], second["id"]}
     assert all(edge.get("origin") for edge in graph["edges"] if edge["id"] not in {x["id"] for x in before["edges"]})
-    # The extraction was shown the notes, and the audit rules ride on the request only then.
-    extract = next(task for task in runner.tasks if task["stage"] == "extract")
-    named = extract["data"]["journal_audit"]["note_event_ids"]  # the request carries short IDs (E1, E2)
-    assert len(named) == 2 and set(named) <= {e["id"] for e in extract["data"]["existing_events"]}
-    assert extract["instructions"].endswith(prompt("audit"))
+    # The story was shown the notes and what each of them cites, and the audit rules ride on the request only then.
+    [task] = runner.tasks
+    named = task["data"]["journal_audit"]["note_event_ids"]  # the request carries short IDs (E1, E2)
+    assert len(named) == 2 and set(named) <= {e["id"] for e in task["data"]["existing_events"]}
+    marked = [w.get("noted_by") for w in task["data"]["work"]] + [b.get("noted_by") for b in task["data"]["written"]]
+    assert [m for m in marked if m] in ([[named[0]], [named[1]]], [[named[1]], [named[0]]])
+    assert next(w for w in task["data"]["work"] if w.get("noted_by"))["status"] == "observed_failure"
+    assert task["system"].endswith(prompt("audit"))
     # An audit says nothing about the records an ordinary analysis still has to read.
     assert graph.get("analysis_status") == before.get("analysis_status")
     assert graph.get("coverage") == before.get("coverage")
@@ -146,71 +152,54 @@ def test_a_second_audit_reads_nothing_and_the_ordinary_plan_never_sees_audit_uni
     assert len(units) == 1 and len(units[0]["sources"]) == 1
 
 
-def test_an_audit_unit_left_unfinished_is_not_taken_up_by_ordinary_analysis(project):
+def test_an_audit_unit_left_unfinished_is_not_taken_up_by_ordinary_analysis(project, monkeypatch):
     _, scope, store, homes = project
     write_notes(scope, store, homes)
+    publish = Engine._integrate_unit
 
-    class FailIntegration(FixtureRunner):
-        def run(self, task, schema, cancel):
-            if task["stage"] == "integrate":
-                self.calls += 1
-                raise FlowError("intentional integration failure")
-            return super().run(task, schema, cancel)
-    assert engine_for(scope, store, homes).analyze(FailIntegration)["status"] == "failed"
+    def fails_once(self, *args, **kwargs):
+        monkeypatch.setattr(Engine, "_integrate_unit", publish)
+        raise FlowError("intentional publish failure")
+    monkeypatch.setattr(Engine, "_integrate_unit", fails_once)
+    assert engine_for(scope, store, homes).analyze(FixtureRunner)["status"] == "failed"
     stored = [u for u in store.units() if u["id"].startswith("audit_")]
     assert [u["status"] for u in stored] == ["extracted"]
     ordinary = Engine(scope, store, AnalysisConfig(**homes))
     runner = FixtureRunner()
     assert ordinary.analyze(lambda: runner)["status"] in {"noop", "complete"} and runner.calls == 0
-    # The next audit reuses the paid extraction and only integrates.
+    # The next audit reuses the paid story call and only publishes.
     again = FixtureRunner()
     result = engine_for(scope, store, homes).analyze(lambda: again)
-    assert result["status"] == "complete" and result["reused_extractions"] == 1
-    assert [task["stage"] for task in again.tasks] == ["integrate"]
+    assert result["status"] == "complete" and result["reused_extractions"] == 1 and again.calls == 0
 
 
-def rewriting_runner(note_id: str, *, once: bool):
+def test_a_draft_that_would_change_a_note_fails_the_unit_and_changes_nothing(project, monkeypatch):
+    from contexttrail import analysis
     from contexttrail.schema import EVENT_FIELDS
-
-    class RewritesTheNote(FixtureRunner):
-        """An integrator that updates the agent's note, on its first answer only or on every one."""
-        def run(self, task, schema, cancel):
-            output = super().run(task, schema, cancel)
-            if task["stage"] == "integrate" and not (once and task.get("repair")):
-                citation = next(iter(task["data"]["candidate_evidence"].values()))
-                update = {"id": note_id, "reason": "better",
-                          "evidence": [{"source_id": citation["source_id"], "start_line": citation["start_line"],
-                                        "end_line": citation["end_line"], "quote": "x" * 8}],
-                          "changes": {**{name: None for name in EVENT_FIELDS}, "title": "Rewritten"}}
-                # Asked for a patch it answers one, else the whole delta.
-                (output["patch"] if "patch" in schema["properties"] else output)["events_to_update"] = [update]
-            self.last = task
-            return output
-    return RewritesTheNote
-
-
-@pytest.mark.parametrize("mode", ["draft", "full"])
-def test_an_audit_cannot_change_what_exists_and_a_rewrite_is_sent_back_once(project, mode):
-    _, scope, store, homes = project
-    first, _ = write_notes(scope, store, homes)
-    runner = rewriting_runner(first["id"], once=True)()
-    result = engine_for(scope, store, homes, integrate_output=mode).analyze(lambda: runner)
-    assert result["status"] == "complete", result
-    assert runner.last.get("repair") and "changes nothing that exists" in runner.last["repair"]["instruction"]
-    assert next(e for e in store.graph()["events"] if e["id"] == first["id"]) == first
-
-
-@pytest.mark.parametrize("mode", ["draft", "full"])
-def test_a_stubborn_rewrite_of_a_note_fails_the_unit_and_changes_nothing(project, mode):
     _, scope, store, homes = project
     first, _ = write_notes(scope, store, homes)
     version = store.graph()["version"]
-    result = engine_for(scope, store, homes, integrate_output=mode).analyze(rewriting_runner(first["id"], once=False))
+    draft = analysis.draft_delta
+
+    def rewrites_the_note(output, *args):
+        delta = draft(output, *args)
+        delta["events_to_update"] = [{"id": first["id"], "reason": "better", "evidence": [],
+                                      "changes": {**{name: None for name in EVENT_FIELDS}, "title": "Rewritten"}}]
+        return delta
+    monkeypatch.setattr(analysis, "draft_delta", rewrites_the_note)
+    result = engine_for(scope, store, homes).analyze(FixtureRunner)
     assert result["status"] == "failed"
     graph = store.graph()
     assert graph["version"] == version
     assert next(e for e in graph["events"] if e["id"] == first["id"]) == first
     assert not [u for u in store.units() if u["status"] == "integrated"]
+    assert any("changes nothing that exists" in failure.get("message", "") for failure in store.unit_failures().values())
+    # The unit failed on this input, so it is held back until asked for (or the input changes).
+    monkeypatch.setattr(analysis, "draft_delta", draft)
+    held = FixtureRunner()
+    assert engine_for(scope, store, homes).analyze(lambda: held)["status"] == "noop" and held.calls == 0
+    assert engine_for(scope, store, homes, retry_failed=True).analyze(FixtureRunner)["status"] == "complete"
+    assert next(e for e in store.graph()["events"] if e["id"] == first["id"]) == first
 
 
 def test_the_guard_allows_new_items_and_refuses_changes_to_existing_ones(project):
@@ -227,40 +216,31 @@ def test_the_guard_allows_new_items_and_refuses_changes_to_existing_ones(project
         audit_guard({**empty, "open_items_to_upsert": [{"id": "open_1"}]}, graph)
 
 
-def test_a_candidate_repeating_a_note_exactly_is_settled_as_its_duplicate(project):
+def test_a_story_repeating_a_note_is_settled_as_its_duplicate(project):
     _, scope, store, homes = project
     first, second = write_notes(scope, store, homes)
 
     class IgnoresTheNotes(FixtureRunner):
-        """A model that writes the noted failing run and decision again, on the very same lines."""
+        """A model that writes the noted decision again on the noted block and names the noted failing run anew."""
         def run(self, task, schema, cancel):
-            if task["stage"] != "extract":
-                return super().run(task, schema, cancel)
+            output = super().run(task, schema, cancel)
             data = task["data"]
-            self.calls += 1
-            self.tasks.append(copy.deepcopy(task))
-            candidates = []
-            for record in data["new_records"]:
-                line = "\n".join(item["text"] for item in record["lines"])
-                for n in (0, 3):
-                    if line == CASES[n][0]:
-                        _, kind, title, status, actor, basis = CASES[n]
-                        candidates.append({"id": f"tmp:{n}", "kind": kind, "title": title + " (again)", "summary": line,
-                                           "status": status, "actor": actor, "basis": basis,
-                                           "session_ids": [record["session_id"]], "worktree_ids": [],
-                                           "recorded_at": record["recorded_at"], "occurred_at": None,
-                                           "evidence": [{"source_id": record["source_id"], "start_line": 1,
-                                                         "end_line": len(record["lines"]), "quote": line}]})
-            return {"status": "complete", "read_requests": [], "snapshot_id": data["snapshot_id"],
-                    "unit_id": data["unit_id"], "event_candidates": candidates, "edge_candidates": [],
-                    "existing_event_matches": [], "open_items": [], "limitations": [], "unprocessed_record_ids": []}
+            block = next(b["block"] for b in data["written"] if b.get("noted_by"))
+            output["story"] = [{"id": "N1", "kind": "decision", "status": "adopted", "title": CASES[0][2] + " (again)",
+                                "why": None, "summary": "", "blocks": [block], "work": []}]
+            output["requests"] = [{"id": r["id"], "answered_by": []} for r in data["user_requests"]]
+            for entry, item in zip(output["work"], data["work"]):
+                if item.get("noted_by"):
+                    entry["title"] = CASES[3][2] + " (again)"
+            return output
     runner = IgnoresTheNotes()
     result = engine_for(scope, store, homes).analyze(lambda: runner)
     assert result["status"] == "complete", result
     graph = store.graph()
     assert not any("(again)" in event["title"] for event in graph["events"])
     assert {e["id"] for e in graph["events"] if e.get("origin") == "note"} == {first["id"], second["id"]}
-    assert not any(e.get("origin") == "audit" for e in graph["events"])
+    added = [e for e in graph["events"] if e.get("origin") == "audit"]
+    assert not any(e["kind"] == "decision" or e["status"] == "observed_failure" for e in added)
 
 
 def test_an_edit_no_event_cites_is_still_required_and_one_a_note_cites_is_not():
@@ -271,10 +251,9 @@ def test_an_edit_no_event_cites_is_still_required_and_one_a_note_cites_is_not():
 
 def test_the_audit_rules_are_sent_only_with_an_audit():
     data = {"unit_id": "u"}
-    assert build_task("extract", data)["instructions"] == prompt("extract")
-    assert build_task("integrate", data)["instructions"] == prompt("integrate")
-    audited = build_task("extract", {**data, "journal_audit": {"note_event_ids": []}})
-    assert audited["instructions"] == prompt("extract") + "\n\n" + prompt("audit")
+    assert build_task("story", data)["system"] == prompt("story")
+    audited = build_task("story", {**data, "journal_audit": {"note_event_ids": []}})
+    assert audited["system"] == prompt("story") + "\n\n" + prompt("audit")
 
 
 def test_every_note_of_the_units_records_is_shown_past_the_context_limit(tmp_path):
@@ -343,23 +322,6 @@ def test_an_edit_the_notes_missed_must_still_be_cited_and_a_noted_one_need_not_b
     journal.enable(store)
     journal.write(scope, store, SESSION, kind="action", title="Add add()", quotes=["def add(a, b): return a + b"], **homes)
 
-    class FindsTheMissedEdit(FixtureRunner):
-        def run(self, task, schema, cancel):
-            if task["stage"] != "extract":
-                return super().run(task, schema, cancel)
-            self.calls += 1
-            data = task["data"]
-            call = next(step["call"] for step in data["tool_steps"] if step["target"].endswith("mul.py"))
-            record = next(r for r in data["new_records"] if r["source_id"] == call)
-            candidate = {"id": "tmp:mul", "kind": "action", "title": "Add mul()", "summary": "mul() was added",
-                         "status": "applied", "actor": "assistant", "basis": "tool_record", "session_ids": [SESSION],
-                         "worktree_ids": [], "recorded_at": record["recorded_at"], "occurred_at": None,
-                         "evidence": [{"source_id": call, "start_line": 1, "end_line": len(record["lines"]),
-                                       "quote": "def mul(a, b): return a * b"}]}
-            return {"status": "complete", "read_requests": [], "snapshot_id": data["snapshot_id"],
-                    "unit_id": data["unit_id"], "event_candidates": [candidate], "edge_candidates": [],
-                    "existing_event_matches": [], "open_items": [], "limitations": [], "unprocessed_record_ids": []}
-
     engine = engine_for(scope, store, homes)
     snapshot = engine.scan()
     units, _, _ = engine._plan_units(snapshot, [])
@@ -371,16 +333,12 @@ def test_an_edit_the_notes_missed_must_still_be_cited_and_a_noted_one_need_not_b
     # Only the edit no event cites is demanded; the ordinary analysis would demand both.
     missed = next(step["call"] for step in prepared.data["tool_steps"] if step["target"].endswith("mul.py"))
     assert set(prepared.validator.required_citations) == {missed}
-    # An audit whose extraction leaves the missed edit out does not pass.
-    empty = FixtureRunner()
-    assert engine_for(scope, store, homes).analyze(lambda: empty)["status"] == "failed"
-    # The unit failed on this input, so it is held back until asked for (or the input changes).
-    held = FixtureRunner()
-    assert engine_for(scope, store, homes).analyze(lambda: held)["status"] == "noop" and held.calls == 0
-    result = engine_for(scope, store, homes, retry_failed=True).analyze(FindsTheMissedEdit)
+    # The code's work record holds both edits; after the audit an event it added cites the one the notes missed.
+    result = engine_for(scope, store, homes).analyze(FixtureRunner)
     assert result["status"] == "complete", result
     added = [e for e in store.graph()["events"] if e.get("origin") == "audit"]
-    assert [e["title"] for e in added] == ["Add mul()"]
+    cited = store.evidence_many([i for event in added for i in event["evidence_ids"]])
+    assert missed in {item["source_id"] for item in cited.values()}
 
 
 def test_the_cli_audits_one_noted_session_and_reports_it(project, capsys):
@@ -391,7 +349,7 @@ def test_the_cli_audits_one_noted_session_and_reports_it(project, capsys):
     argv = ["analyze", str(folder), "--audit", "--session", SESSION[:6], "--no-tui", "--brief"]
     assert main(argv) == 0
     graph = store.graph()
-    assert sum(e.get("origin") == "audit" for e in graph["events"]) == 4
+    assert {e["title"] for e in graph["events"] if e.get("origin") == "audit"} == AUDIT_ADDS
     assert main(argv) == 0  # nothing left to read
     assert "noop" in capsys.readouterr().out
     # A session without notes is refused, not analyzed.

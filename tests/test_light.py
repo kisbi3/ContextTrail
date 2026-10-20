@@ -1,4 +1,4 @@
-"""Light analysis (`--light`): code builds the skeleton from the tool steps, one model call writes the rest."""
+"""The work record and the story: code builds the skeleton from the tool steps, one story call writes the rest."""
 import json
 from dataclasses import replace
 
@@ -22,23 +22,6 @@ def records(make):
         tool("test2-out", "tool_result", "3 passed", "c4"),
         make("부호가 반대였습니다. 빼기 대신 더하기로 바꿨고, 테스트가 통과합니다.", key="said", role="assistant"),
     ]
-
-
-class LightRunner(FixtureRunner):
-    """Answers the light request like a model would; any other stage is a failure of the test."""
-    calls: list = []
-
-    def run(self, task, schema, cancel):
-        assert task["stage"] == "light", task["stage"]
-        LightRunner.calls.append(task)
-        data = task["data"]
-        said = next(r for r in data["new_records"] if r["role"] == "assistant")
-        return {"status": "complete", "snapshot_id": data["snapshot_id"], "unit_id": data["unit_id"],
-                "skeleton": [{"id": item["id"], "title": f"T {item['id']}", "summary": "why"} for item in data["skeleton"]],
-                "events": [{"kind": "decision", "status": "adopted", "actor": "assistant", "title": "Flip the sign",
-                            "summary": "The bug was a sign error.",
-                            "sources": [{"source_id": said["source_id"], "start_line": 1, "end_line": 1},
-                                        {"source_id": "not-in-this-unit", "start_line": None, "end_line": None}]}]}
 
 
 def test_the_skeleton_follows_the_tool_steps(laboratory):
@@ -69,26 +52,6 @@ def test_the_same_check_run_again_with_nothing_changed_between_is_one_result(lab
     assert items[1]["sources"] == ["test1b-out", "test1b", "test1-out", "test1"]
     assert items[4]["title"] == "Check passed: ruff check ."
     assert [(e["from"], e["to"]) for e in edges] == [("K1", "K2"), ("K3", "K4")]  # a lint of the whole tree names no file
-
-
-def test_a_light_run_is_one_call_per_unit_and_cites_records_by_code(laboratory):
-    scope, store, engine, recs, make = laboratory
-    recs.extend(records(make))
-    engine.config = replace(engine.config, analysis_mode="light", semantic_review=False, integrate_output="draft_only")
-    LightRunner.calls = []
-    result = engine.analyze(LightRunner)
-    assert result["status"] == "complete", {k: result.get(k) for k in ("stop_reason", "error", "limitations", "unit_failures")} | {"stages": [t["stage"] for t in runner.tasks]}
-    [task] = LightRunner.calls
-    assert task["system"].startswith("You write the project history") and "quote" not in json.dumps(task["data"]["skeleton"])
-    graph = store.graph()
-    titles = {e["title"]: e for e in graph["events"]}
-    assert {"T K1", "T K2", "T K3", "T K4", "Flip the sign"} <= set(titles)
-    assert titles["T K2"]["status"] == "observed_failure" and titles["T K4"]["status"] == "observed_success"
-    assert any(e["kind"] == "question" for e in graph["events"])  # the person's message, made by code
-    verifies = [(e["from_event_id"], e["to_event_id"]) for e in graph["edges"] if e["relation"] == "verifies"]
-    assert (titles["T K3"]["id"], titles["T K4"]["id"]) in verifies
-    # The decision cites the assistant's line; the source outside the unit was dropped, not asked about again.
-    assert len(titles["Flip the sign"]["evidence_ids"]) == 1
 
 
 def test_code_cuts_the_cited_lines_within_what_was_shown(laboratory):
@@ -153,26 +116,6 @@ def test_an_edit_is_linked_to_a_test_only_when_the_run_names_every_edited_file(l
     assert all(edge["why"] for edge in edges)
 
 
-
-def test_a_unit_summary_is_asked_only_when_chosen_and_kept_with_the_units_events(laboratory):
-    from contexttrail.analysis import UNIT_SUMMARY_REQUEST
-    from contexttrail.demo import CASES
-    _, store, engine, records, make = laboratory
-    records.append(make(CASES[0][0]))
-    runner = FixtureRunner()
-    assert engine.analyze(lambda: runner)["status"] == "complete"
-    assert all("unit_summary_request" not in task["data"] for task in runner.tasks)  # the default input is unchanged
-    assert "unit_summaries" not in store.graph()
-    records.append(make(CASES[1][0], key="s2"))
-    engine.config.unit_summary = True
-    runner = FixtureRunner()
-    assert engine.analyze(lambda: runner)["status"] == "complete"
-    assert runner.tasks[0]["data"]["unit_summary_request"] == UNIT_SUMMARY_REQUEST
-    (summary,) = store.graph()["unit_summaries"].values()
-    assert summary["text"] == "합성 구간: 저장 방식을 정하고 바꿈"
-    assert summary["event_ids"] and set(summary["event_ids"]) <= {e["id"] for e in store.graph()["events"]}
-
-
 def test_pipeline_v2_keeps_the_work_code_found_and_the_story_cites_written_blocks(laboratory):
     from contexttrail.light import STORY_SCHEMA, skeleton, story_extraction, story_request, written_blocks
     from contexttrail.schema import EvidenceValidator, validate_shape
@@ -207,20 +150,24 @@ def test_pipeline_v2_keeps_the_work_code_found_and_the_story_cites_written_block
 
 
 def test_a_v2_run_publishes_the_code_found_work_and_the_turn_summary(laboratory):
-    from contexttrail.demo import CASES
     _, store, engine, records_, make = laboratory
     records_.extend(records(make))
-    import dataclasses
-    engine.config = dataclasses.replace(engine.config, pipeline="v2")
-    engine.config.validate()  # what Engine() does with the config it is given
     runner = FixtureRunner()
     result = engine.analyze(lambda: runner)
     assert result["status"] == "complete", {k: result.get(k) for k in ("stop_reason", "error", "limitations", "unit_failures")} | {"stages": [t["stage"] for t in runner.tasks]}
     assert [task["stage"] for task in runner.tasks] == ["story"]
     graph = store.graph()
-    assert any(event["status"] == "observed_failure" for event in graph["events"])  # the failed check, found by code
-    assert list(graph["unit_summaries"].values())[0]["text"] == "합성 구간: 작업 기록만"
-    assert engine.config.integrate_output == "draft_only" and not engine.config.semantic_review  # no integrate, no review
+    titles = {e["title"]: e for e in graph["events"]}
+    failed, passed = (titles[f"검사 {word}: python -m pytest tests/test_calc.py -q"] for word in ("실패", "통과"))
+    assert (failed["status"], passed["status"]) == ("observed_failure", "observed_success")  # found by code
+    assert titles["add()가 틀려요. 고쳐 주세요."]["kind"] == "question"  # the person's message, made by code
+    # Each edit is verified by the check after it that names its file.
+    edits = [e["id"] for e in graph["events"] if e["kind"] == "action"]
+    verifies = {(e["from_event_id"], e["to_event_id"]) for e in graph["edges"] if e["relation"] == "verifies"}
+    assert verifies == set(zip(edits, (failed["id"], passed["id"])))
+    (summary,) = graph["unit_summaries"].values()
+    assert summary["text"] == "합성 구간: 작업 기록만"  # kept with the events the unit added
+    assert summary["event_ids"] and set(summary["event_ids"]) <= {e["id"] for e in graph["events"]}
 
 
 def test_v2_keeps_a_run_only_when_the_story_points_at_it_and_names_unnamed_work_in_korean(laboratory):
@@ -343,7 +290,6 @@ def test_v2_ends_a_run_of_edits_at_a_run_between_them(laboratory):
 
 
 def test_v2_answers_a_request_by_its_id_only_with_a_reply_after_it_in_its_session(laboratory):
-    from contexttrail.analysis import add_user_requests
     from contexttrail.light import open_requests, request_items, skeleton, story_extraction, story_request, written_blocks
     from contexttrail.schema import EvidenceValidator
     _, _, _, _, make = laboratory
@@ -384,7 +330,6 @@ def test_v2_answers_a_request_by_its_id_only_with_a_reply_after_it_in_its_sessio
         assert why in refused
     assert "story: event not kept, its ID names a request, work item, block or earlier event: Q2, ev_old." \
         in output["limitations"]
-    assert add_user_requests(output, found, validator) == []  # the requests are made once
     validator.check_extraction(output, "u", "snap", {"events": [], "edges": []})
 
     # An earlier request whose turn these records continue can be answered here, by a reply before the session's next
@@ -613,10 +558,7 @@ def test_v2_a_codex_run_is_settled_by_its_poll_inside_a_call_that_does_more(labo
 
 def test_v2_reads_a_changed_unit_again_without_adding_its_events_twice(laboratory):
     _, store, engine, records_, make = laboratory
-    import dataclasses
     records_.extend(records(make))
-    engine.config = dataclasses.replace(engine.config, pipeline="v2")
-    engine.config.validate()
     assert engine.analyze(FixtureRunner)["status"] == "complete"
     before = store.graph()["events"]
     # One record of the integrated unit changes: the unit is read again, and what it finds is what it found before.
@@ -632,10 +574,7 @@ def test_v2_a_unit_with_nothing_that_passes_is_skipped_not_the_run(laboratory, m
     from contexttrail.util import FlowError
     from contexttrail.schema import EvidenceValidator
     _, store, engine, records_, make = laboratory
-    import dataclasses
     records_.extend(records(make))
-    engine.config = dataclasses.replace(engine.config, pipeline="v2")
-    engine.config.validate()
 
     def refuse(*args, **kwargs):
         raise FlowError("refused")
@@ -651,10 +590,7 @@ def test_v2_a_draft_that_fails_its_checks_fails_the_unit_with_no_integrate_call(
     from contexttrail.schema import EvidenceValidator
     from contexttrail.util import FlowError
     _, store, engine, records_, make = laboratory
-    import dataclasses
     records_.extend(records(make))
-    engine.config = dataclasses.replace(engine.config, pipeline="v2")
-    engine.config.validate()
 
     def refuse(*args, **kwargs):
         raise FlowError("refused")

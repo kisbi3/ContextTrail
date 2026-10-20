@@ -174,35 +174,6 @@ def test_every_claim_error_is_reported_in_one_round(laboratory):
         assert all(name in message for name in names)
 
 
-def test_new_observed_result_without_a_relation_is_signalled_for_review():
-    from contexttrail.analysis import unlinked_observed_outcomes
-    def item(key, kind, status):
-        return {"id": key, "kind": kind, "status": status}
-    delta = {"events_to_add": [item("tmp:change", "action", "applied"),
-                               item("tmp:checked", "outcome", "observed_success"),
-                               item("tmp:loose", "outcome", "observed_success"),
-                               item("tmp:report", "outcome", "reported_complete")],
-             "edges_to_add": [{"from_event_id": "tmp:change", "to_event_id": "tmp:checked"}]}
-    assert [x["id"] for x in unlinked_observed_outcomes(delta)] == ["tmp:loose"]
-    assert unlinked_observed_outcomes(None) == []
-
-
-def test_revision_without_revises_is_the_review_signal_not_every_observed_result():
-    from contexttrail.analysis import review_signal_items, unlinked_revisions
-    def item(key, kind, status):
-        return {"id": key, "kind": kind, "status": status}
-    delta = {"events_to_add": [item("tmp:fix", "revision", "applied"),
-                               item("tmp:linked", "revision", "applied"),
-                               item("tmp:ok", "outcome", "observed_success")],
-             "edges_to_add": [{"from_event_id": "ev_old", "to_event_id": "tmp:linked", "relation": "revises"},
-                              {"from_event_id": "ev_old", "to_event_id": "tmp:fix", "relation": "follows"},
-                              {"from_event_id": "tmp:linked", "to_event_id": "tmp:ok", "relation": "verifies"}],
-             "events_to_update": [], "edges_to_invalidate": []}
-    assert [x["id"] for x in unlinked_revisions(delta)] == ["tmp:fix"]
-    assert list(review_signal_items(delta)) == ["unlinked_revision"]
-    assert review_signal_items(None) == {}
-
-
 def test_graph_summary_counts_revisions_without_a_revised_event():
     from contexttrail.render import graph_summary
     graph = {"events": [{"id": "a", "kind": "action", "status": "applied"},

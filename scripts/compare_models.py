@@ -3,9 +3,9 @@
 
 A project analyses each unit once, so two models can only be compared on the same units from separate copies of
 its state. This copies the project's state once (read-only, SQLite backup), gives every model its own copy, runs
-the ordinary analysis (`Engine.analyze`, economy unless `--no-economy`) on each, and writes a comparison:
-how each unit was published (first answer, after the repair, salvaged, light reading, skipped), calls, time,
-tokens, events, verified changes, titles outside the output language, and every unit's event titles side by side.
+the ordinary analysis (`Engine.analyze`) on each, and writes a comparison: how each unit was published (first
+answer, after the repair, salvaged, skipped), calls, time, tokens, events, verified changes, titles outside the
+output language, and every unit's event titles side by side.
 
 The project's own state is never opened for writing. It sends the project's records to each model's service,
 so it runs only with --yes.
@@ -29,7 +29,7 @@ import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
-PATHS = ("first", "repair", "salvage", "light", "skipped")
+PATHS = ("first", "repair", "salvage", "skipped")
 SCRIPTS = {"Korean": re.compile("[가-힣]"), "Japanese": re.compile("[ぁ-んァ-ン一-龯]"), "Chinese": re.compile("[一-龯]")}
 
 
@@ -79,9 +79,7 @@ def tokens_of(usage: dict) -> dict:
 def unit_path(calls: list[dict], status: str | None) -> str:
     if status != "integrated":
         return "skipped"
-    if any(c["stage"] == "light" and c["status"] == "complete" for c in calls):
-        return "light"
-    # The extracting call of the unit: `extract`, or the story call of pipeline v2.
+    # The unit's story call (`extract` in states analysed before the story call was the only one).
     extract = [c["status"] for c in calls if c["stage"] in ("extract", "story") and c["status"] not in ("cancelled", "running")]
     if extract and extract[0] == "complete":
         return "first"
@@ -160,7 +158,6 @@ def worker(args) -> int:
     """One model on one state copy (a separate process, so several can run side by side)."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     from contexttrail.analysis import AnalysisConfig, Engine
-    from contexttrail.cli import _economy
     from contexttrail.git_context import Scope
     from contexttrail.runners.cli_runner import CLIRunner
     from contexttrail.store import Store
@@ -174,10 +171,6 @@ def worker(args) -> int:
     values = {"runner_name": runner, "base_model": model, "max_units": args.units, "recent": args.recent}
     if args.effort:
         values["extract_effort"] = args.effort
-    if args.economy:
-        _economy(values)
-    values["unit_summary"] = bool(args.unit_summary)
-    values["pipeline"] = args.pipeline
     engine = Engine(scope, store, AnalysisConfig(**values))
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     clock = time.monotonic()
@@ -280,11 +273,8 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--jobs", type=int, default=1, help="models analysed side by side (keep 1 with --usage)")
     parser.add_argument("--usage", action="store_true", help="read the subscription windows before and after each model")
-    parser.add_argument("--effort", help="extract reasoning effort (default: the runner's)")
-    parser.add_argument("--economy", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--effort", help="reasoning effort of the analysis call (default: the runner's)")
     parser.add_argument("--timeout", type=int, default=600)
-    parser.add_argument("--unit-summary", action="store_true", help="ask each extraction for a one-line summary of its unit")
-    parser.add_argument("--pipeline", choices=["v1", "v2"], default="v1", help="v2: code keeps the work, the model writes the story")
     parser.add_argument("--yes", action="store_true", help="send the project's records to each model's service")
     parser.add_argument("--worker", help=argparse.SUPPRESS)
     parser.add_argument("--state", help=argparse.SUPPRESS)
@@ -325,7 +315,6 @@ def main(argv=None) -> int:
         before = usage_windows() if args.usage else None
         command = [sys.executable, str(Path(__file__).resolve()), str(args.project), "--worker", spec, "--state", str(state),
                    "--result", str(folder / "result.json"), "--units", str(args.units), "--timeout", str(args.timeout)]
-        command += ["--economy" if args.economy else "--no-economy"] + (["--unit-summary"] if args.unit_summary else []) + ["--pipeline", args.pipeline]
         if args.recent:
             command += ["--recent", str(args.recent)]
         if args.effort:

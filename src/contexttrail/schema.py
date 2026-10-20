@@ -101,148 +101,55 @@ DELTA_SCHEMA = obj({**ENVELOPE, "base_graph_version": {"type": "integer", "minim
                         "evidence": CITATIONS})),
                      "review_issues": arr(REVIEW_ISSUE), "review_resolutions": arr(REVIEW_RESOLUTION),
                      "limitations": STRS})
-# The delta sections whose evidence an input candidate already carries, in reuse mode.
-REUSABLE_EVIDENCE_SECTIONS = ("events_to_add", "events_to_update", "edges_to_add",
-                              "candidate_resolutions", "change_attributions")
-# A review that answers only its own changes patches these sections of the proposed delta.
+# The delta sections that change the graph.
 DELTA_ITEM_ARRAYS = ("events_to_add", "events_to_update", "edges_to_add", "edges_to_invalidate",
                      "open_items_to_upsert", "open_items_to_resolve")
-PATCH_ARRAYS = (*DELTA_ITEM_ARRAYS, "candidate_resolutions", "change_attributions", "review_issues")
-
-
-def delta_schema(evidence_reuse: bool = False) -> dict:
-    """The GraphDelta contract; in reuse mode only these five sections may carry no evidence at all."""
-    if not evidence_reuse:
-        return DELTA_SCHEMA
-    schema = copy.deepcopy(DELTA_SCHEMA)
-    for name in REUSABLE_EVIDENCE_SECTIONS:
-        schema["properties"][name]["items"]["properties"]["evidence"] = arr(CITATION)
-    return schema
-
-
-# The review-patch contract: a review that changes 2 of 30 items answers 2 items, not 30.
-REVIEW_PATCH_SCHEMA = obj({**ENVELOPE, "base_graph_version": {"type": "integer", "minimum": 0},
-    "review_resolutions": arr(REVIEW_RESOLUTION), "limitations": STRS,
-    "patch": obj({name: arr(DELTA_SCHEMA["properties"][name]["items"]) for name in PATCH_ARRAYS}),
-    "remove": arr(obj({"operation": enum(list(DELTA_ITEM_ARRAYS)), "item_id": STR}))})
-
-
-def review_patch_schema(evidence_reuse: bool = False) -> dict:
-    """The review-patch contract; in reuse mode the patchable sections may carry no evidence either."""
-    if not evidence_reuse:
-        return REVIEW_PATCH_SCHEMA
-    schema = copy.deepcopy(REVIEW_PATCH_SCHEMA)
-    for name in REUSABLE_EVIDENCE_SECTIONS:
-        schema["properties"]["patch"]["properties"][name]["items"]["properties"]["evidence"] = arr(CITATION)
-    return schema
-
-
-def patch_key(array: str, item: dict) -> tuple:
-    """How a delta item is matched against the proposal: its id, or the pair that names it."""
-    if array == "candidate_resolutions":
-        return (item["candidate_id"], item["candidate_kind"])
-    if array == "change_attributions":
-        return (item["operation"], item["item_id"])
-    return (item["id"],)
-
-
-def merge_review_patch(proposed: dict, answer: dict) -> dict:
-    """The reviewed GraphDelta: the proposal with the review's own changes folded in.
-
-    A patch item whose key is a proposed item's key replaces it where it stands, anything else
-    is appended, and `remove` drops a proposed item with the change attribution naming it. The
-    rest is the proposal's, so the same apply_delta checks, audit and publication run either way.
-    """
-    merged = copy.deepcopy(proposed)
-    proposed_keys = {(array, patch_key(array, item)) for array in PATCH_ARRAYS for item in proposed[array]}
-    kinds: dict[tuple, set[str]] = {}
-    for array in PATCH_ARRAYS:
-        for item in proposed[array]:
-            kinds.setdefault(patch_key(array, item), set()).add(array)
-    drops: dict[str, set[tuple]] = {}
-    for request in answer["remove"]:
-        operation, item_id = request["operation"], request["item_id"]
-        if (operation, (item_id,)) not in proposed_keys:
-            raise FlowError(f"cannot remove an item that is not in the proposed delta: {operation} {item_id}")
-        drops.setdefault(operation, set()).add((item_id,))
-        # A dropped item takes the change attribution that names it.
-        drops.setdefault("change_attributions", set()).add((operation, item_id))
-    for array in PATCH_ARRAYS:
-        kept = [item for item in merged[array] if patch_key(array, item) not in drops.get(array, set())]
-        position = {patch_key(array, item): n for n, item in enumerate(kept)}
-        for item in answer["patch"][array]:
-            key = patch_key(array, item)
-            if key in position:
-                kept[position[key]] = copy.deepcopy(item)
-            elif key in kinds and array not in kinds[key]:
-                # One id must name one kind of item, or a replace says nothing about what it replaces.
-                raise FlowError(f"the same ID names a proposed item of another kind: {array} {' '.join(key)}")
-            else:
-                kept.append(copy.deepcopy(item))  # new, or the one `remove` had dropped
-        merged[array] = kept
-    merged["review_resolutions"] = copy.deepcopy(answer["review_resolutions"])
-    merged["limitations"] = list(dict.fromkeys([*merged["limitations"], *answer["limitations"]]))
-    return merged
-
-
-REVIEW_REMOVED_REASON = "the review removed the item made from this candidate"
-REVIEW_ATTRIBUTION_REASON = "the review added this item; attributed from the candidate resolution that targets it"
-
-
-def reconcile_review_patch(merged: dict, proposed: dict, candidates: dict | None) -> dict:
-    """Bookkeeping a review patch left with one reading only, settled in code before the checks.
-
-    An attribution of an item that is gone is dropped; a resolution that only produced items the
-    review removed becomes excluded; an item the review added with no attribution is attributed
-    to the candidates whose resolution targets it. Anything else is left for the checks.
-    """
-    present = {(op, item["id"]) for op in DELTA_ITEM_ARRAYS for item in merged[op]}
-    removed = {item["id"] for op in DELTA_ITEM_ARRAYS for item in proposed[op]} - {i for _, i in present}
-    counts = {"stale_attributions": 0, "excluded_resolutions": 0, "added_attributions": 0}
-    kept = [a for a in merged["change_attributions"] if (a["operation"], a["item_id"]) in present]
-    counts["stale_attributions"] = len(merged["change_attributions"]) - len(kept)
-    merged["change_attributions"] = kept
-    for row in merged["candidate_resolutions"]:
-        if set(row["target_ids"]) & removed:
-            row["target_ids"] = [t for t in row["target_ids"] if t not in removed]
-            if not row["target_ids"] and row["disposition"] != "excluded":
-                row["disposition"], row["reason"] = "excluded", REVIEW_REMOVED_REASON
-                counts["excluded_resolutions"] += 1
-    evidence_of = {c["id"]: c.get("evidence", []) for key in ("event_candidates", "edge_candidates", "open_items")
-                   for c in (candidates or {}).get(key, [])}
-    items = {(op, item["id"]): item for op in DELTA_ITEM_ARRAYS for item in merged[op]}
-    attributed = {(a["operation"], a["item_id"]) for a in merged["change_attributions"]}
-    for key in sorted(present - attributed):
-        owners = [row["candidate_id"] for row in merged["candidate_resolutions"] if key[1] in row["target_ids"]]
-        evidence = list(items[key].get("evidence") or []) or [c for cid in owners for c in evidence_of.get(cid, [])]
-        if owners and evidence:
-            merged["change_attributions"].append({"operation": key[0], "item_id": key[1], "candidate_ids": owners,
-                                                  "reason": REVIEW_ATTRIBUTION_REASON, "evidence": evidence})
-            counts["added_attributions"] += 1
-    return counts
-
-
-def review_patch_audit(proposed: dict, answer: dict) -> dict:
-    """How many items a review patch added, replaced and removed, for the call ledger."""
-    proposed_keys = {(array, patch_key(array, item)) for array in PATCH_ARRAYS for item in proposed[array]}
-    sent = [(array, patch_key(array, item)) for array in PATCH_ARRAYS for item in answer["patch"][array]]
-    return {"replaced": sum(key in proposed_keys for key in sent),
-            "added": sum(key not in proposed_keys for key in sent),
-            "removed": sum(any(item["id"] == request["item_id"] for item in proposed[request["operation"]])
-                           for request in answer["remove"])}
 
 
 DRAFT_ADDED_REASON = "extraction candidate added as is"
-DRAFT_DUPLICATE_REASON = "the extract stage matched this candidate to an existing event"
+DRAFT_DUPLICATE_REASON = "this candidate repeats an existing event"
 DRAFT_SELF_EDGE_REASON = "both ends became the same event after the existing-event match"
+
+
+REFRESH_REASON = "the unit was read again after its records changed, and this reading says something else about the event"
+
+
+def refresh_matched(delta: dict, candidates: dict, graph: dict) -> int:
+    """A candidate the draft settled as an existing event's duplicate that says something else about it (the unit was
+    read again after one of its records changed) updates that event instead: its changed title, summary, status or
+    time, with the candidate's evidence (the old evidence stays for audit). Returns how many events it updates."""
+    events = {event["id"]: event for event in graph["events"]}
+    by_id = {candidate["id"]: candidate for candidate in candidates["event_candidates"]}
+    updated = set()
+    for resolution in delta["candidate_resolutions"]:
+        if resolution["candidate_kind"] != "event" or resolution["disposition"] != "duplicate":
+            continue
+        candidate, target = by_id.get(resolution["candidate_id"]), events.get(resolution["target_ids"][0])
+        # Only a reading of the same kind of event says something else about it (a request repeating a person's
+        # decision is not that decision rewritten).
+        if candidate is None or target is None or target["id"] in updated or candidate["kind"] != target["kind"]:
+            continue
+        changes = {key: None for key in EVENT_FIELDS}
+        changes.update({key: candidate[key] for key in ("title", "summary", "status", "recorded_at")
+                        if candidate.get(key) and candidate[key] != target.get(key)})
+        if all(value is None for value in changes.values()):
+            continue
+        updated.add(target["id"])
+        delta["events_to_update"].append({"id": target["id"], "reason": REFRESH_REASON,
+                                          "evidence": copy.deepcopy(candidate["evidence"]), "changes": changes})
+        resolution.update(disposition="updated", reason=REFRESH_REASON)
+        delta["change_attributions"].append({"operation": "events_to_update", "item_id": target["id"],
+                                             "candidate_ids": [candidate["id"]], "reason": REFRESH_REASON,
+                                             "evidence": copy.deepcopy(candidate["evidence"])})
+    return len(updated)
 
 
 def draft_delta(candidates: dict, graph_version: int, snapshot_id: str) -> dict:
     """The GraphDelta that takes the validated candidates as extracted, built in code.
 
-    Every candidate is added under its own tmp id; a candidate the extraction matched to exactly
-    one existing event is a duplicate of it, and relations and open items follow it there. The
-    integrator then answers only what it changes (`merge_review_patch`).
+    Every candidate is added under its own tmp id; a candidate matched to exactly one existing event
+    (`analysis.match_existing_duplicates`, `match_noted_steps`) is a duplicate of it, and relations and
+    open items follow it there. This is what a unit publishes (`Engine._integrate_unit`).
     """
     matches: dict[str, set[str]] = {}
     for match in candidates["existing_event_matches"]:
@@ -280,45 +187,6 @@ def draft_delta(candidates: dict, graph_version: int, snapshot_id: str) -> dict:
             same.get(i, i) for i in item["related_event_ids"]))})
         settle("open_item", item, "open_items_to_upsert", item["id"], DRAFT_ADDED_REASON)
     return delta
-
-
-def delta_for_model(delta: dict, candidates: dict) -> dict:
-    """A delta as the model sees it when it answers with a patch: an added item that is its candidate unchanged
-    is named (`{"id", "candidate": "unchanged"}`), and a resolution or attribution whose evidence is exactly its
-    candidate's own is shown without that copy.
-
-    The candidates' evidence is already in the request (`validated_candidates`, `candidate_evidence`);
-    repeated in the draft's resolutions and attributions it put a unit of a dozen candidates past the
-    input budget, and the review of the integrated delta then overflowed the same way. Evidence the
-    integrator wrote itself (for an update of an existing event, say) stays. The code keeps the full
-    delta for the merge and every check.
-    """
-    whole = {item["id"]: item for key in ("event_candidates", "edge_candidates", "open_items")
-             for item in candidates.get(key, [])}
-    own = {cid: item.get("evidence") for cid, item in whole.items()}
-    def shown(item: dict, ids: list[str]) -> dict:
-        if ids and all(own.get(i) is not None and own[i] == item.get("evidence") for i in ids):
-            return {k: v for k, v in item.items() if k != "evidence"}
-        return item
-    view = dict(delta)
-    # An added item that is its candidate, unchanged, is named rather than repeated.
-    for key in ("events_to_add", "edges_to_add", "open_items_to_upsert"):
-        view[key] = [{"id": item["id"], "candidate": "unchanged"} if whole.get(item.get("id")) == item else item
-                     for item in delta.get(key, [])]
-    view["candidate_resolutions"] = [shown(item, [item.get("candidate_id")]) for item in delta.get("candidate_resolutions", [])]
-    view["change_attributions"] = [shown(item, list(item.get("candidate_ids") or [])) for item in delta.get("change_attributions", [])]
-    return view
-
-
-def expand_for_model_view(view: dict, candidates: dict) -> dict:
-    """The inverse of `delta_for_model` as far as a fixture needs it: named items become their candidates again."""
-    whole = {item["id"]: item for key in ("event_candidates", "edge_candidates", "open_items")
-             for item in candidates.get(key, [])}
-    full = dict(view)
-    for key in ("events_to_add", "edges_to_add", "open_items_to_upsert"):
-        full[key] = [copy.deepcopy(whole[item["id"]]) if item.get("candidate") == "unchanged" and item["id"] in whole else item
-                     for item in view.get(key, [])]
-    return full
 
 
 # Escapes that appear verbatim when a tool call embeds code in a string literal
@@ -1110,58 +978,6 @@ class EvidenceValidator:
                                     "edges": dropped_edges, "waived_edit_calls": len(waived)})
         return output, waived, notes
 
-    def reuse_candidate_evidence(self, output: dict, candidates: dict | None) -> int:
-        """Fill evidence the model left out with what the resolved input candidate already cites.
-
-        Only in reuse mode, and only for the sections a candidate resolution links: the same
-        citation dicts the extraction validated, not new text. An item no candidate supports
-        stays empty and fails, so the repair round sees it.
-        """
-        if candidates is None:
-            return 0
-        rows = (("event", "event_candidates"), ("edge", "edge_candidates"), ("open_item", "open_items"))
-        by_id = {candidate["id"]: candidate for _, key in rows for candidate in candidates[key]}
-        by_key = {(candidate["id"], kind): candidate for kind, key in rows for candidate in candidates[key]}
-        targets = {(item["candidate_id"], item["candidate_kind"]): item["target_ids"]
-                   for item in output["candidate_resolutions"]}
-        # A delta item is supported by the candidates whose resolution targets it, in candidate order.
-        supported: dict[str, list[dict]] = {}
-        for (candidate_id, kind), candidate in by_key.items():
-            for target in targets.get((candidate_id, kind), []):
-                supported.setdefault(target, []).extend(candidate["evidence"])
-        def unique(citations: list[dict]) -> list[dict]:
-            keys, result = set(), []
-            for citation in citations:
-                key = (citation["source_id"], citation["start_line"], citation["end_line"], citation["quote"])
-                if key not in keys:
-                    keys.add(key)
-                    result.append(dict(citation))
-            return result
-        filled = 0
-        def fill(section: str, item: dict, label: str, citations: list[dict]) -> None:
-            nonlocal filled
-            if item["evidence"]:
-                return
-            if not citations:
-                raise FlowError(f"no candidate evidence to fill an item left without evidence: {label}. Quote the "
-                                f"source the input candidate already cited, or write the evidence yourself ({section}).")
-            item["evidence"] = citations
-            filled += 1
-        for section in REUSABLE_EVIDENCE_SECTIONS:
-            for item in output[section]:
-                if section == "candidate_resolutions":
-                    key = (item["candidate_id"], item["candidate_kind"])
-                    fill(section, item, f"candidate_resolutions {item['candidate_id']}",
-                         unique(by_key.get(key, {}).get("evidence", [])))
-                elif section == "change_attributions":
-                    fill(section, item, f"change_attributions {item['operation']} {item['item_id']}",
-                         unique([c for cid in item["candidate_ids"] for c in by_id.get(cid, {}).get("evidence", [])]))
-                else:
-                    fill(section, item, f"{section} {item['id']}", unique(supported.get(item["id"], [])))
-        if filled:
-            self.normalizations.append({"mode": "evidence_reused_from_candidates", "items": filled})
-        return filled
-
     def settle_unbacked_claims(self, output: dict) -> None:
         """Claims a candidate's own citations do not back, read as the weaker claim they do back, instead of costing
         a repair round with the whole unit resent (each was seen live on a Codex-heavy project):
@@ -1307,10 +1123,7 @@ class EvidenceValidator:
 
     def apply_delta(self, output: dict, graph: dict, snapshot_id: str, run_id: str,
                     candidates: dict | None = None,
-                    expected_review_issues: list[dict] | None = None, *,
-                    evidence_reuse: bool = False) -> dict:
-        if evidence_reuse:
-            self.reuse_candidate_evidence(output, candidates)
+                    expected_review_issues: list[dict] | None = None) -> dict:
         self.fill_cut_quotes(output)
         validate_shape(output, DELTA_SCHEMA)
         if output["status"] != "complete" or output["read_requests"]:

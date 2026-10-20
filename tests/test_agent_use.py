@@ -51,7 +51,7 @@ def test_a_unit_count_sets_the_call_cap_unless_one_was_given(laboratory, tmp_pat
     engine.config.max_units = 2
     plans = []
     engine.analyze(lambda: pytest.fail("declined"), consent=lambda snapshot, plan: plans.append(plan) or False)
-    assert (plans[0]["units_this_run"], plans[0]["max_calls"]) == (2, 12)
+    assert (plans[0]["units_this_run"], plans[0]["max_calls"]) == (2, 6)
     config = _options(argparse.Namespace(max_calls=4, max_units=2, session=None), Store(tmp_path / "s", "x"))
     assert (config.max_units, config.max_calls, config.calls_fixed) == (2, 4, True)
     engine.config.max_calls, engine.config.calls_fixed = 4, True
@@ -66,7 +66,8 @@ def test_the_estimate_follows_this_projects_past_runs(laboratory):
     units = [{"id": f"u{n}", "status": "integrated", "sources": ["s1"]} for n in range(3)]
     plain = plan_summary(units[:1], pool, 30)
     tokens = _estimated_tokens(unit_cost(records[0]))  # the estimate before any ratio
-    calls = [{"unit_id": unit["id"], "details": {"usage": {"input_tokens": tokens}, "duration_ms": 60_000}}
+    # Each unit's story call and its repair round.
+    calls = [{"unit_id": unit["id"], "stage": "story", "details": {"usage": {"input_tokens": tokens}, "duration_ms": 60_000}}
              for unit in units for _ in range(2)]
     assert calibration(units[:2], calls, pool) is None  # two units are too few to go by
     past = calibration(units, calls, pool)
@@ -74,13 +75,16 @@ def test_the_estimate_follows_this_projects_past_runs(laboratory):
     scaled = plan_summary(units[:1], pool, 30, past=past)
     assert scaled["input_tokens_this_run"] == pytest.approx(2 * tokens, rel=0.01)
     assert "지난 3개 단위 기준" in plan_text(scaled) and "(추정)" in plan_text(plain)
-    assert plain["input_tokens_this_run"] == pytest.approx(3 * tokens, rel=0.01)  # a unit's several calls
+    assert plain["input_tokens_this_run"] == pytest.approx(tokens / 4, rel=0.01)  # the story call skips tool output
     # A call without a reported count leaves its unit out rather than guessing.
-    assert calibration(units, calls + [{"unit_id": "u0", "details": {}}], pool) is None
+    assert calibration(units, calls + [{"unit_id": "u0", "stage": "story", "details": {}}], pool) is None
+    # So does a unit read with the old extract and integrate calls, which cost several times as much.
+    assert calibration(units, [{**call, "stage": "extract"} if call["unit_id"] == "u0" else call for call in calls],
+                       pool) is None
     assert plan_text(plan_summary([], pool, 30)) == "대기 작업 단위 없음 · 보낼 것이 없습니다"
     # Claude counts the cached part apart and reports `input_tokens` as what was neither cached nor read
     # from the cache (often 2); every part is input the model read.
-    claude = [{"unit_id": unit["id"], "details": {"usage": {
+    claude = [{"unit_id": unit["id"], "stage": "story", "details": {"usage": {
         "input_tokens": 2, "cache_creation_input_tokens": tokens - 402, "cache_read_input_tokens": 400},
         "duration_ms": 60_000}} for unit in units for _ in range(2)]
     assert calibration(units, claude, pool)["token_ratio"] == pytest.approx(2.0, rel=0.01)

@@ -1,4 +1,7 @@
 import json
+import threading
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,15 +32,24 @@ def test_runner_sees_short_ids_and_replies_are_mapped_back(laboratory):
     class Watching(FixtureRunner):
         def run(self, task, schema, cancel):
             seen.append(task)
-            return super().run(task, schema, cancel)
+            output = super().run(task, schema, cancel)
+            # The request an earlier stretch left open is answered by the short ID it was sent as.
+            output["requests"] += [{"id": request, "answered_by": [{"item": event["id"], "blocks": event["blocks"]}]}
+                                   for request in task["data"]["open_requests"] for event in output["story"][:1]]
+            return output
 
+    assert engine.analyze(Watching)["status"] == "complete"
+    [request] = store.graph()["events"]
+    records.append(replace(make(CASES[1][0], key=ident("src_", "reply"), role="assistant"),
+                           recorded_at="2026-09-22T10:05:00Z"))
     result = engine.analyze(Watching)
     assert result["status"] == "complete"
     assert not [text for task in seen for text in whole_strings(task) if text.startswith(("src_", "ev_"))]
-    assert seen[0]["data"]["new_records"][0]["source_id"] == "S1"
+    assert seen[0]["data"]["written"][0]["source_id"] == "S1"
+    assert seen[1]["data"]["open_requests"] == ["E1"]
     # The stored graph and its evidence use the full IDs again.
-    [event] = result["graph"]["events"]
-    assert store.evidence_many(event["evidence_ids"])[event["evidence_ids"][0]]["source_id"] == source
+    assert store.evidence_many(request["evidence_ids"])[request["evidence_ids"][0]]["source_id"] == source
+    assert [e["from_event_id"] for e in result["graph"]["edges"] if e["relation"] == "answers"] == [request["id"]]
 
 
 def test_aliases_replace_whole_ids_only():
@@ -188,28 +200,28 @@ def test_every_file_edit_must_back_an_extracted_event():
         output, "unit", "snap", {"events": []})  # citing the edit's result is enough
 
 
-def test_a_long_tool_result_is_shown_as_head_and_tail_and_the_rest_is_readable(laboratory):
-    _, _, engine, records, make = laboratory
+def test_a_long_tool_result_is_shown_as_head_and_tail_and_only_those_lines_can_be_cited(laboratory):
+    _, store, engine, records, make = laboratory
     output = "\n".join(f"collected test_{n} ... ok" for n in range(400)) + "\n400 passed in 3.1s"
     records.append(make("pytest 돌려줘"))
     records.append(make("Tool: exec\npytest -q", key="call", role="tool_call"))
     records.append(make(output, key="result", role="tool_result"))
-    seen = []
-
-    class Watching(FixtureRunner):
-        def run(self, task, schema, cancel):
-            seen.append(task)
-            return super().run(task, schema, cancel)
-
-    engine.analyze(Watching)
-    shown = next(r for r in seen[0]["data"]["new_records"] if r["lines"][0]["text"].startswith("collected test_0"))
+    unit = {"id": "unit", "sources": [r.source_id for r in records]}
+    prepared = engine._prepare_extraction(unit, {r.source_id: r for r in records}, store.graph(), "snap", "run",
+                                          SimpleNamespace(budget=None), threading.Event(), [])
+    shown = next(r for r in prepared.data["new_records"] if r["lines"][0]["text"].startswith("collected test_0"))
     numbers = [line["line"] for line in shown["lines"]]
     assert shown["lines"][-1]["text"] == "400 passed in 3.1s"  # the summary at the end is in view
     assert sum(len(line["text"]) for line in shown["lines"]) < 3_200
     gap = shown["omitted"]
     assert numbers == list(range(1, gap["start_line"])) + list(range(gap["end_line"] + 1, 402))
-    person = next(r for r in seen[0]["data"]["new_records"] if r["lines"][0]["text"] == "pytest 돌려줘")
+    person = next(r for r in prepared.data["new_records"] if r["lines"][0]["text"] == "pytest 돌려줘")
     assert "omitted" not in person
+    # The lines left out were never shown, so nothing can cite them.
+    hidden = gap["start_line"]
+    with pytest.raises(FlowError, match="not provided to the model"):
+        prepared.validator.citations([{"source_id": "result", "start_line": hidden, "end_line": hidden,
+                                       "quote": output.splitlines()[hidden - 1]}])
 
 
 def test_one_repair_round_hears_about_a_bad_quote_while_a_bad_relation_is_left_out():

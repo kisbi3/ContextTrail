@@ -27,63 +27,30 @@ from contexttrail.store import Store
 from contexttrail.ui import token_usage_label
 
 
-def test_stage_effort_is_saved_but_skipping_review_is_per_run(tmp_path):
+def test_the_analysis_effort_is_saved_for_later_runs(tmp_path):
     from contexttrail.cli import _options, parser
     store = Store(tmp_path / 'state', 'scope')
-    first = _options(parser().parse_args(['analyze', '.', '--integrate-effort', 'xhigh', '--no-review', '--no-economy']), store)
-    assert first.integrate_effort == 'xhigh' and first.semantic_review is False
+    assert _options(parser().parse_args(['analyze', '.']), store).extract_effort == 'medium'
+    first = _options(parser().parse_args(['analyze', '.', '--extract-effort', 'xhigh']), store)
+    assert first.extract_effort == 'xhigh'
     again = _options(parser().parse_args(['analyze', '.']), store)
-    assert again.integrate_effort == 'xhigh' and again.semantic_review is True
-    assert again.extract_effort == 'medium'
+    assert again.extract_effort == 'xhigh'
 
 
-def test_economy_is_the_default_and_no_economy_restores_the_integrate_and_review_calls(tmp_path):
-    from contexttrail.cli import _options, parser
+def test_settings_of_the_retired_analysis_calls_are_dropped_and_their_options_refused(tmp_path):
+    from contexttrail.cli import RETIRED_OPTIONS, _options, parser
     store = Store(tmp_path / 'state', 'scope')
-    saving = _options(parser().parse_args(['analyze', '.']), store)
-    assert saving.integrate_output == 'draft_only' and saving.semantic_review is False and saving.read_rounds == 1
-    full = _options(parser().parse_args(['analyze', '.', '--no-economy']), store)
-    assert full.integrate_output != 'draft_only' and full.semantic_review is True and full.read_rounds == 2
-    assert _options(parser().parse_args(['analyze', '.']), store).integrate_output != 'draft_only'  # saved for the project
-
-
-def test_integrate_evidence_option_is_saved_for_later_runs_and_stays_hidden(tmp_path, capsys):
-    from contexttrail.cli import _options, parser
-    store = Store(tmp_path / 'state', 'scope')
-    assert _options(parser().parse_args(['analyze', '.']), store).integrate_evidence == 'full'
-    chosen = _options(parser().parse_args(['analyze', '.', '--integrate-evidence', 'reuse']), store)
-    assert chosen.integrate_evidence == 'reuse'
-    assert _options(parser().parse_args(['analyze', '.']), store).integrate_evidence == 'reuse'
-    assert _options(parser().parse_args(['scan', '.', '--integrate-evidence', 'full']),
-                    store).integrate_evidence == 'full'
-    assert parser().parse_args(['eval', '--output', 'out', '--integrate-evidence', 'reuse']).integrate_evidence == 'reuse'
-    with pytest.raises(SystemExit):
-        parser().parse_args(['analyze', '--integrate-evidence', 'partial'])
-    with pytest.raises(SystemExit):
-        parser().parse_args(['analyze', '--help'])
-    assert 'integrate-evidence' not in capsys.readouterr().out
-
-
-def test_review_output_option_is_saved_for_later_runs_and_stays_hidden(tmp_path, capsys):
-    from contexttrail.cli import _options, parser
-    store = Store(tmp_path / 'state', 'scope')
-    assert _options(parser().parse_args(['analyze', '.']), store).review_output == 'patch'
-    assert _options(parser().parse_args(['analyze', '.', '--review-output', 'full']),
-                    store).review_output == 'full'
-    assert _options(parser().parse_args(['analyze', '.']), store).review_output == 'full'
-    assert _options(parser().parse_args(['scan', '.', '--review-output', 'patch']),
-                    store).review_output == 'patch'
-    assert parser().parse_args(['eval', '--output', 'out', '--review-output', 'patch']).review_output == 'patch'
-    assert _options(parser().parse_args(['analyze', '.', '--integrate-output', 'draft']),
-                    store).integrate_output == 'draft'
-    assert _options(parser().parse_args(['analyze', '.']), store).integrate_output == 'draft'
-    assert parser().parse_args(['eval', '--output', 'out', '--integrate-output', 'patch']).integrate_output == 'patch'
+    # A project saved by an older version keeps the settings of the calls that are gone (integrate, review,
+    # light, economy): read nowhere, dropped on the next write, the rest kept.
+    store.set_meta('options', {**{key: 'old' for key in RETIRED_OPTIONS}, 'extract_effort': 'high'})
+    assert _options(parser().parse_args(['analyze', '.']), store).extract_effort == 'high'
+    assert store.get_meta('options') == {'extract_effort': 'high'}
+    for command in (['analyze', '.'], ['eval', '--output', 'out']):
+        for retired in (['--no-review'], ['--economy'], ['--no-economy'], ['--light'], ['--integrate-output', 'draft'],
+                        ['--review-output', 'patch'], ['--integrate-effort', 'high'], ['--pipeline', 'v2']):
+            with pytest.raises(SystemExit):
+                parser().parse_args(command + retired)
     assert parser().parse_args(['eval', '--output', 'out', '--unit-records', '40']).unit_records == 40
-    with pytest.raises(SystemExit):
-        parser().parse_args(['analyze', '--review-output', 'diff'])
-    with pytest.raises(SystemExit):
-        parser().parse_args(['analyze', '--help'])
-    assert 'review-output' not in capsys.readouterr().out
 
 
 def test_developer_tracing_flags_work_but_are_not_advertised(capsys):
@@ -127,10 +94,10 @@ def test_graph_command_shows_project_and_eval_in_terminal(tmp_path, capsys):
     folder=directory/'sample-project'
     assert main(['graph',str(folder)])==0
     project_output=capsys.readouterr().out
-    assert '사건' in project_output and '┌─ [01] 결정' in project_output
-    # labelled arrows between boxes; the failed check stands beside the change it checked, its link to the fix written in
+    assert '사건' in project_output and '┌─ [01] 요청' in project_output
+    # labelled arrows between boxes; each check stands beside the change it checked, a request's links run in the margin
     assert '─검증──▶' in project_output and '│ 후속' in project_output and '[01] 후속 ▶' in project_output
-    assert '→ [05] 동기' in project_output and '← [04] 동기' in project_output
+    assert '[05] 답변 ▶' in project_output and '✗ 관측 실패' in project_output
     assert 'AI 호출 없음' in project_output
 
     evaluation=tmp_path/'eval'
@@ -175,10 +142,10 @@ def test_graph_command_opens_curses_browser_on_tty(tmp_path, columns):
 
 def test_analysis_token_footer_counts_only_reported_usage(tmp_path):
     store = Store(tmp_path/'state', 'test_scope')
-    store.start_llm_call('call_1', 'run_1', 'unit_1', 'extract', 1, {})
+    store.start_llm_call('call_1', 'run_1', 'unit_1', 'story', 1, {})
     store.finish_llm_call('call_1', 'complete', {'usage': {'input_tokens': 120, 'output_tokens': 30,
                                                           'cached_input_tokens': 40, 'reasoning_output_tokens': 10}})
-    store.start_llm_call('call_2', 'run_1', 'unit_1', 'integrate', 1, {})
+    store.start_llm_call('call_2', 'run_1', 'unit_2', 'story', 1, {})
     store.finish_llm_call('call_2', 'failed', {})
     totals = store.llm_token_totals()
     assert totals == (150, 1, 2)
@@ -318,8 +285,8 @@ def test_no_command_opens_the_current_or_given_folder_without_ai(tmp_path, monke
     capsys.readouterr()
     monkeypatch.chdir(folder)
     assert main([])==0  # not a terminal here, so the saved flow is printed
-    assert 'JSON 저장 채택' in capsys.readouterr().out
-    assert main([str(folder),'--ascii'])==0 and 'JSON 저장 채택' in capsys.readouterr().out
+    assert '우선 JSON 파일로 저장하자.' in capsys.readouterr().out
+    assert main([str(folder),'--ascii'])==0 and '우선 JSON 파일로 저장하자.' in capsys.readouterr().out
     assert _default_command(['--no-tui'])==['view','--no-tui']
     assert _default_command(['graph','.'])==['graph','.']
     assert _default_command(['--version'])==['--version']
@@ -360,13 +327,3 @@ def test_english_screen_follows_the_language_flag_env_and_saved_project_language
     monkeypatch.setenv("LC_ALL", "en_US.UTF-8")
     assert main(['view', str(folder), '--no-tui', '--language', 'auto']) == 0
     assert '이번 실행의 Runner 호출' in capsys.readouterr().out  # auto is no choice: the saved Korean shows
-
-
-def test_eval_runs_the_default_economy_analysis_unless_told_otherwise(tmp_path, capsys):
-    from contexttrail.cli import main
-    main(["eval", "--fixture", "demo", "--runner", "mock", "--output", str(tmp_path / "default")])
-    config = json.loads((tmp_path / "default" / "report.json").read_text())["config"]
-    assert (config["integrate_output"], config["semantic_review"], config["read_rounds"]) == ("draft_only", False, 1)
-    main(["eval", "--fixture", "demo", "--runner", "mock", "--no-economy", "--output", str(tmp_path / "full")])
-    config = json.loads((tmp_path / "full" / "report.json").read_text())["config"]
-    assert config["integrate_output"] != "draft_only" and config["semantic_review"] is True

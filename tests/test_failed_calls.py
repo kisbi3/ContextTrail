@@ -68,25 +68,23 @@ def test_candidates_that_pass_are_kept_when_the_repair_also_fails(laboratory):
         silent.salvage_extraction(output, "unit", "snap", store.graph())
 
 
-def test_a_unit_is_saved_without_the_candidate_that_failed_twice(laboratory):
+def test_a_unit_is_saved_without_the_story_event_that_fails_the_checks(laboratory):
     _, store, engine, records_, make = laboratory
     for n, case in enumerate((CASES[0], CASES[1])):
         records_.append(replace(make(case[0], key=f"s{n}", role=case[4]), recorded_at=f"2026-09-22T10:0{n}:00Z"))
     class Stubborn(FixtureRunner):
         def run(self, task, schema, cancel):
             output = super().run(task, schema, cancel)
-            if task["stage"] == "extract":
-                for item in output["event_candidates"]:
-                    if item["actor"] == "assistant":
-                        item["evidence"][0]["quote"] = "a sentence nobody wrote"
+            for item in output["story"]:
+                item["status"] = "asked"  # only a question is asked: the proposal fails the checks
             return output
     runner = Stubborn()
     result = engine.analyze(lambda: runner)
     assert result["status"] == "complete", result.get("error")
     graph = store.graph()
-    assert [e["title"] for e in graph["events"]] == [CASES[0][2]]
+    assert [e["title"] for e in graph["events"]] == [CASES[0][0]]  # the person's request, made by code
     assert any(CASES[1][2] in line for line in graph["limitations"])
-    assert [task["stage"] for task in runner.tasks] == ["extract", "extract", "integrate"]
+    assert [task["stage"] for task in runner.tasks] == ["story"]  # left out by code, with no repair call
 
 
 def test_a_users_goal_is_read_as_a_question_even_with_no_answer(tmp_path):

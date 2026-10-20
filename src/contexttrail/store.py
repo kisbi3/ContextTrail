@@ -459,8 +459,8 @@ class Store:
                 db.execute("BEGIN IMMEDIATE")
                 current = db.execute("SELECT MAX(version) FROM graph_versions").fetchone()[0] or 0
                 if current != expected_version:
-                    raise FlowError(tr("기준 graph version이 달라졌습니다. 통합 결과를 적용하지 않았습니다.",
-                                       "The base graph version changed; the integration result was not applied."))
+                    raise FlowError(tr("기준 graph version이 달라졌습니다. 이 단위의 결과를 적용하지 않았습니다.",
+                                       "The base graph version changed; this unit's result was not applied."))
                 for item_id, item in evidence.items():
                     db.execute("INSERT OR IGNORE INTO evidence_items VALUES (?,?)", (item_id, dumps(item)))
                     if item.get("focus"):

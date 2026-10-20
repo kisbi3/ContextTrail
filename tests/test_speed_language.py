@@ -1,4 +1,4 @@
-"""One output language per project, short read-only results, and the next unit extracted in the background."""
+"""One output language per project, short read-only results, and each unit read after the ones before it."""
 import argparse
 import threading
 from dataclasses import replace
@@ -62,58 +62,17 @@ def sessions(records, make, count):
                                recorded_at=f"2026-09-22T1{n}:00:00Z"))
 
 
-def test_the_next_unit_is_extracted_while_this_one_is_integrated(laboratory):
+def test_each_story_call_sees_the_units_published_before_it(laboratory):
     _, store, engine, records, make = laboratory
     sessions(records, make, 3)
-    started, waited = threading.Event(), []
-    class Watched(FixtureRunner):
-        def run(self, task, schema, cancel):
-            sources = task["data"]["assigned_source_ids"]
-            if task["stage"] == "extract" and sources == ["s1"]:
-                started.set()
-            if task["stage"] == "integrate" and sources == ["s0"]:
-                waited.append(started.wait(5))  # the next extraction began during this integration
-            return super().run(task, schema, cancel)
-    result = engine.analyze(Watched)
-    assert result["status"] == "complete", result.get("error")
-    assert store.graph()["analysis_status"] == "complete" and waited == [True]
-    assert not any(t.name.startswith("pf-prefetch") and t.is_alive() for t in threading.enumerate())
-
-
-def test_with_no_integrate_call_each_extraction_sees_the_units_published_before_it(laboratory):
-    _, store, engine, records, make = laboratory
-    sessions(records, make, 3)
-    engine.config.integrate_output = "draft_only"
     shown = []
     class Watched(FixtureRunner):
         def run(self, task, schema, cancel):
             shown.append(len(task["data"]["existing_events"]))
             return super().run(task, schema, cancel)
     assert engine.analyze(Watched)["status"] == "complete"
-    # No prefetch: the second and third extractions are built after the units before them were published.
+    # The second and third story requests are built after the units before them were published.
     assert shown[0] == 0 and all(count > 0 for count in shown[1:]) and len(shown) == 3
-
-
-def test_a_shared_runner_or_a_nearly_spent_budget_keeps_units_in_order(laboratory):
-    _, store, engine, records, make = laboratory
-    sessions(records, make, 3)
-    runner = FixtureRunner()
-    assert engine.analyze(lambda: runner)["status"] == "complete"  # one adapter cannot serve two threads
-    stages = [task["stage"] for task in runner.tasks]
-    assert stages == ["extract", "integrate"] * 3
-
-
-def test_a_failed_run_leaves_no_extraction_running(laboratory):
-    _, store, engine, records, make = laboratory
-    sessions(records, make, 3)
-    class Broken(FixtureRunner):
-        def run(self, task, schema, cancel):
-            if task["stage"] == "integrate":
-                raise FlowError("integration broke")
-            return super().run(task, schema, cancel)
-    result = engine.analyze(Broken)
-    assert result["status"] in {"failed", "partial"}
-    assert not any(t.name.startswith("pf-prefetch") and t.is_alive() for t in threading.enumerate())
 
 
 def test_an_eval_counts_long_titles_and_events_that_rest_only_on_reads(laboratory):

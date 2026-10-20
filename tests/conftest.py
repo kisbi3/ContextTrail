@@ -36,16 +36,6 @@ def no_host_process(monkeypatch):
     monkeypatch.setattr(journal, "host_tool", lambda pid=None: None)
 
 
-@pytest.fixture(autouse=True)
-def integrate_by_model(monkeypatch):
-    """Most tests are about the integrate call itself; a test of draft publishing asks for it."""
-    original = AnalysisConfig.__init__
-    def init(self, *args, **kwargs):
-        kwargs.setdefault("integrate_output", "full")
-        original(self, *args, **kwargs)
-    monkeypatch.setattr(AnalysisConfig, "__init__", init)
-
-
 @pytest.fixture
 def laboratory(tmp_path):
     folder = tmp_path / "project"

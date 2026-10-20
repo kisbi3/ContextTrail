@@ -12,6 +12,8 @@ from contexttrail.evaluation import demo_fixture
 from contexttrail.store import Store
 from contexttrail import studio_graph
 from contexttrail import analysis
+from contexttrail.schema import EvidenceValidator, draft_delta
+from contexttrail.light import STORY_SCHEMA
 from contexttrail.studio_graph import _context, graph
 from contexttrail.util import FlowError
 from contexttrail.util import dumps
@@ -22,24 +24,25 @@ def test_studio_graph_runs_real_pipeline_with_synthetic_fixture():
     result = state["result"]
     assert result["mode"] == "synthetic_mock"
     assert result["status"] == "complete"
-    assert result["selected_records"] == 6
+    assert result["selected_records"] == 12
     assert result["planned_units"] == result["completed_units"] == 2
     assert result["graph_version"] == 2
-    assert result["runner_calls"] == 5
+    assert result["runner_calls"] == 2
     assert [item["provider"] for item in result["unit_results"]] == ["codex", "claude"]
-    assert [item["validation_repair_executed"] for item in result["unit_results"]] == [False, False]
-    assert [call["stage"] for call in result["unit_results"][1]["calls"]] == [
-        "extract", "integrate", "integrate"]
+    assert [call["stage"] for call in result["unit_results"][1]["calls"]] == ["story"]
     assert {item["status"] for item in result["events"]} == {
-        "adopted", "proposed", "applied", "reported_complete", "observed_failure"}
+        "asked", "proposed", "applied", "observed_failure", "observed_success", "reported_complete"}
     scope = Scope.resolve(Path(state["fixture_dir"]) / "sample-project")
     store = Store(scope.state_dir, scope.id)
-    # The second unit's revision first misses its target; review draws the revises link.
-    assert [call["stage"] for call in store.llm_calls(state["run_id"])] == [
-        "extract", "integrate", "extract", "integrate", "integrate"]
+    # One story call per unit; the edits and checks are code's, and each edit is verified by the check after it.
+    assert [call["stage"] for call in store.llm_calls(state["run_id"])] == ["story", "story"]
     published = store.graph()
-    revision = next(e for e in published["events"] if e["kind"] == "revision")
-    assert any(edge["relation"] == "revises" and edge["to_event_id"] == revision["id"]
+    events = {e["id"]: e for e in published["events"]}
+    verified = {(events[edge["from_event_id"]]["status"], events[edge["to_event_id"]]["status"])
+                for edge in published["edges"] if edge["active"] and edge["relation"] == "verifies"}
+    assert verified == {("applied", "observed_failure"), ("applied", "observed_success")}
+    report = next(e for e in published["events"] if e["status"] == "reported_complete")
+    assert any(edge["relation"] == "answers" and edge["to_event_id"] == report["id"]
                for edge in published["edges"] if edge["active"])
     assert published["version"] == 2
     assert len(published["candidate_resolution_history"]) == 2
@@ -57,12 +60,11 @@ def test_studio_graph_exposes_actual_model_call_boundaries():
     nodes = [name for update in graph.stream({}, stream_mode="updates")
              for name in update]
     assert nodes.index("scan_sources") + 1 == nodes.index("classify_steps") == nodes.index("plan_work_units") - 1
-    assert nodes.count("extract_model_and_validate") == 2
-    assert nodes.count("integrate_model_and_validate") == 2
-    assert nodes.count("route_semantic_review") == 2
-    assert nodes.count("semantic_review_model_validate") == 1
-    assert "route_escalation" not in nodes
-    assert "escalation_model_and_validate" not in nodes
+    # One model call per unit (the story); the unit's delta is published by code.
+    assert nodes.count("extract_model_and_validate") == nodes.count("publish_draft") == 2
+    assert nodes.index("extract_model_and_validate") < nodes.index("publish_draft") < nodes.index("publish_result")
+    assert not {"integrate_model_and_validate", "route_semantic_review", "semantic_review_model_validate",
+                "route_escalation", "escalation_model_and_validate"} & set(nodes)
 
 
 def test_studio_live_mode_uses_fixed_scope_and_processes_one_real_unit(tmp_path, monkeypatch):
@@ -77,7 +79,7 @@ def test_studio_live_mode_uses_fixed_scope_and_processes_one_real_unit(tmp_path,
     assert first["status"] == "partial"
     assert first["planned_units"] == 2
     assert first["completed_units"] == 1
-    assert first["runner_calls"] == 2
+    assert first["runner_calls"] == 1
 
     second = graph.invoke({"mode": "live", "confirm_live": True, "max_units": 1})["result"]
     assert second["status"] == "complete"
@@ -160,32 +162,21 @@ def test_studio_shows_exact_requests_candidates_and_graph_changes(monkeypatch):
     updates = list(graph.stream({}, stream_mode="updates"))
     extracts = [update["prepare_extract_input"]["extract_input"]
                 for update in updates if "prepare_extract_input" in update]
-    integrates = [update["prepare_integrate_input"]["integrate_input"]
-                  for update in updates if "prepare_integrate_input" in update]
     audits = [update["validate_candidates"]["candidate_audit"]
               for update in updates if "validate_candidates" in update]
     changes = [update["summarize_graph_changes"]["graph_change_audit"]
                for update in updates if "summarize_graph_changes" in update]
 
-    assert len(extracts) == len(integrates) == len(audits) == len(changes) == 2
-    first_extract_call = next(task for task in calls if task["stage"] == "extract")
-    first_integrate_call = next(task for task in calls if task["stage"] == "integrate")
-    assert extracts[0]["request"] == first_extract_call
-    assert integrates[0]["request"] == first_integrate_call
+    assert len(extracts) == len(audits) == len(changes) == 2
+    assert [task["stage"] for task in calls] == ["story", "story"]
+    assert [item["request"] for item in extracts] == calls
+    assert extracts[0]["response_schema"] == STORY_SCHEMA
     assert extracts[0]["context_selection"]["policy"] == "relevance_v2"
-    assert integrates[0]["context_selection"]["policy"] == "relevance_v2"
     assert all("candidate_resolutions" in item for item in changes)
-    assert all("semantic_review" in item for item in changes)
-    reviewed = next(item for item in changes if item["review_issues"])
-    assert reviewed["review_issues"]
-    assert {item["issue_id"] for item in reviewed["review_resolutions"]} == {
-        item["id"] for item in reviewed["review_issues"]}
-    assert not reviewed["unresolved_review_issue_ids"]
     assert extracts[0]["new_records"]
     assert audits[0]["validation"] == "passed"
     assert all(item["evidence"] for item in audits[0]["events"])
-    assert changes[0]["model_delta"] is not None
-    assert changes[0]["events_added"]
+    assert changes[0]["events_added"] and changes[0]["candidate_resolutions"]
 
 
 def test_studio_traces_validation_repair_as_separate_operation(monkeypatch):
@@ -196,30 +187,44 @@ def test_studio_traces_validation_repair_as_separate_operation(monkeypatch):
         names.append(name)
         return original_trace(enabled, name, inputs, operation, **kwargs)
 
-    class BadFirstQuote(studio_graph.StudioFixtureRunner):
+    class BadFirstStory(studio_graph.StudioFixtureRunner):
         def run(self, task, schema, cancel):
             output = super().run(task, schema, cancel)
-            if task["stage"] == "extract" and "repair" not in task and output["event_candidates"]:
-                output["event_candidates"][0]["evidence"][0]["quote"] = "invented quote"
+            if task["stage"] == "story" and "repair" not in task:
+                output["story"] = "not a list"
             return output
 
     monkeypatch.setattr(analysis, "_trace_operation", capture)
-    monkeypatch.setattr(studio_graph, "StudioFixtureRunner", BadFirstQuote)
+    monkeypatch.setattr(studio_graph, "StudioFixtureRunner", BadFirstStory)
     state = graph.invoke({})
     assert state["result"]["status"] == "complete"
-    assert "validate_extract_claims" in names
+    assert "validate_story_contract" in names and "validate_story_claims" in names
     assert "prepare_repair_request" in names
     assert any(call["status"] == "validation_error"
                for item in state["result"]["unit_results"] for call in item["calls"])
 
 
-def test_delta_rejects_missing_or_mislinked_candidate_contract():
+def last_draft():
+    """The demo's second unit as `publish_draft` publishes it: the code-built delta, its validator, the candidates
+    and the graph it was published against."""
     state = graph.invoke({})
-    prepared = state["prepared_integration"]
-    candidates = prepared.data["validated_candidates"]
-    base = prepared.harness.graph
-    delta = state["model_delta"]
+    _, store, snapshot = _context(state)
+    pool = {r.source_id: r for r in snapshot.records}
+    extracted, provided = state["extracted"], {}
+    analysis._rehydrate(pool, provided, extracted["evidence"])
+    for item in extracted["evidence"].values():
+        provided.setdefault(item["source_id"], []).append((item["start_line"], item["end_line"]))
+    validator = EvidenceValidator(pool, provided, assigned_source_ids=set(state["source_ids"]))
+    validator.inherit_focus(extracted["evidence"])
+    base = store.graph(1)
+    return state, validator, base, extracted["output"], draft_delta(extracted["output"], base["version"],
+                                                                     state["snapshot_id"])
+
+
+def test_delta_rejects_missing_or_mislinked_candidate_contract():
+    state, validator, base, candidates, delta = last_draft()
     assert delta["candidate_resolutions"] and delta["change_attributions"]
+    validator.apply_delta(copy.deepcopy(delta), base, state["snapshot_id"], state["run_id"], candidates)
     variants = []
     missing_candidate = copy.deepcopy(delta)
     missing_candidate["candidate_resolutions"].pop()
@@ -235,14 +240,11 @@ def test_delta_rejects_missing_or_mislinked_candidate_contract():
     variants.append(missing_attribution)
     for variant in variants:
         with pytest.raises(FlowError):
-            prepared.validator.apply_delta(variant, base, state["snapshot_id"], state["run_id"], candidates)
+            validator.apply_delta(variant, base, state["snapshot_id"], state["run_id"], candidates)
 
 
 def test_delta_attributes_a_change_to_the_candidate_that_resolves_to_it():
-    state = graph.invoke({})
-    prepared = state["prepared_integration"]
-    candidates = prepared.data["validated_candidates"]
-    delta = copy.deepcopy(state["model_delta"])
+    state, validator, base, candidates, delta = last_draft()
     resolutions = delta["candidate_resolutions"]
     swapped = None
     for item in delta["change_attributions"]:
@@ -256,43 +258,6 @@ def test_delta_attributes_a_change_to_the_candidate_that_resolves_to_it():
             break
     if swapped is None:
         pytest.skip("the fixture has no attribution to swap")
-    validator = prepared.validator
-    validator.apply_delta(delta, prepared.harness.graph, state["snapshot_id"], state["run_id"], candidates)
+    validator.apply_delta(delta, base, state["snapshot_id"], state["run_id"], candidates)
     assert swapped[0]["candidate_ids"] == sorted(swapped[1])
     assert any(n["mode"] == "attribution_candidates_from_resolutions" for n in validator.normalizations)
-
-
-def test_semantic_review_unresolved_issue_is_preserved(monkeypatch):
-    class UnresolvedReview(studio_graph.StudioFixtureRunner):
-        def run(self, task, schema, cancel):
-            output = super().run(task, schema, cancel)
-            if task["data"].get("review_issues"):
-                for resolution in output["review_resolutions"]:
-                    resolution["status"] = "unresolved"
-                    resolution["reason"] = "합성 검토에서도 불확실성이 남았습니다."
-            return output
-
-    monkeypatch.setattr(studio_graph, "StudioFixtureRunner", UnresolvedReview)
-    state = graph.invoke({})
-    audit = next(item for item in state["new_graph"]["semantic_review_history"] if item["issues"])
-    assert audit["status"] == "reviewed_with_unresolved"
-    assert audit["unresolved_issue_ids"]
-    assert {item["issue_id"] for item in audit["resolutions"]} == {
-        item["id"] for item in audit["issues"]}
-
-
-def test_semantic_review_failure_prevents_publication(monkeypatch):
-    seen, updates = [], []
-
-    def fail_review(self, *args, **kwargs):
-        seen.append(True)
-        raise FlowError("synthetic review failure")
-
-    monkeypatch.setattr(analysis.Engine, "_review_delta", fail_review)
-    with pytest.raises(FlowError, match="synthetic review failure"):
-        for update in graph.stream({}, stream_mode="updates"):
-            updates.extend(update)
-    assert seen
-    # The first unit needs no review and is published; the reviewed second unit is not.
-    assert updates.count("publish_result") == 1
-    assert updates.index("publish_result") < len(updates) - 1 - updates[::-1].index("select_unit")

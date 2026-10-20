@@ -1,32 +1,49 @@
 import copy
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 import pytest
-from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.demo import CASES, FixtureRunner, story_steps, step_text
 from contexttrail.render import (MAX_DETOUR_LANES, mermaid, parse_safe_mermaid,
                                  terminal_graph, svg)
 from contexttrail.util import FlowError, safe_text, cell_slice
 
 
 def sample(laboratory):
+    """The demo story as records (two requests, a proposal, two edits each checked by a test run, the report)."""
     _, _, engine, records, make = laboratory
-    records += [make(c[0], key=f's{i}', role='tool_result' if c[4]=='tool' else c[4]) for i,c in enumerate(CASES)]
+    for n, step in enumerate(story_steps()):
+        text = step_text(step, CASES)
+        if step['role'] == 'tool_call':
+            text = f"Tool: {step['tool']}\n{text}"
+        record = make(text, key=f's{n}', role=step['role'], provider=step['session'], session=f"demo-{step['session']}")
+        records.append(replace(record, recorded_at=f'2026-09-22T10:{n:02d}:00Z', tool_call_id=step.get('call')))
     return engine.analyze(FixtureRunner)['graph']
 
 
+def joined(graph):
+    """The failed JSON check also motivates the SQLite edit, which its request already leads to: a join."""
+    failed = next(e['id'] for e in graph['events'] if e['status'] == 'observed_failure')
+    fix = [e['id'] for e in graph['events'] if e['kind'] == 'action'][-1]
+    edge = copy.deepcopy(graph['edges'][0])
+    edge.update(id='joined', from_event_id=failed, to_event_id=fix, relation='motivates', basis='explicit')
+    graph['edges'].append(edge)
+    return graph
+
+
 def test_branches_and_join_preserved(laboratory):
-    graph=sample(laboratory)
+    graph=joined(sample(laboratory))
     rows=terminal_graph(graph)
     text='\n'.join(r[0] for r in rows)
     assert '├──' in text and '└──' in text and '합류/되돌아감' in text
     assert {e['id'] for e in graph['events']} <= {r[1] for r in rows}
     assert '완료 보고·미검증' in text and '관측 실패' in text
     nodes,edges=parse_safe_mermaid(mermaid(graph))
-    assert len(nodes)==7 and len(edges)==len(graph['edges'])
+    assert len(nodes)==8 and len(edges)==len(graph['edges'])
 
 
 def test_ascii_fallback_keeps_flow(laboratory):
-    text='\n'.join(r[0] for r in terminal_graph(sample(laboratory),ascii_only=True))
+    text='\n'.join(r[0] for r in terminal_graph(joined(sample(laboratory)),ascii_only=True))
     assert '+--' in text and '`--' in text and '합류/되돌아감' in text
     assert not any(c in text for c in '├└│→↗')
 

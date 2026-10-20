@@ -44,26 +44,18 @@ def _progress_line(message: str) -> None:
 
 
 def route_options(sub) -> None:
-    sub.add_argument("--extract-model", help=tr("작은/빠른 추출 모델. 설치된 CLI에서 접근 가능한 식별자를 지정",
-                                               "Small/fast extraction model; an identifier the installed CLI can reach"))
-    sub.add_argument("--integrate-model", help=tr("흐름 통합 모델", "Flow integration model"))
-    escalation = sub.add_mutually_exclusive_group()
-    escalation.add_argument("--escalation-model", help=tr("구조 검증 실패 복구와 변경안 재검토에 사용할 모델",
-                                                  "Model for repairing failed structural checks and reviewing deltas"))
-    escalation.add_argument("--no-escalation", action="store_true", help=tr("저장된 보조 검토 모델 설정 해제", "Drop the saved escalation model"))
-    for role, default in (("extract", "medium"), ("integrate", "medium"), ("escalation", "medium")):
-        sub.add_argument(f"--{role}-effort", choices=EFFORTS, help=tr(f"이 단계의 추론 수준; 기본 {default}", f"Reasoning effort for this stage; default {default}"))
-    sub.add_argument("--no-review", dest="semantic_review", action="store_false",
-                     help=tr("이번 실행에서 변경안 재검토(누락된 검증·수정 관계 확인)를 건너뜀",
-                             "Skip the delta review (missing verifies/revises relations) for this run"))
+    sub.add_argument("--extract-model", help=tr("분석 호출(단위마다 한 번)의 모델; 기본은 --model. 설치된 CLI에서 접근 가능한 식별자",
+                                               "Model of the analysis call (one per unit); default --model. An identifier the installed CLI can reach"))
+    sub.add_argument("--extract-effort", choices=EFFORTS, help=tr("분석 호출의 추론 수준; 기본 medium",
+                                                                  "Reasoning effort of the analysis call; default medium"))
     sub.add_argument("--workers", dest="extract_workers", type=int, help=tr("동시 추출 worker 수 1~8; 기본 1", "Concurrent extraction workers, 1~8; default 1"))
     sub.add_argument("--language", dest="output_language",
                      help=tr("사건 제목·요약을 쓸 언어(예: Korean, English); 화면 언어도 같이 정함. 기본은 사용자 발화에서 "
                              "한 번 정해 저장; auto는 다시 정함",
                              "Language for event titles and summaries (e.g. Korean, English); it also sets the screen "
                              "language. Default: decided once from the person's messages and saved; auto decides again"))
-    sub.add_argument("--max-calls", type=int, help=tr("이번 실행의 AI 호출 상한(저장하지 않음); 분석 기본 30(--units를 주면 단위당 6), eval 기본 20",
-                             "Cap on AI calls for this run (not saved); analysis default 30 (6 per unit with --units), "
+    sub.add_argument("--max-calls", type=int, help=tr("이번 실행의 AI 호출 상한(저장하지 않음); 분석 기본 30(--units를 주면 단위당 3), eval 기본 20",
+                             "Cap on AI calls for this run (not saved); analysis default 30 (3 per unit with --units), "
                              "eval default 20"))
 
 
@@ -106,26 +98,7 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--json", action="store_true", help=tr("scan의 출력은 항상 JSON; find/status와 맞추려고 받습니다",
                                                                    "scan always prints JSON; accepted to match find/status"))
         sub.add_argument("--unit-chars", type=int)
-        sub.add_argument("--context-mode", choices=["full", "lean"], help=argparse.SUPPRESS)
-        sub.add_argument("--unit-thread", action="store_const", const=True, default=None, help=argparse.SUPPRESS)
-        sub.add_argument("--unit-summary", action="store_true", help=argparse.SUPPRESS)
-        sub.add_argument("--pipeline", choices=["v1", "v2"], default="v1", help=argparse.SUPPRESS)
         sub.add_argument("--trigger", choices=["hook"], help=argparse.SUPPRESS)
-        sub.add_argument("--integrate-evidence", choices=["full", "reuse"], help=argparse.SUPPRESS)
-        sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
-        sub.add_argument("--integrate-output", choices=["full", "patch", "draft", "draft_only"], help=argparse.SUPPRESS)
-        sub.add_argument("--economy", action=argparse.BooleanOptionalAction, default=None,
-                         help=tr("기본값이며 이 프로젝트에 저장: 통합·재검토 호출 없이 추출만으로 그래프를 만듦(호출·토큰 약 절반). "
-                                 "--no-economy는 통합·재검토 호출을 되살림(단위 사이 연결이 더 많이 잡힘)",
-                                 "The default, saved for this project: build the graph from extraction alone, with no integrate or "
-                                 "review call (about half the calls and tokens). --no-economy restores the integrate and review "
-                                 "calls (more links across units)"))
-        sub.add_argument("--light", action=argparse.BooleanOptionalAction, default=None,
-                         help=tr("이 프로젝트에 저장: 코드가 도구 기록으로 뼈대(편집·테스트·커밋)를 만들고, 모델은 단위당 한 번 제목·요약과 "
-                                 "결정·이유만 씀. 근거는 기록 ID로만 연결(인용 대조·수리·통합·재검토 없음)",
-                                 "Saved for this project: code builds the skeleton (edits, tests, commits) from the tool records and "
-                                 "one model call per unit writes titles, summaries, decisions and reasons, linked to records by ID "
-                                 "(no quote matching, repair, integrate or review)"))
         sub.add_argument("--no-tui", action="store_true")
         sub.add_argument("--no-mouse", action="store_true", help=tr("터미널 화면에서 마우스를 쓰지 않음(터미널의 글자 선택 사용)",
                                                                    "No mouse on the terminal screen (use the terminal's own text selection)"))
@@ -181,18 +154,8 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--yes", action="store_true")
     sub.add_argument("--preview", action="store_true", help=tr("AI 호출 없이 WorkUnit·실제 추출 입력 HTML 작성",
                                                              "Write the WorkUnits and the exact extract inputs as HTML without AI calls"))
-    sub.add_argument("--context-mode", choices=["full", "lean"], help=argparse.SUPPRESS)
-    sub.add_argument("--unit-thread", action="store_const", const=True, default=None, help=argparse.SUPPRESS)
-    sub.add_argument("--integrate-evidence", choices=["full", "reuse"], help=argparse.SUPPRESS)
-    sub.add_argument("--review-output", choices=["full", "patch"], help=argparse.SUPPRESS)
-    sub.add_argument("--integrate-output", choices=["full", "patch", "draft", "draft_only"], help=argparse.SUPPRESS)
-    # Fewer records per unit splits a fixture so later units integrate against an existing graph.
+    # Fewer records per unit splits a fixture so later units are read against an existing graph.
     sub.add_argument("--unit-records", type=int, help=argparse.SUPPRESS)
-    sub.add_argument("--light", action="store_true", help=tr("경량 분석(analyze --light와 같음)", "Light analysis (as analyze --light)"))
-    sub.add_argument("--economy", action=argparse.BooleanOptionalAction, default=None,
-                     help=tr("기본값처럼 추출 호출만(기본). --no-economy는 통합·재검토 호출까지 실행",
-                             "Extraction calls only, as the default analysis (default). --no-economy also runs the "
-                             "integrate and review calls"))
     langsmith_options(sub)
     route_options(sub)
     sub = commands.add_parser("review", help=tr("저장된 eval의 모델 후보·인용·검증 결과를 HTML로 열람. AI 호출 없음",
@@ -373,21 +336,21 @@ def _print_flow(graph: dict, *, ascii_only: bool = False, width: int = 104) -> N
         print(safe_text(line))
 
 
+# Saved settings of the analysis calls that are gone (the extract, integrate and review calls, the light reading,
+# economy): dropped from a project's saved options when it is next written.
+RETIRED_OPTIONS = ("integrate_model", "escalation_model", "integrate_effort", "escalation_effort", "context_mode",
+                   "unit_thread", "integrate_evidence", "review_output", "integrate_output", "economy", "light")
+
+
 def _options(args, store: Store) -> AnalysisConfig:
     options = store.get_meta("options", {})
     for key in ("runner", "model", "codex_home", "claude_home", "opencode_home", "history_limit", "timeout", "record_chars", "unit_chars",
-                "extract_model", "integrate_model", "escalation_model", "extract_effort", "integrate_effort",
-                "escalation_effort", "extract_workers", "output_language", "context_mode", "unit_thread", "integrate_evidence",
-                "review_output", "integrate_output"):
+                "extract_model", "extract_effort", "extract_workers", "output_language"):
         value = getattr(args, key, None)
         if value is not None:
             options[key] = str(value.expanduser().resolve()) if isinstance(value, Path) else value
-    if getattr(args, "no_escalation", False):
-        options.pop("escalation_model", None)
-    if getattr(args, "economy", None) is not None:
-        options["economy"] = args.economy
-    if getattr(args, "light", None) is not None:
-        options["light"] = args.light
+    for key in RETIRED_OPTIONS:
+        options.pop(key, None)  # settings of the analysis calls that are gone; read nowhere
     if options.get("output_language") == "auto":
         # Detected again at the next plan from the person's messages.
         options.pop("output_language")
@@ -409,28 +372,11 @@ def _options(args, store: Store) -> AnalysisConfig:
     values["trigger"] = getattr(args, "trigger", None)
     values["audit"] = bool(getattr(args, "audit", False))
     values["retry_failed"] = bool(getattr(args, "retry_failed", False))
-    values["unit_summary"] = bool(getattr(args, "unit_summary", False))  # an experiment, per run, never saved
-    values["pipeline"] = getattr(args, "pipeline", None) or "v1"  # pipeline v2 is an experiment, per run
     values["runner_name"], values["base_model"] = options.get("runner"), options.get("model")
-    values["semantic_review"] = getattr(args, "semantic_review", True)
-    if options.get("light"):
-        values["analysis_mode"] = "light"
-    if options.get("economy", True) or options.get("light"):
-        _economy(values)
     values["langsmith_enabled"] = getattr(args, "langsmith_enabled", False)
     values["langsmith_include_content"] = getattr(args, "langsmith_include_content", False)
     values["langsmith_project"] = getattr(args, "langsmith_project", None)
     return AnalysisConfig(**values)
-
-
-def _economy(values: dict) -> None:
-    """Extraction alone (the default since 2026-10-16, for `analyze` and `eval`; `--no-economy` restores the
-    integrate and review calls): the code-built draft is published, and the review that would patch it is not
-    called. An integrate output named on the command line is kept."""
-    values["semantic_review"] = False
-    values.setdefault("integrate_output", "draft_only")
-    # One evidence round: every round resends the whole request, and a new Codex session caches none of it.
-    values.setdefault("read_rounds", 1)
 
 
 def _session(value: str | None) -> str | None:
@@ -759,10 +705,6 @@ def main(argv: list[str] | None = None) -> int:
             keys = {field.name for field in dataclasses.fields(AnalysisConfig)}
             options = {key: value for key, value in vars(args).items() if key in keys and value is not None}
             options.setdefault("max_calls", 20)
-            if getattr(args, "light", False):
-                options.update(analysis_mode="light", semantic_review=False, integrate_output="draft_only")
-            elif args.economy is not False:
-                _economy(options)  # what `analyze` runs by default, so the numbers are the default's
             if options.get("output_language") == "auto":
                 options.pop("output_language")
             if args.preview:

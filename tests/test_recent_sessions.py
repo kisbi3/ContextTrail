@@ -11,10 +11,9 @@ from contexttrail import journal
 from contexttrail.analysis import AnalysisConfig, Engine, plan_text, since_cutoff
 from contexttrail.cli import _options, main
 from contexttrail.demo import CASES, FixtureRunner
+from contexttrail.schema import EvidenceValidator
 from contexttrail.store import Store
 from contexttrail.util import FlowError, dumps
-
-from test_unit_failures import failing
 
 
 PICK = (0, 1, 4, 5)  # the cases a person or an assistant says (the rest are tool results)
@@ -37,6 +36,19 @@ def sessions(records, make, count=4, *, parents=None):
 
 def processed(store):
     return {i for i, row in store.sources().items() if row["processed_hash"]}
+
+
+def failing(engine, key):
+    """Analyze while the checks refuse everything of the unit holding record `key` (as when each candidate quotes
+    something the source never said), so that unit is skipped; the others pass as usual."""
+    with pytest.MonkeyPatch.context() as patch:
+        for name in ("check_extraction", "salvage_extraction"):
+            def refuse(self, *args, _original=getattr(EvidenceValidator, name), **kwargs):
+                if key in (self.assigned_source_ids or ()):
+                    raise FlowError("the quote is not in the source: <invented quote>")
+                return _original(self, *args, **kwargs)
+            patch.setattr(EvidenceValidator, name, refuse)
+        return engine.analyze(FixtureRunner)
 
 
 def test_the_latest_sessions_are_analysed_and_the_rest_wait(laboratory):
@@ -64,7 +76,8 @@ def test_the_chosen_sessions_are_analysed_oldest_first(laboratory):
     engine.config.recent = 3
     runner = FixtureRunner()
     engine.analyze(lambda: runner)
-    order = [task["data"]["assigned_source_ids"] for task in runner.tasks if task["stage"] == "extract"]
+    sources = {unit["id"]: unit["sources"] for unit in store.units()}
+    order = [sources[task["data"]["unit_id"]] for task in runner.tasks if task["stage"] == "story"]
     assert order == [["r1"], ["r2"], ["r3"]]
 
 
@@ -194,7 +207,7 @@ def test_a_failing_unit_in_the_chosen_sessions_is_skipped_and_held_back(laborato
     _, store, engine, records, make = laboratory
     sessions(records, make, 4)
     engine.config.recent = 3
-    result = engine.analyze(failing(case(2)[0]))  # session s2
+    result = failing(engine, "r2")  # session s2
     assert result["status"] == "partial" and result["completed_units"] == 2 and result["skipped_units"] == 1
     assert processed(store) == {"r1", "r3"}
     (unit_id, entry), = store.unit_failures().items()
@@ -213,7 +226,7 @@ def test_a_failing_unit_in_the_chosen_sessions_is_skipped_and_held_back(laborato
 def test_the_call_cap_still_stops_a_run_inside_the_chosen_sessions(laboratory):
     _, store, engine, records, make = laboratory
     sessions(records, make)
-    engine.config.recent, engine.config.max_calls = 3, 4
+    engine.config.recent, engine.config.max_calls = 3, 2  # one story call a unit: room for two of the three
     result = engine.analyze(FixtureRunner)
     assert result["status"] == "partial" and result["completed_units"] < 3
     assert processed(store) and processed(store) <= {"r1", "r2", "r3"}  # r0 is not in the chosen sessions

@@ -8,6 +8,7 @@ import pytest
 from contexttrail.analysis import AnalysisConfig, Harness, _evidence_ids
 from contexttrail.demo import CASES, FixtureRunner
 from contexttrail.evaluation import run_eval, demo_fixture
+from contexttrail.light import STORY_FALLBACK_LIMITATION
 from contexttrail.model import Snapshot
 from contexttrail.runners.cli_runner import parse_codex_output, parse_claude_output
 from contexttrail.util import FlowError
@@ -58,56 +59,23 @@ def test_recent_events_are_not_ranked_by_random_run_uuid(laboratory):
     assert [e['id'] for e in context['existing_events']] == ['e29','e28','e27']
 
 
-def setup_review_reader(laboratory):
+def test_valid_extraction_is_reused_without_a_call(laboratory):
+    from contexttrail.routing import RunnerPool
     _, store, engine, records, make=laboratory
-    # Put the additional evidence farther away than the bounded previous-turn context.
+    # Put a record farther away than the bounded previous-turn context.
     records.append(make('UNQUOTED_READ_SENTINEL',key='extra'))
     records.extend(make(f'neutral {i}',key=f'n{i}') for i in range(8))
-    target=make(CASES[4][0],key='target')
-    records.append(target)
-    engine.config.extract_model='small'
-    engine.config.escalation_model='strong'
-    tasks=[]
-    class Reader(FixtureRunner):
-        fail_review=False
-        def run(self, task, schema, cancel):
-            tasks.append(copy.deepcopy(task))
-            output=super().run(task,schema,cancel)
-            if task['stage']=='extract' and self.model=='small' and 'evidence_rounds' not in task:
-                output.update(status='needs_evidence',event_candidates=[],read_requests=[dict(
-                    kind='read_records',ids=['extra'],start_line=1,end_line=1,query=None,unit_id=None)])
-            if self.model=='strong':
-                if self.fail_review:
-                    raise FlowError('intentional review failure')
-                # The extra raw text must reach the reviewer, not only its source ID/hash.
-                assert 'UNQUOTED_READ_SENTINEL' in json.dumps(task,ensure_ascii=False)
-            return output
+    records.append(make(CASES[4][0],key='target'))
     # Use _extract_unit directly to exclude 'extra' from assigned raw text.
-    from contexttrail.routing import RunnerPool
     unit={'id':'unit_target','sources':['target'],'dependencies':{},'status':'parsed','result':None}
     pool={r.source_id:r for r in records}
     snapshot=Snapshot(records)
-    return store,engine,Reader,tasks,unit,pool,snapshot,RunnerPool
-
-
-def test_valid_extraction_with_additional_reads_is_not_semantically_reextracted(laboratory):
-    store,engine,Reader,tasks,unit,pool,snapshot,RunnerPool=setup_review_reader(laboratory)
-    outcome=engine._extract_unit(unit,pool,store.graph(),snapshot.id,'review-run',
-                                RunnerPool(Reader,engine.config),threading.Event(),[])
-    assert not outcome['cached']['escalated']
-    assert len(store.llm_calls())==2
-
-
-def test_valid_extraction_is_reused_without_preintegration_review(laboratory):
-    store,engine,Reader,tasks,unit,pool,snapshot,RunnerPool=setup_review_reader(laboratory)
-    Reader.fail_review=True
-    engine._extract_unit(unit,pool,store.graph(),snapshot.id,'run1',RunnerPool(Reader,engine.config),threading.Event(),[])
+    engine._extract_unit(unit,pool,store.graph(),snapshot.id,'run1',RunnerPool(FixtureRunner,engine.config),threading.Event(),[])
     saved=store.units()[0]
     assert saved['status']=='extracted'
     # Persist references and hashes, not uncited raw text, in the draft cache.
     assert 'UNQUOTED_READ_SENTINEL' not in json.dumps(saved['result'],ensure_ascii=False)
-    Reader.fail_review=False
-    outcome=engine._extract_unit(saved,pool,store.graph(),snapshot.id,'run2',RunnerPool(Reader,engine.config),threading.Event(),[])
+    outcome=engine._extract_unit(saved,pool,store.graph(),snapshot.id,'run2',RunnerPool(FixtureRunner,engine.config),threading.Event(),[])
     assert outcome['reused']
     assert len(store.llm_calls('run2'))==0
 
@@ -170,44 +138,20 @@ def test_claude_denied_tool_attempt_is_not_silent_success():
                                        'permission_denials':[{'tool_name':'Bash','tool_input':{'command':'NO_EXECUTE'}}]}))
 
 
-def test_malformed_needs_evidence_finishes_call_ledger(laboratory):
+def test_malformed_envelope_finishes_call_ledger(laboratory):
     _,store,engine,records,make=laboratory
     records.append(make(CASES[0][0]))
     class BadEnvelope(FixtureRunner):
         def run(self,task,schema,cancel):
             output=copy.deepcopy(super().run(task,schema,cancel))
-            output.update(status='needs_evidence',snapshot_id='wrong-snapshot',read_requests=[])
+            output.update(snapshot_id='wrong-snapshot')
             return output
     result=engine.analyze(BadEnvelope)
-    assert result['status']=='failed'
-    assert len(store.llm_calls())==4  # the full reading and its repair, then the light reading and its repair
+    # The story is refused; the unit keeps only what code found (here the request) and says so.
+    assert result['status']=='complete'
+    assert STORY_FALLBACK_LIMITATION in store.graph()['limitations']
+    assert len(store.llm_calls())==2  # the story call and its repair
     assert all(c['status']=='validation_error' and c['finished_at'] for c in store.llm_calls())
-
-
-def test_reply_over_budget_does_not_authorize_unsent_citation(laboratory):
-    _,store,_,records,make=laboratory
-    target=make(CASES[0][0]);other=make('x'*3000,key='other')
-    records.extend([target,other])
-    class UnsentCitation(FixtureRunner):
-        def run(self,task,schema,cancel):
-            output=copy.deepcopy(super().run(task,schema,cancel))
-            if 'repair' not in task:
-                output.update(status='needs_evidence',event_candidates=[],read_requests=[{
-                    'kind':'read_records','ids':['other'],'start_line':1,'end_line':1,'query':None,'unit_id':None}])
-            else:
-                output['event_candidates'][0]['evidence']=[{
-                    'source_id':'other','start_line':1,'end_line':1,'quote':other.content}]
-            return output
-    from contexttrail.schema import EvidenceValidator
-    h=Harness(UnsentCitation(),{r.source_id:r for r in records},store.graph(),store,
-              AnalysisConfig(read_chars=500),threading.Event())
-    context=h.context([target])
-    data={'unit_id':'budget-unit','snapshot_id':'snapshot-budget',
-          'new_records':[h.provide(target.source_id)], **context}
-    checker=EvidenceValidator(h.pool,h.provided)
-    with pytest.raises(FlowError,match='not provided to the model'):
-        h.task('extract',data,lambda o:checker.check_extraction(o,'budget-unit','snapshot-budget',store.graph()))
-    assert 'other' not in h.provided
 
 
 @pytest.mark.parametrize('field,value',[('recorded_at','2026-09-23T00:00:00Z'),('parent_record_id','changed-parent')])
@@ -242,17 +186,10 @@ def test_v1_hash_upgrade_does_not_hide_changed_native_timestamp(laboratory):
     records[:]=[revised]
     second=engine.analyze(FixtureRunner)
     assert second['status']=='complete' and second['runner_calls']>0
-    assert any(e['recorded_at']==revised.recorded_at for e in store.graph()['events'])
-
-
-def test_scripted_walkthrough_has_four_calls_and_zero_real_models(tmp_path):
-    import runpy
-    from pathlib import Path
-    walkthrough=runpy.run_path(str(Path(__file__).parents[1]/'scripts/prelive_walkthrough.py'))['walkthrough']
-    report=walkthrough(tmp_path/'walkthrough')
-    assert report['real_model_calls']==0 and report['independent_llm_reviewers']==0
-    assert len(report['stages'])==4 and all(report['checks'].values())
-    assert report['noop']=={'status':'noop','host_calls':0}
+    assert store.sources()['s1']['processed_hash']==revised.content_hash
+    # The record read again repeats the event already there: not added twice, and it takes on the new time.
+    events=store.graph()['events']
+    assert len(events)==1 and events[0]['recorded_at']==revised.recorded_at
 
 
 def subagent_metadata_fixture(tmp_path,session='session',meta=None):

@@ -1,19 +1,15 @@
-"""Light analysis (`--light`): code builds what the records show, one model call writes the rest.
+"""The work record and the story (`docs/plans/PIPELINE_V2.md`): code records the work, one model call writes the story.
 
-The full pipeline asks the model to quote its evidence exactly, checks every quote and sends the whole unit
-again when one is off, then integrates and reviews. Here the evidence is a record ID and a line range only, and
-the code cuts the quoted lines itself, so a citation is always real source text and can never fail to match:
-
-- Code makes the skeleton from the tool steps (`tool_steps`): a change event per run of edits in a turn, an
-  observed result per test run (failed or passed by its result; the same check run again with no edit between
-  is one result, settled by the later run), a change per commit, and a `verifies` from the
-  turn's last code edit to a test run after it in the same turn (never for a documentation-only edit). The
-  person's requests and the dialog-turn links are made by code as in the full pipeline.
-- The model gets the unit's records (the same view as an extraction) and the skeleton, and answers with a title
-  and summary for each skeleton item plus the events code cannot see (decisions and why, proposals, goals,
-  explained failures, reports), each naming the records it comes from. No quotes, no relations, no repair round.
-- The result is an ordinary extraction (`event_candidates`, `edge_candidates`), published as the code-built
-  draft with no integrate or review call. A citation the checks still refuse is dropped, not repaired.
+- Code finds the work in the tool steps (`tool_steps`): a change per run of edits (ended by a run between them), an
+  observed result per check (failed or passed by its result; the same check run again with no edit between is one
+  result), a change per commit, the other runs (`run_items`), and a `verifies` from an edit to a later check only
+  when the check names every edited file (`covers`). The person's requests are made by code (`request_items`).
+- The story call reads no tool output: only what the person and the assistant wrote, cut into blocks
+  (`written_blocks`), the work outline with the runs' commands and last lines, and the existing events. It names the
+  work and writes what code cannot see (goals, decisions and their recorded reasons, findings, changes of course),
+  citing block IDs that code turns into exact lines (`cite`), and claims checks (`checked_by`) and answers
+  (`requests`) that code keeps only when the records agree (`claimed_check`, `claimed_answer`).
+- The result is an ordinary extraction (`story_extraction`), published as the code-built draft.
 """
 from __future__ import annotations
 
@@ -25,16 +21,6 @@ from typing import Any
 from .model import SourceRecord, is_queued_message, is_user_prompt, question_reply
 from .schema import STATUSES, STR, arr, enum, obj
 
-# Kinds the model may add; the person's requests (question) are made by code.
-LIGHT_KINDS = ["goal", "decision", "proposal", "action", "revision", "outcome"]
-LINE = {"type": ["integer", "null"], "minimum": 1}
-LIGHT_SCHEMA = obj({
-    "status": enum(["complete"]), "snapshot_id": STR, "unit_id": STR,
-    "skeleton": arr(obj({"id": STR, "title": STR, "summary": STR})),
-    "events": arr(obj({"kind": enum(LIGHT_KINDS), "status": enum(STATUSES), "actor": enum(["assistant", "user"]),
-                       "title": STR, "summary": STR,
-                       "sources": arr(obj({"source_id": STR, "start_line": LINE, "end_line": LINE}), 1)})),
-})
 # A citation code cuts is at most this many lines of what the model was shown; the rest is one `show` away.
 CITED_LINES = 20
 TITLE_FILES = 3
@@ -181,14 +167,6 @@ def skeleton(assigned: list[SourceRecord], split_at_runs: bool = False) -> tuple
     return items, edges
 
 
-def request_data(unit: dict, snapshot_id: str, data: dict, items: list[dict]) -> dict:
-    """What the model reads: the unit's records as the extraction shows them, the person's messages and the skeleton."""
-    return {"unit_id": unit["id"], "snapshot_id": snapshot_id, "new_records": data["new_records"],
-            "user_requests": data["user_requests"],
-            "skeleton": [{"id": item["id"], "kind": item["kind"], "status": item["status"], "title": item["title"],
-                          "source_ids": item["sources"]} for item in items]}
-
-
 def cite(record: SourceRecord, provided: list[tuple[int, int]], start: int | None = None,
          end: int | None = None) -> dict | None:
     """A citation of lines the model was shown, cut by code: within the requested range when it overlaps a shown
@@ -223,7 +201,8 @@ def _checked(citations: list[dict], validator) -> list[dict]:
 
 def extraction(answer: dict, items: list[dict], edges: list[dict], unit: dict, snapshot_id: str,
                pool: dict[str, SourceRecord], provided: dict[str, list[tuple[int, int]]], validator) -> dict:
-    """The model's answer and the skeleton as an ordinary extraction output."""
+    """The work items, named (`answer["skeleton"]`: id, title, summary), and code's `verifies` links as an ordinary
+    extraction output, citing the items' records as code cuts them."""
     assigned = set(unit["sources"])
     named = {entry["id"]: entry for entry in answer.get("skeleton", [])}
     candidates, dropped = [], []
@@ -255,13 +234,6 @@ def extraction(answer: dict, items: list[dict], edges: list[dict], unit: dict, s
         entry = named.get(item["id"], {})
         candidates.append(candidate(item["id"], item["kind"], item["status"], "assistant",
                                     entry.get("title") or item["title"], entry.get("summary") or "", evidence))
-    for number, event in enumerate(answer.get("events", []), 1):
-        evidence = citations(event["sources"])
-        if not evidence:
-            dropped.append(f"N{number}")
-            continue
-        candidates.append(candidate(f"N{number}", event["kind"], event["status"], event["actor"],
-                                    event["title"], event["summary"], evidence))
     present = {c["id"] for c in candidates}
     relations = []
     for number, edge in enumerate(edges, 1):
@@ -271,22 +243,15 @@ def extraction(answer: dict, items: list[dict], edges: list[dict], unit: dict, s
             relations.append({"id": f"tmp:V{number}", "from_event_id": source, "to_event_id": target,
                               "relation": "verifies", "basis": "structural", "evidence": outcome["evidence"][:1],
                               "rationale": edge.get("why") or "A test ran after this edit in the same turn.", "active": True})
-    limitations = [f"light analysis: no evidence left for {', '.join(dropped)}."] if dropped else []
+    limitations = [f"work: no evidence left for {', '.join(dropped)}."] if dropped else []
     return {"status": "complete", "read_requests": [], "snapshot_id": snapshot_id, "unit_id": unit["id"],
             "event_candidates": candidates, "edge_candidates": relations, "existing_event_matches": [],
             "open_items": [], "limitations": limitations, "unprocessed_record_ids": []}
 
 
-def answer_check(answer: dict) -> Any:
-    """The light answer has no claims to check beyond its shape; a source the checks refuse is dropped later."""
-    from .schema import validate_shape
-    validate_shape(answer, LIGHT_SCHEMA)
-    return None
-
-
-# ---- Pipeline v2: the story (docs/plans/PIPELINE_V2.md). Code keeps the skeleton as the record of the work; the model
-# reads only what people and the assistant wrote (as evidence blocks), the work outline and failed runs' last lines,
-# and writes the story: goals, decisions and their recorded reasons, findings, changes of course, and the links.
+# ---- The story (docs/plans/PIPELINE_V2.md). Code keeps the skeleton as the record of the work; the model reads only
+# what people and the assistant wrote (as evidence blocks), the work outline and the runs' last lines, and writes the
+# story: goals, decisions and their recorded reasons, findings, changes of course, and the links.
 STORY_KINDS = ["goal", "decision", "proposal", "outcome", "revision"]
 STORY_RELATIONS = ["motivates", "answers", "revises", "produces", "verifies"]
 _NULLSTR = {"type": ["string", "null"]}
@@ -404,8 +369,11 @@ def run_items(assigned: list[SourceRecord]) -> list[dict]:
     by_id = {r.source_id: r for r in assigned}
     found = []
     steps = tool_steps(assigned)
+    from .journal import runs_note
     for step in steps:
         call = by_id.get(step["call"])
+        if call is not None and runs_note(call):
+            continue  # writing a ContextTrail note is bookkeeping of the graph, not work on the project
         inline = inline_run(call.content) if step["hint"] == "edit" and not step["failed"] and call is not None else None
         if step["hint"] != "run" and not inline:
             continue
@@ -554,8 +522,9 @@ def _output_tail(entry: dict, by_id: dict[str, SourceRecord]) -> list[str]:
 
 
 def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], assigned: list[SourceRecord],
-                  blocks: list[dict], runs: list[dict] | None = None) -> dict:
-    """What the story call reads: no tool output, only the written blocks, the work outline and failed runs' tails."""
+                  blocks: list[dict], runs: list[dict] | None = None, noted: dict[str, list[str]] | None = None) -> dict:
+    """What the story call reads: no tool output, only the written blocks, the work outline and failed runs' tails.
+    In an audit (`noted`: the note events citing each record), an item or block a note already cites names it."""
     from .analysis import shown_line
     by_id = {r.source_id: r for r in assigned}
     work = []
@@ -597,15 +566,21 @@ def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], a
         following = next_written(item, blocks, by_id, position)
         if following:
             entry["next_written"] = following
+    noted = noted or {}
+    for item, entry in zip(items + list(runs or []), work):
+        if names := sorted({event for source in item["sources"] for event in noted.get(source, [])}):
+            entry["noted_by"] = names
     asked = {item["source_id"]: item["id"] for item in request_items(assigned)}
     requests = [{"id": asked[r["source_id"]], **r} for r in data["user_requests"] if r["source_id"] in asked]
+    written = [{"block": b["id"], "source_id": b["source_id"],
+                "role": by_id[b["source_id"]].role, "recorded_at": by_id[b["source_id"]].recorded_at,
+                "text": "\n".join(shown_line(line) for line in b["text"].splitlines()),
+                **({"noted_by": sorted(noted[b["source_id"]])} if noted.get(b["source_id"]) else {})} for b in blocks]
     return {"unit_id": unit["id"], "snapshot_id": snapshot_id, "user_requests": requests,
             "open_requests": sorted(data.get("open_requests", [])),
-            "written": [{"block": b["id"], "source_id": b["source_id"],
-                         "role": by_id[b["source_id"]].role, "recorded_at": by_id[b["source_id"]].recorded_at,
-                         "text": "\n".join(shown_line(line) for line in b["text"].splitlines())} for b in blocks],
-            "work": work, "existing_events": data.get("existing_events", []),
-            "existing_edges": data.get("existing_edges", [])}
+            "written": written, "work": work, "existing_events": data.get("existing_events", []),
+            "existing_edges": data.get("existing_edges", []),
+            **({"journal_audit": data["journal_audit"]} if data.get("journal_audit") else {})}
 
 
 def next_written(item: dict, blocks: list[dict], by_id: dict[str, SourceRecord], position: dict[str, int]) -> str | None:
