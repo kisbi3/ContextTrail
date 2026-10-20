@@ -742,3 +742,19 @@ def test_a_run_after_the_edit_verifies_it_though_the_change_also_quotes_a_later_
     result = note(scope, store, kind="outcome", status="observed_failure", title="Two writers fail",
                   quotes=["test_two_writers - JSONDecodeError"], relations={"verifies": [change["ref"]]})  # the run 10:04
     assert [edge["relation"] for edge in result["edges"]] == ["verifies"]
+
+
+def test_a_sandboxed_note_is_refused_when_notes_are_off_not_queued(project):
+    import os
+    folder, scope, store = project
+    store.set_meta(journal.SETTINGS_KEY, None)  # notes never turned on
+    os.chmod(scope.state_dir / "state.sqlite", 0o400)
+    os.chmod(scope.state_dir, 0o500)
+    try:
+        assert journal.enabled_readonly(scope) is False  # read without writing, as in Codex's sandbox
+        with pytest.raises(FlowError, match="notes are off"):
+            journal.queue(scope, SESSION, kind="decision", title="x", summary="", quotes=["write_atomically(path)"],
+                          status=None, actor="assistant", relations={})
+    finally:
+        os.chmod(scope.state_dir, 0o700)
+        os.chmod(scope.state_dir / "state.sqlite", 0o600)

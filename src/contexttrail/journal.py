@@ -40,7 +40,7 @@ from .schema import SHORT_QUOTE_CHARS, STATUSES, EvidenceValidator, draft_delta,
 from .sources.local import (COMPRESSED_SUFFIX, MAX_FILE_BYTES, decompress_zstd, jsonl_files, parse_claude,
                             parse_codex, source_homes)
 from .sources.opencode import opencode_databases, parse_opencode
-from .store import Store, in_journal
+from .store import ReadOnlyStore, Store, in_journal
 from .util import FlowError, ident, now, private_dir, safe_text
 
 # A person's request is made into an event by code from the transcript (`link_request_turns`), so the
@@ -187,14 +187,17 @@ class ReadOnlyMeta:
         self.path = scope.state_dir / "state.sqlite"
 
     def get_meta(self, key: str, default: Any = None) -> Any:
+        try:
+            return self.read(key, default)
+        except (FlowError, sqlite3.Error):
+            return default
+
+    def read(self, key: str, default: Any = None) -> Any:
+        """The saved value, raising when the state cannot be read. Opened as `ReadOnlyStore` opens it: `immutable`
+        when no -wal/-shm exists (in Codex's sandbox a plain read-only open of the file fails), else read-only."""
         if not self.path.is_file():
             return default
-        try:
-            with closing(sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)) as db:
-                row = db.execute("SELECT value FROM project_meta WHERE key=?", (key,)).fetchone()
-        except sqlite3.Error:
-            return default
-        return json.loads(row[0]) if row else default
+        return ReadOnlyStore(self.path.parent).get_meta(key, default)
 
 
 def _homes(store: Store | ReadOnlyMeta) -> dict[str, Path]:
@@ -496,16 +499,24 @@ def enabled_readonly(scope: Scope) -> bool | None:
     meta = ReadOnlyMeta(scope)
     if not meta.path.is_file():
         return False
-    value = meta.get_meta(SETTINGS_KEY, None)
-    return None if value is None else bool(value.get("enabled_at"))
+    try:
+        value = meta.read(SETTINGS_KEY, None)
+    except (FlowError, sqlite3.Error):
+        return None
+    return bool((value or {}).get("enabled_at"))
 
 
 def queue(scope: Scope, session_id: str, *, kind: str, title: str, summary: str, quotes: list[str],
           status: str | None, actor: str, relations: dict[str, list[str]], **homes: Path | None) -> dict[str, Any]:
     """Check what the transcript alone can check, then queue the note for the end-of-turn hook to store."""
-    if enabled_readonly(scope) is False:
+    on = enabled_readonly(scope)
+    if on is False:
         raise FlowError("notes are off for this project; the person turns them on with `contexttrail note --enable` "
                         "in the project folder. Nothing was stored.")
+    if on is None:
+        # Queued, it would be stored only if notes turn out to be on, and dropped without a word otherwise.
+        raise FlowError("cannot tell whether notes are on for this project: its saved state cannot be read here. "
+                        "Nothing was stored or queued.")
     _, _, status = prepare(scope, None, session_id, kind=kind, quotes=quotes, status=status, relations=relations, **homes)
     folder = queue_dir(scope)
     private_dir(folder)
