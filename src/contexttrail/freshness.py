@@ -109,8 +109,8 @@ def cached_since_scan(store: Store, scanned_at: str | None) -> dict[str, Any] | 
     """Records written since the last scan, as an earlier `find`/`status` counted them; None when no count was
     kept for this scan. Nothing is parsed or measured here: the count is as old as the check that made it."""
     cache = store.get_meta(CACHE_KEY) or {}
-    if not scanned_at or (cache.get("basis") or {}).get("scanned_at") != scanned_at:
-        return None
+    if not scanned_at or (cache.get("basis") or {}).get("scanned_at") != scanned_at or cache.get("not_read"):
+        return None  # no count for this scan, or one short of a file the check could not read
     files = cache.get("files") or {}
     return {"records": sum(entry.get("records", 0) for entry in files.values()),
             "sessions": len({tuple(s) for entry in files.values() for s in entry.get("sessions", [])})}
@@ -196,11 +196,20 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
                 newest = record.recorded_at
         return {"records": count, "newest": newest, "by_source": by_source, "sessions": sorted(sessions)}
 
+    unread = 0
     for path, provider in changed:
         key = str(path)
         entry = cached.get(key)
         if not (entry and entry.get("bytes") == stats[key]["bytes"] and entry.get("mtime_ns") == stats[key]["mtime_ns"]):
-            snapshot = parse_claude(path, scope) if provider == "claude" else parse_codex(path, scope)
+            # On a byte budget a transcript too large to hold is not read through (its size on disk says nothing
+            # of what it holds once decompressed); `status`, with no budget, reads it.
+            snapshot = (parse_claude(path, scope, stream_large=budget_bytes is None) if provider == "claude"
+                        else parse_codex(path, scope, stream_large=budget_bytes is None))
+            if any(note.startswith("log file not read") for note in snapshot.limitations):
+                # Not read (too large to hold on a budget, or unreadable): not parsed, and not kept as 0 records,
+                # so a later check without a budget (`status`) reads it.
+                unread += 1
+                continue
             entry = {**stats[key], **tally(snapshot.records)}
             parsed_now = True
         kept[key] = entry
@@ -211,9 +220,9 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
             entry = {"sessions_at": times, **tally(parse_opencode(path, scope).records)}
             parsed_now = True
         kept[key] = entry
-    if parsed_now:
+    if parsed_now or unread:
         try:
-            store.set_meta(CACHE_KEY, {"basis": basis, "files": kept})
+            store.set_meta(CACHE_KEY, {"basis": basis, "files": kept, "not_read": unread})
         except Exception:  # a read path never fails for want of its cache
             pass
     sessions: set[tuple[str, str | None]] = set()
@@ -227,7 +236,9 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
             by_source[provider] = by_source.get(provider, 0) + n
         if entry.get("newest") and (newest is None or entry["newest"] > newest):
             newest = entry["newest"]
-    since.update(parsed=True, sessions=len(sessions), records=count, newest_at=newest, by_source=by_source)
+    # A changed file that could not be read leaves the count short: not parsed, so no reader takes it as exact.
+    since.update(parsed=not unread, not_read=unread, sessions=len(sessions), records=count, newest_at=newest,
+                 by_source=by_source)
     result["took_ms"] = int((time.perf_counter() - started) * 1000)
     return result
 

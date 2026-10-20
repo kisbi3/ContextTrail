@@ -892,6 +892,8 @@ def main(argv: list[str] | None = None) -> int:
                              "files_with_selected_records": sum(f.get("selection", {}).get("normalized_records", 0) > 0 for f in snapshot.files),
                              "files_without_selected_records": sum(f.get("selection", {}).get("normalized_records", 0) == 0 for f in snapshot.files if "selection" in f),
                              "unattributed_records": sum(f.get("selection", {}).get("scope_decisions", {}).get("unattributed", 0) for f in snapshot.files),
+                             # Unchanged files an earlier scan found nothing of this project in, not read again.
+                             "transcript_files_reused": sum(bool(f.get("reused")) for f in snapshot.files),
                              "selection_basis": "record cwd / turn_context cwd / explicit tool workdir / verified worktree roots, not calendar folder"
                          }}, pretty=True))
             return 0

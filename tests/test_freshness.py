@@ -70,7 +70,7 @@ def test_only_changed_files_are_parsed_and_their_new_records_counted(tmp_path, m
           {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "elsewhere"}]}}])
     parsed = []
     original = freshness.parse_claude
-    monkeypatch.setattr(freshness, "parse_claude", lambda path, scope: parsed.append(path.name) or original(path, scope))
+    monkeypatch.setattr(freshness, "parse_claude", lambda path, scope, **kw: parsed.append(path.name) or original(path, scope, **kw))
     result = check(scope, store, **homes)
     since = result["since_scan"]
     assert sorted(parsed) == ["new.jsonl", "old.jsonl"]
@@ -187,3 +187,40 @@ def test_ago_is_coarse_and_never_negative():
     assert ago("nonsense", reference) == "" and ago(None, reference) == ""
     i18n.set_language("en")
     assert ago("2026-10-06T10:00:00Z", reference) == "2 h ago"
+
+
+def test_a_scan_keeps_what_it_found_for_the_next_one_under_its_key(tmp_path):
+    from contexttrail.analysis import SCAN_CACHE_META
+    folder, scope, store, engine, homes = laboratory(tmp_path)
+    write(homes["claude_home"] / "projects" / "p" / "mine.jsonl", claude_rows(folder, "s1", ["Use SQLite."]))
+    write(homes["claude_home"] / "projects" / "q" / "theirs.jsonl", claude_rows(tmp_path, "s2", ["Elsewhere."]))
+    first = engine.scan()
+    saved = store.get_meta(SCAN_CACHE_META)
+    assert list(saved["files"]) == [str(homes["claude_home"] / "projects" / "q" / "theirs.jsonl")]
+    second = engine.scan()
+    assert [r.source_id for r in second.records] == [r.source_id for r in first.records]
+    store.set_meta("known_worktree_roots", [str(tmp_path / "elsewhere")])  # the scope covers other folders now
+    engine.scan()
+    assert store.get_meta(SCAN_CACHE_META)["key"] != saved["key"]
+
+
+def test_a_check_on_a_byte_budget_does_not_read_a_huge_transcript_through(tmp_path, monkeypatch):
+    from contexttrail.sources import local
+    folder, scope, store, engine, homes = laboratory(tmp_path)
+    engine.preview_plan(engine.scan())
+    path = homes["codex_home"] / "sessions" / "late.jsonl"
+    path.parent.mkdir(parents=True)
+    rows = [{"type": "session_meta", "payload": {"id": "late", "cwd": str(folder)}},
+            {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                                  "content": [{"type": "input_text", "text": "Use SQLite."}]}}]
+    write(path, rows)
+    monkeypatch.setattr(local, "MAX_FILE_BYTES", 10)  # too large to hold, well under the byte budget
+    budgeted = check(scope, store, budget_bytes=10_000, **homes)
+    # Not read on the budget: said as not parsed, and not kept as 0 records for the next check.
+    assert budgeted["since_scan"]["files_changed"] == 1 and budgeted["since_scan"]["not_read"] == 1
+    assert not budgeted["since_scan"]["parsed"] and "파싱 안 함" in summary(budgeted)
+    # The session-start memory takes no count from a check that left a file unread.
+    assert freshness.cached_since_scan(store, budgeted["scanned_at"]) is None
+    unbounded = check(scope, store, **homes)  # `status` reads it through
+    assert unbounded["since_scan"]["parsed"] and unbounded["since_scan"]["records"] == 1
+    assert freshness.cached_since_scan(store, unbounded["scanned_at"]) == {"records": 1, "sessions": 1}

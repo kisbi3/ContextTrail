@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 import io
+import itertools
 import json
 import os
 import re
 import shutil
 import subprocess
+import threading
+import sys
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .. import git_context, util
 from ..git_context import Scope
 from ..i18n import tr
 from ..model import Snapshot, SourceRecord, segment_record
@@ -20,6 +27,16 @@ from .opencode import opencode_data_dir, opencode_databases, parse_opencode
 MAX_FILE_BYTES = 256 * 1024 * 1024
 REREAD_CHUNK = 4 * 1024 * 1024
 MAX_LINE_BYTES = 4 * 1024 * 1024
+# A Codex transcript too large to hold (over `MAX_FILE_BYTES` on disk, or once decompressed: one 35 MB file held
+# 281 MB) is read through line by line instead, up to this many bytes, so a big session of another project is
+# still attributed and left out instead of being a file every project reports it could not read.
+STREAM_MAX_BYTES = 4 * 1024 * 1024 * 1024
+STREAM_CHUNK = 1024 * 1024
+# Compressed input fed at a time. zstd unpacks at most about 32,000 to 1 (a run of one byte), so a piece this small
+# unpacks to at most about 128 MiB, whatever the file: what bounds memory in a file that unpacks to far more.
+ZSTD_INPUT_CHUNK = 4 * 1024
+# A streamed transcript names its session in its first rows; the in-memory reader looks through the whole file.
+SESSION_META_ROWS = 64
 # Keep a single prompt-visible record below Engine.record_chars (48k by default).
 SEGMENT_CHARS = 32_000
 
@@ -142,56 +159,216 @@ def transcript_stem(path: Path) -> str:
     return path.name.removesuffix(".zst").removesuffix(".jsonl")
 
 
-def decompress_zstd(data: bytes, limit: int = 0) -> bytes:
-    """A zstd frame's content: with the standard library's `compression.zstd` (Python 3.14), the `zstandard`
-    package, or the `zstd` command, whichever is here. More than `limit` bytes (when given) is refused, so a small
-    file cannot unpack into a huge one. Every failure is a FlowError naming why."""
-    bound = limit + 1 if limit else -1
+class TooLarge(FlowError):
+    """A transcript larger than the reader holds whole."""
+
+
+def _feed(stream, data: bytes) -> None:
     try:
+        stream.write(data)
+    except (BrokenPipeError, OSError):
+        pass
+    finally:
         try:
-            from compression import zstd  # type: ignore[import-not-found]
-        except ImportError:
-            zstd = None
-        if zstd is not None:
-            with zstd.ZstdFile(io.BytesIO(data)) as stream:
-                out = stream.read(bound)
-        else:
+            stream.close()
+        except OSError:
+            pass
+
+
+def _zstd_chunks(source: io.BufferedIOBase | io.BytesIO) -> Iterator[bytes]:
+    """The content of a zstd-compressed stream (in memory, or a file opened for it, which it closes) in pieces of
+    up to `STREAM_CHUNK`, every frame of it: with the standard library's `compression.zstd` (Python 3.14), the
+    `zstandard` package, or the `zstd` command, whichever is here. Every failure is a FlowError naming why."""
+    try:
+        with source:
+            try:
+                from compression import zstd  # type: ignore[import-not-found]
+            except ImportError:
+                zstd = None
+            if zstd is not None:
+                with zstd.ZstdFile(source) as stream:
+                    while piece := stream.read(STREAM_CHUNK):
+                        yield piece
+                return
             try:
                 import zstandard  # type: ignore[import-not-found]
             except ImportError:
                 zstandard = None
             if zstandard is not None:
-                # Every frame, as `compression.zstd` and the `zstd` command read them (the default stops at the first).
-                with zstandard.ZstdDecompressor().stream_reader(io.BytesIO(data), read_across_frames=True) as stream:
-                    out = stream.read(bound)
-            else:
-                command = shutil.which("zstd")
-                if command is None:
-                    raise FlowError("zstd-compressed, and neither the zstandard package nor the zstd command is installed")
-                done = subprocess.run([command, "-dcq"], input=data, capture_output=True, timeout=120)
-                if done.returncode != 0:
+                # Frame by frame, every one of them, as `compression.zstd` and the `zstd` command read them; a file
+                # that ends inside a frame is refused as they refuse it (its stream reader returns what it has, and
+                # nothing for a cut first frame). Small pieces of input keep each piece of output small.
+                context = zstandard.ZstdDecompressor()
+                frame, fed, ready = context.decompressobj(), False, bytearray()
+                while chunk := source.read(ZSTD_INPUT_CHUNK):
+                    while chunk:
+                        fed = True
+                        ready += frame.decompress(chunk)
+                        if not frame.eof:
+                            break
+                        chunk, frame, fed = frame.unused_data, context.decompressobj(), False
+                    if len(ready) >= STREAM_CHUNK:  # handed on in pieces of about `STREAM_CHUNK`
+                        yield bytes(ready)
+                        ready = bytearray()
+                if fed and not frame.eof:
+                    raise FlowError("zstd could not decompress it (the file ends inside a frame)")
+                if ready:
+                    yield bytes(ready)
+                return
+            command = shutil.which("zstd")
+            if command is None:
+                raise FlowError("zstd-compressed, and neither the zstandard package nor the zstd command is installed")
+            in_memory = isinstance(source, io.BytesIO)
+            process = subprocess.Popen([command, "-dcq"], stdin=subprocess.PIPE if in_memory else source.fileno(),
+                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            feeder = None
+            if in_memory:
+                feeder = threading.Thread(target=_feed, args=(process.stdin, source.getvalue()), daemon=True)
+                feeder.start()
+            try:
+                while piece := process.stdout.read(STREAM_CHUNK):
+                    yield piece
+                if process.wait(timeout=120) != 0:
                     raise FlowError("zstd could not decompress it")
-                out = done.stdout
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                process.stdout.close()
+                if feeder is not None:
+                    feeder.join(timeout=5)
     except FlowError:
         raise
     except Exception as exc:  # a corrupt frame, whichever decompressor met it
         raise FlowError(f"zstd could not decompress it ({type(exc).__name__})") from None
-    if limit and len(out) > limit:
-        raise FlowError(f"over the size limit of {limit} bytes once decompressed")
-    return out
 
 
-def _jsonl(path: Path) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
+def decompress_zstd(data: bytes, limit: int = 0) -> bytes:
+    """A zstd file's content (`_zstd_chunks`). More than `limit` bytes (when given) is refused (`TooLarge`), so a
+    small file cannot unpack into a huge one in memory. Every failure is a FlowError naming why."""
+    out = bytearray()
+    chunks = _zstd_chunks(io.BytesIO(data))
+    try:
+        for piece in chunks:
+            out += piece
+            if limit and len(out) > limit:
+                raise TooLarge(f"over the size limit of {limit} bytes once decompressed")
+    finally:
+        chunks.close()
+    return bytes(out)
+
+
+def _parsed(raw: bytes, line_no: int, name: str, warnings: list[str],
+            only: tuple[bytes, ...] = ()) -> tuple[int, dict, str] | None:
+    """One JSONL line as (line number, object, digest), or None with the warning that says why not. With `only`, a
+    line holding none of those bytes is passed over unparsed (a reader that needs only some rows)."""
+    if not raw.strip() or (only and not any(mark in raw for mark in only)):
+        return None
+    if len(raw) > MAX_LINE_BYTES:
+        warnings.append(f"JSONL record over the size limit: {name}:{line_no}")
+        return None
+    try:
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ValueError("object required")
+        return line_no, value, digest(raw)
+    except (UnicodeError, ValueError):
+        warnings.append(f"corrupt JSONL record: {name}:{line_no}")
+        return None
+
+
+def _file_chunks(descriptor: int, size: int) -> Iterator[bytes]:
+    """The first `size` bytes of an open file (a descriptor it closes) in pieces, as it was when its size was taken;
+    a file that shrank while being read is a FlowError."""
+    with os.fdopen(descriptor, "rb") as stream:
+        left = size
+        while left > 0:
+            piece = stream.read(min(STREAM_CHUNK, left))
+            if not piece:
+                raise FlowError("rewritten or truncated while being read")
+            left -= len(piece)
+            yield piece
+        if os.fstat(stream.fileno()).st_size < size:
+            raise FlowError("rewritten or truncated while being read")
+
+
+def _streamed_rows(path: Path, chunks: Iterator[bytes], warnings: list[str], manifest: dict,
+                   compressed: bool, only: tuple[bytes, ...] = ()) -> Iterator[tuple[int, dict, str]]:
+    """The rows of a transcript too large to hold, read through in pieces: the same line numbers, warnings and
+    digest as `_jsonl` gives a file it holds whole, with the manifest completed once the last piece is read. At most
+    `STREAM_MAX_BYTES` are read; a file larger than that, or one that fails part-way, keeps the rows before it and
+    says so in the warnings."""
+    committed, pending = hashlib.sha256(), hashlib.sha256()
+    buffer, skipping, line_no, total, consumed = bytearray(), False, 0, 0, 0
+    try:
+        for chunk in chunks:
+            total += len(chunk)
+            if total > STREAM_MAX_BYTES:
+                # The same every time the file is read: kept by `ScanCache`, unlike a failure part-way.
+                manifest["partial"] = "cap"
+                warnings.append(f"log file read only in part: {path.name} (over {STREAM_MAX_BYTES} bytes)")
+                return
+            start = 0
+            while True:
+                newline = chunk.find(b"\n", start)
+                if newline < 0:
+                    piece = chunk[start:]
+                    pending.update(piece)
+                    if not skipping:
+                        buffer += piece
+                        if len(buffer) > MAX_LINE_BYTES:
+                            skipping, buffer = True, bytearray()
+                    break
+                pending.update(chunk[start:newline + 1])
+                committed = pending.copy()
+                consumed = total - len(chunk) + newline + 1  # bytes through this newline
+                line_no += 1
+                if skipping:
+                    warnings.append(f"JSONL record over the size limit: {path.name}:{line_no}")
+                    skipping = False
+                else:
+                    raw = bytes(buffer) + chunk[start:newline]
+                    buffer = bytearray()
+                    row = _parsed(raw[:-1] if raw.endswith(b"\r") else raw, line_no, path.name, warnings, only)
+                    if row is not None:
+                        yield row
+                start = newline + 1
+        if buffer or skipping:
+            warnings.append(f"last JSONL record still being written, skipped: {path.name}")
+    except (FlowError, OSError) as exc:
+        manifest["partial"] = "error"
+        warnings.append(f"log file read only in part: {path.name} ({exc if isinstance(exc, FlowError) else type(exc).__name__})")
+    finally:
+        close = getattr(chunks, "close", None)
+        if close:
+            close()
+        # A compressed file, or one read to the cap (settled: the same every time), is indexed by its size on disk.
+        settled = compressed or manifest.get("partial") == "cap"
+        manifest.update(complete_bytes=manifest["bytes"] if settled else consumed, digest=committed.hexdigest(),
+                        streamed=True)
+
+
+def _jsonl(path: Path, *, stream_large: bool = False,
+           only: tuple[bytes, ...] = ()) -> tuple[Iterable[tuple[int, dict, str]], list[str], dict]:
     """Freeze the initial byte length. Only newline-terminated records are committed. A zstd-compressed transcript
     (`COMPRESSED_SUFFIX`) is read the same way and then decompressed; its records are the ones it held uncompressed
-    (a record's ID and hash do not depend on the file's path)."""
+    (a record's ID and hash do not depend on the file's path). With `stream_large`, a transcript too large to hold
+    (on disk, or once decompressed) is not refused: its rows come as an iterator (`_streamed_rows`) that fills the
+    warnings and the manifest while it is read (`partial` when it was cut short)."""
     rows, warnings = [], []
+    compressed = path.name.endswith(COMPRESSED_SUFFIX)
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
         with os.fdopen(descriptor, "rb") as stream:
             before = os.fstat(stream.fileno())
             if before.st_size > MAX_FILE_BYTES:
+                if stream_large:
+                    # The file opened here, not one opened again by its path.
+                    copy = os.dup(stream.fileno())
+                    manifest = {"path": str(path), "bytes": before.st_size}
+                    chunks = (_zstd_chunks(os.fdopen(copy, "rb")) if compressed else _file_chunks(copy, before.st_size))
+                    return _streamed_rows(path, chunks, warnings, manifest, compressed, only), warnings, manifest
                 # English: the reason lands in the limitations the model reads.
                 raise FlowError(f"over the size limit of {MAX_FILE_BYTES} bytes: {before.st_size} bytes")
             data = stream.read(before.st_size)
@@ -206,8 +383,15 @@ def _jsonl(path: Path) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
                 offset += len(piece)
             if after.st_size < before.st_size or len(data) < before.st_size:
                 raise FlowError("rewritten or truncated while being read")
-        if path.name.endswith(COMPRESSED_SUFFIX):
-            data = decompress_zstd(data, MAX_FILE_BYTES)
+        if compressed:
+            try:
+                data = decompress_zstd(data, MAX_FILE_BYTES)
+            except TooLarge:
+                if not stream_large:
+                    raise
+                manifest = {"path": str(path), "bytes": before.st_size}
+                return (_streamed_rows(path, _zstd_chunks(io.BytesIO(data)), warnings, manifest, True, only),
+                        warnings, manifest)
     except (OSError, FlowError) as exc:
         # The reason stays in the limitation: a file over the size limit used to read as a bare "FlowError".
         return [], [f"log file not read: {path.name} ({exc if isinstance(exc, FlowError) else type(exc).__name__})"], {}
@@ -215,21 +399,11 @@ def _jsonl(path: Path) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
     if boundary != len(data):
         warnings.append(f"last JSONL record still being written, skipped: {path.name}")
     for line_no, raw in enumerate(data[:boundary].splitlines(), 1):
-        if not raw.strip():
-            continue
-        if len(raw) > MAX_LINE_BYTES:
-            warnings.append(f"JSONL record over the size limit: {path.name}:{line_no}")
-            continue
-        try:
-            value = json.loads(raw)
-            if not isinstance(value, dict):
-                raise ValueError("object required")
-            rows.append((line_no, value, digest(raw)))
-        except (UnicodeError, ValueError):
-            warnings.append(f"corrupt JSONL record: {path.name}:{line_no}")
+        row = _parsed(raw, line_no, path.name, warnings, only)
+        if row is not None:
+            rows.append(row)
     # `complete_bytes` is the length of the file that was read, which the freshness index compares with the file's
     # size: a compressed file is read whole, so it is the size on disk, not the decompressed length.
-    compressed = path.name.endswith(COMPRESSED_SUFFIX)
     return rows, warnings, {"path": str(path), "bytes": before.st_size,
                             "complete_bytes": before.st_size if compressed else boundary, "digest": digest(data[:boundary])}
 
@@ -348,8 +522,35 @@ def _render_replacement_history(items: Any) -> str:
     return "\n\n".join(rendered)
 
 
-def parse_codex(path: Path, scope: Scope) -> Snapshot:
-    rows, warnings, manifest = _jsonl(path)
+def _head(rows: Iterable[tuple[int, dict, str]]) -> tuple[list[tuple[int, dict, str]], Iterable[tuple[int, dict, str]]]:
+    """The rows a parser looks through before its pass (all of a file held whole; the first `SESSION_META_ROWS` of
+    a streamed one, kept to be read again) and the rows to read."""
+    if isinstance(rows, list):
+        return rows, rows
+    iterator = iter(rows)
+    head = list(itertools.islice(iterator, SESSION_META_ROWS))
+    return head, itertools.chain(head, iterator)
+
+
+def _session_meta(rows: Iterable[tuple[int, dict, str]]) -> tuple[dict, Iterable[tuple[int, dict, str]]]:
+    """The session's `session_meta` payload and the rows to read: from anywhere in a file held whole; from the
+    first `SESSION_META_ROWS` rows of a streamed one, which are kept to be read again."""
+    if isinstance(rows, list):
+        return next((d.get("payload", {}) for _, d, _ in rows if d.get("type") == "session_meta"), {}), rows
+    iterator, head = iter(rows), []
+    for row in iterator:
+        head.append(row)
+        if row[1].get("type") == "session_meta":
+            return row[1].get("payload", {}), itertools.chain(head, iterator)
+        if len(head) >= SESSION_META_ROWS:
+            break
+    return {}, itertools.chain(head, iterator)
+
+
+def parse_codex(path: Path, scope: Scope, *, stream_large: bool = True) -> Snapshot:
+    """A Codex transcript's in-scope records. With `stream_large` (the default; off for a check on a byte budget,
+    `freshness.check`) a transcript too large to hold is read through line by line (`_streamed_rows`)."""
+    rows, warnings, manifest = _jsonl(path, stream_large=stream_large)
     decisions = {"selected": 0, "outside_scope": 0, "unattributed": 0}
     def selected(candidate: str | None) -> bool:
         if not isinstance(candidate, str) or not Path(candidate).is_absolute():
@@ -367,7 +568,7 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
             audit["forked_from"] = metadata["forked_from_id"]
             audit["inherited_rows_skipped"] = skipped
         return Snapshot(records, notes, [{**manifest, "selection": audit}] if manifest else [])
-    metadata = next((d.get("payload", {}) for _, d, _ in rows if d.get("type") == "session_meta"), {})
+    metadata, rows = _session_meta(rows)
     session = metadata.get("id") or transcript_stem(path)
     cwd = metadata.get("cwd")
     cwd = cwd if isinstance(cwd, str) and Path(cwd).is_absolute() else None
@@ -393,11 +594,17 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
     context_git = metadata.get("git", {}) if isinstance(metadata.get("git"), dict) else {}
     turns: list[tuple[int, dict]] = []  # (line, model and effort) of each turn_context, for _codex_authoring
     triggers: list[tuple[int, Any]] = []  # (line, turn_trigger) of each task_started, for _codex_queued
+    # Counted in the one pass, so a streamed file is never read twice: how many rows it had, and whether any is a
+    # message of the app's UI format (event_msg user_message/agent_message).
+    row_count, ui_messages = 0, False
     for line, data, raw_hash in rows:
+        row_count += 1
         record_type, payload = data.get("type"), data.get("payload", {})
         if not isinstance(payload, dict):
             unknown.add(str(record_type))
             continue
+        if record_type == "event_msg" and payload.get("type") in {"user_message", "agent_message"}:
+            ui_messages = True
         if line <= inherited and record_type not in {"turn_context", "session_meta"}:
             skipped += 1  # rollout items are numbered from 0; file lines from 1
             continue
@@ -490,6 +697,11 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
                     if supplied:
                         candidate = params[supplied]
                         if isinstance(candidate, str) and candidate:
+                            written = str(Path(item_cwd) / candidate) if item_cwd else candidate
+                            if Path(written).is_absolute():
+                                # The same answer as for the resolved path (the scope resolves links itself), asked
+                                # so that `ScanCache` keeps the path the log wrote, not where a link pointed then.
+                                scope.includes(written)
                             item_cwd = str((Path(item_cwd) / candidate).resolve()) if item_cwd else (
                                 candidate if Path(candidate).is_absolute() else None)
                         else:
@@ -525,14 +737,15 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
                               lineage=item_lineage if item_type == "message" else lineage))
     if not relevant:
         # Keep only local audit metadata. Do not send unrelated bodies to any LLM.
-        return finish([], warnings if decisions["unattributed"] or not rows else [])
+        # A read cut short is said even when what was read was another project's: the rest may not have been.
+        return finish([], warnings if decisions["unattributed"] or not row_count else
+                      [note for note in warnings if note.startswith("log file read only in part")])
     if decisions["unattributed"]:
         warnings.append(f"Codex path attribution unclear, {decisions['unattributed']} records excluded: {path.name}")
     if unknown:
         warnings.append(f"Codex unsupported record types {path.name}: {', '.join(sorted(unknown))}")
     _flush_deferred(deferred, warnings, "Codex", path)
-    if not any(r.role in {"user", "assistant"} for r in result) and any(            d.get("type") == "event_msg" and d.get("payload", {}).get("type") in {"user_message", "agent_message"}
-            for _, d, _ in rows):
+    if not any(r.role in {"user", "assistant"} for r in result) and ui_messages:
         warnings.append(f"Codex UI message format without response_item is not supported yet: {path.name}")
     _codex_authoring(result, turns)
     _codex_queued(result, triggers)
@@ -588,10 +801,13 @@ def _claude_subagent_links(directory: Path) -> dict[str, dict[str, Any]]:
     for main in sorted(directory.rglob("*.jsonl")):
         if "subagents" in main.parts or main.is_symlink() or not within(main, directory):
             continue
-        rows, _, _ = _jsonl(main)
-        if not rows:
+        # Only rows that can carry a call or a launch result are parsed (`only`; each names its session too), and a
+        # parent too large to hold is read through: this runs over every Claude Code transcript at every scan.
+        rows, _, _ = _jsonl(main, stream_large=True, only=(b'"tool_use"', b'"agentId"'))
+        seen, rows = _head(rows)
+        if not seen:
             continue
-        session = next((d.get("sessionId") for _, d, _ in rows if d.get("sessionId")), transcript_stem(main))
+        session = next((d.get("sessionId") for _, d, _ in seen if d.get("sessionId")), transcript_stem(main))
         # An opaque session ID must never become an arbitrary path capability.
         if not isinstance(session, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", session):
             continue
@@ -648,28 +864,41 @@ def _claude_subagent_links(directory: Path) -> dict[str, dict[str, Any]]:
     return links
 
 
-def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | None = None) -> Snapshot:
-    rows, warnings, manifest = _jsonl(path)
-    session = next((d.get("sessionId") for _, d, _ in rows if d.get("sessionId")), transcript_stem(path))
+def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | None = None,
+                 stream_large: bool = True) -> Snapshot:
+    """A Claude Code transcript's in-scope records. With `stream_large` (the default; off for a check on a byte
+    budget) a transcript too large to hold is read through line by line, its session, entrypoint and sidechain mark
+    taken from its first rows (`_head`)."""
+    rows, warnings, manifest = _jsonl(path, stream_large=stream_large)
+    seen, rows = _head(rows)
+    session = next((d.get("sessionId") for _, d, _ in seen if d.get("sessionId")), transcript_stem(path))
     cwd = None
     result, unknown, relevant = [], set(), False
     deferred: dict[str, int] = {}
     call_cwd: dict[str, str | None] = {}
     call_authoring: dict[str, dict] = {}  # a tool result is written by the tool, for the model turn that called it
-    is_subagent_file = "subagents" in path.parts or any(bool(d.get("isSidechain")) for _, d, _ in rows)
+    is_subagent_file = "subagents" in path.parts or any(bool(d.get("isSidechain")) for _, d, _ in seen)
+    row_count = 0
     if is_subagent_file and not subagent_link:
         for _, data, _ in rows:
+            row_count += 1
             cwd = data.get("cwd", cwd)
             relevant |= scope.includes(cwd)
         if relevant:
             warnings.append(f"Claude subagent excluded from scope, parent link unverified: {path.name}")
-        return Snapshot([], warnings, [manifest] if manifest else [])
+        else:
+            # Not this project's: what a linked reading of it says (below), so a link changes nothing.
+            warnings = warnings if not row_count else [note for note in warnings if note.startswith("log file read only in part")]
+        # In the project, its result depends on the parent's transcript, which may yet link it: not kept by
+        # `ScanCache`. Out of it, the same paths decide either way, so that result is settled.
+        return Snapshot([], warnings, [{**manifest, **({"unlinked_subagent": True} if relevant else {})}] if manifest else [])
     lineage = dict(subagent_link or {})
-    entry = next((d.get("entrypoint") for _, d, _ in rows if isinstance(d.get("entrypoint"), str)), "")
+    entry = next((d.get("entrypoint") for _, d, _ in seen if isinstance(d.get("entrypoint"), str)), "")
     if not lineage and entry.startswith("sdk-"):
         # `claude -p` or an SDK: no person at the terminal (see the Codex `exec` case).
         lineage = {"kind": "unattended", "agent_type": "claude -p" if entry == "sdk-cli" else "claude sdk"}
     for line, data, raw_hash in rows:
+        row_count += 1
         cwd = data.get("cwd", cwd)
         relevant |= scope.includes(cwd)
         typ = data.get("type")
@@ -806,7 +1035,12 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
                         lineage={**lineage, "kind": "tool_sidecar", "parent_source_id": rec.source_id},
                         authoring=record_authoring))
     if not relevant:
-        return Snapshot([])
+        # Nothing of this project, nothing reported; the manifest says the file was read (`ScanCache`, the index).
+        # A file that could not be read (no rows) says so, as a Codex one does: it may have been this project's;
+        # so does a read cut short.
+        return Snapshot([], warnings if not row_count else
+                        [note for note in warnings if note.startswith("log file read only in part")],
+                        [manifest] if manifest else [])
     if unknown:
         warnings.append(f"Claude unsupported record types {path.name}: {', '.join(sorted(unknown))}")
     _flush_deferred(deferred, warnings, "Claude", path)
@@ -897,9 +1131,69 @@ def _link_called_tools(records: dict[str, SourceRecord]) -> None:
                 member.lineage = {**member.lineage, **link}
 
 
+# A file read through more distinct paths than this (cwd, workdir) is read again every scan: its entry would grow.
+CACHE_PATHS = 64
+
+
+@dataclass
+class ScanCache:
+    """What earlier scans made of each transcript file that gave the project no records, so an unchanged one is not
+    read again: Codex keeps hundreds of old sessions compressed (on this machine 563 files, 3.5 GB once
+    decompressed), and reading them all took a scan from 15 to 81 seconds. An entry is the file's size and mtime as
+    read, the limitations and manifest its reading gave, which are replayed as they were, and every path the file
+    was attributed by (`paths`). It is kept only for a result the file itself settles: not a Claude Code sub-agent
+    waiting for its parent's link (`unlinked_subagent`), not a read an error cut short (`partial`), not a file that
+    changed while it was read. It is replayed only while the file's size and mtime are the same and none of its
+    paths falls in the scope now (a symlink that came to point into the project), and only under the same reading
+    code and scope roots (`key`, `scan_cache_key`). A file with records is always read."""
+    key: str
+    entries: dict[str, dict] = field(default_factory=dict)
+    fresh: dict[str, dict] = field(default_factory=dict)  # what this scan keeps for the next one
+    reused: int = 0
+
+
+def scan_cache_key(scope: Scope) -> str:
+    """The code that reads and attributes transcripts (this module, the scope's path test and `util.within` under it)
+    and what attribution reads of the scope (its roots and the folder within them; not the folder it was opened
+    from, so worktrees sharing one state share the cache): a cache made under another is not used."""
+    code = b"".join(Path(module.__file__).read_bytes() for module in (sys.modules[__name__], git_context, util))
+    return digest([digest(code), scope.relative, scope.root is not None, sorted(str(root) for root in scope.roots)])
+
+
+class _AskedScope:
+    """The scope, noting every path a parser asks about (`includes`, `worktree_for`): what decided where a file's
+    records belong, kept with its cache entry and asked again before the entry is replayed."""
+
+    def __init__(self, scope: Scope):
+        self._scope, self.paths = scope, set()
+
+    def includes(self, cwd: str | None) -> bool:
+        if isinstance(cwd, str):
+            self.paths.add(cwd)
+        return self._scope.includes(cwd)
+
+    def worktree_for(self, cwd: str | None) -> str | None:
+        if isinstance(cwd, str):
+            self.paths.add(cwd)
+        return self._scope.worktree_for(cwd)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._scope, name)
+
+
+def _stat(path: Path) -> tuple[int, int] | None:
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    return info.st_size, info.st_mtime_ns
+
+
 def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: Path | None = None,
-                 opencode_home: Path | None = None) -> Snapshot:
-    """Every in-scope record of the three tools: Codex and Claude Code JSONL files, the opencode database."""
+                 opencode_home: Path | None = None, cache: ScanCache | None = None) -> Snapshot:
+    """Every in-scope record of the three tools: Codex and Claude Code JSONL files, the opencode database. With a
+    `cache`, a transcript file an earlier scan found no records in, and that has not changed since, is not read:
+    its limitations and manifest are replayed (marked `reused`), and the cache keeps what this scan found."""
     codex_home, claude_home, opencode_home = source_homes(codex_home, claude_home, opencode_home)
     result, warnings, files = {}, [], []
     claude_dir = claude_home / "projects"
@@ -913,10 +1207,29 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
                 warnings.append(f"different content under the same native ID: {record.source_id}; the copy found later was kept.")
             result[record.source_id] = record
     for path, provider in jsonl_files(codex_home, claude_home):
+        before = _stat(path) if cache is not None else None
+        if before is not None:
+            entry = cache.entries.get(str(path))
+            if (entry and (entry.get("bytes"), entry.get("mtime_ns")) == before
+                    and not any(scope.includes(asked) for asked in entry.get("paths", []))):
+                merge(Snapshot([], list(entry["limitations"]), [{**manifest, "reused": True} for manifest in entry["files"]]))
+                cache.fresh[str(path)] = entry
+                cache.reused += 1
+                continue
+        asked = _AskedScope(scope) if before is not None else scope
         if provider == "claude":
-            merge(parse_claude(path, scope, subagent_link=claude_links.get(str(path))))
+            snapshot = parse_claude(path, asked, subagent_link=claude_links.get(str(path)))
         else:
-            merge(parse_codex(path, scope))
+            snapshot = parse_codex(path, asked)
+        merge(snapshot)
+        # Kept only for a result the file settles (`ScanCache`): read whole or to the cap, by its own content.
+        settled = (snapshot.files and not any(manifest.get("unlinked_subagent") or manifest.get("partial") == "error"
+                                              for manifest in snapshot.files))
+        if (before is not None and not snapshot.records and settled and len(asked.paths) <= CACHE_PATHS
+                and _stat(path) == before):
+            cache.fresh[str(path)] = {"bytes": before[0], "mtime_ns": before[1], "limitations": list(snapshot.limitations),
+                                      "files": [{k: v for k, v in manifest.items() if k != "reused"} for manifest in snapshot.files],
+                                      "paths": sorted(asked.paths)}
     for path in opencode_databases(opencode_home):
         merge(parse_opencode(path, scope))
     _drop_forked_copies(result)

@@ -535,11 +535,65 @@ def test_a_transcript_over_the_size_limit_is_named_with_the_limit_in_the_limitat
     folder = tmp_path / "app"
     folder.mkdir()
     path = tmp_path / "big.jsonl"
-    write(path, codex_rows(folder))
+    write(path, [{"type": "user", "uuid": "u1", "sessionId": "s1", "cwd": str(folder),
+                  "timestamp": "2026-09-25T08:40:00Z", "message": {"role": "user", "content": "Start."}}])
     monkeypatch.setattr(local, "MAX_FILE_BYTES", 10)
-    snapshot = parse_codex(path, Scope.resolve(folder))
+    # A check on a byte budget does not read a transcript too large to hold, and says so; a scan reads it through.
+    snapshot = parse_claude(path, Scope.resolve(folder), stream_large=False)
     assert not snapshot.records
     assert snapshot.limitations[0] == f"log file not read: big.jsonl (over the size limit of 10 bytes: {path.stat().st_size} bytes)"
+    streamed = parse_claude(path, Scope.resolve(folder))
+    assert [r.content for r in streamed.records] == ["Start."] and streamed.files[0]["streamed"]
+
+
+def test_a_codex_transcript_too_large_to_hold_is_read_through_with_the_same_records(tmp_path, monkeypatch):
+    import zstandard
+    from contexttrail.sources import local
+    folder = tmp_path / "app"
+    folder.mkdir()
+    rows = codex_rows(folder) + [{"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                  "content": [{"type": "output_text", "text": f"step {n}"}]}} for n in range(30)]
+    plain, packed = tmp_path / "big.jsonl", tmp_path / "packed" / "big.jsonl.zst"
+    write(plain, rows)
+    packed.parent.mkdir()
+    packed.write_bytes(zstandard.ZstdCompressor().compress(plain.read_bytes()))
+    scope = Scope.resolve(folder)
+    held, held_packed = parse_codex(plain, scope), parse_codex(packed, scope)
+    assert packed.stat().st_size < 1000 < plain.stat().st_size
+    monkeypatch.setattr(local, "MAX_FILE_BYTES", 1000)  # both now too large to hold: one on disk, one once decompressed
+    monkeypatch.setattr(local, "STREAM_CHUNK", 64)  # lines cross the pieces
+    streamed, streamed_packed = parse_codex(plain, scope), parse_codex(packed, scope)
+    key = lambda snapshot: [(r.source_id, r.content_hash, r.locator["line"]) for r in snapshot.records]
+    assert len(held.records) == 31 and key(streamed) == key(held) and key(streamed_packed) == key(held_packed)
+    assert streamed.limitations == held.limitations == []
+    (manifest,) = streamed.files
+    assert manifest["streamed"] and manifest["digest"] == held.files[0]["digest"]
+    assert manifest["complete_bytes"] == held.files[0]["complete_bytes"] == plain.stat().st_size
+    assert streamed_packed.files[0]["complete_bytes"] == packed.stat().st_size  # the size on disk, as the index wants
+    # Another project's session read through: nothing kept, nothing reported.
+    elsewhere = parse_codex(packed, Scope.resolve(tmp_path / "packed"))
+    assert not elsewhere.records and not elsewhere.limitations
+
+
+def test_a_streamed_transcript_reports_its_long_lines_its_unfinished_last_line_and_its_cap(tmp_path, monkeypatch):
+    from contexttrail.sources import local
+    folder = tmp_path / "app"
+    folder.mkdir()
+    path = tmp_path / "big.jsonl"
+    lines = [dumps(r) for r in codex_rows(folder)]
+    huge = dumps({"type": "response_item", "payload": {"type": "message", "role": "user",
+                                                        "content": [{"type": "input_text", "text": "x" * 500}]}})
+    path.write_text("\n".join([lines[0], huge, lines[1]]) + "\n" + '{"type": "response_item"', encoding="utf-8")
+    monkeypatch.setattr(local, "MAX_FILE_BYTES", 100)
+    monkeypatch.setattr(local, "MAX_LINE_BYTES", 300)
+    monkeypatch.setattr(local, "STREAM_CHUNK", 50)
+    snapshot = parse_codex(path, Scope.resolve(folder))
+    assert [r.locator["line"] for r in snapshot.records] == [3]  # line 2 was over the line limit, line 4 unfinished
+    assert "JSONL record over the size limit: big.jsonl:2" in snapshot.limitations
+    assert "last JSONL record still being written, skipped: big.jsonl" in snapshot.limitations
+    monkeypatch.setattr(local, "STREAM_MAX_BYTES", 120)
+    capped = parse_codex(path, Scope.resolve(folder))
+    assert any(note.startswith("log file read only in part: big.jsonl") for note in capped.limitations)
 
 
 def test_a_forked_claude_session_drops_the_copied_rows_and_keeps_where_it_came_from(tmp_path):
@@ -618,3 +672,241 @@ def test_a_compressed_transcript_of_several_frames_is_read_whole():
     first, second = b'{"a": 1}\n' * 1000, b'{"b": 2}\n' * 1000
     packed = zstandard.ZstdCompressor().compress(first) + zstandard.ZstdCompressor().compress(second)
     assert decompress_zstd(packed, MAX_FILE_BYTES) == first + second
+
+
+def test_a_scan_does_not_read_again_an_unchanged_file_that_gave_the_project_nothing(tmp_path, monkeypatch):
+    import zstandard
+    from contexttrail.sources import local
+    from contexttrail.sources.local import ScanCache, scan_cache_key
+    folder, other = tmp_path / "app", tmp_path / "other"
+    folder.mkdir()
+    other.mkdir()
+    codex, claude = tmp_path / "codex", tmp_path / "claude"
+    ours = codex / "sessions" / "ours.jsonl"
+    write(ours, codex_rows(folder))
+    theirs = codex / "sessions" / "theirs.jsonl"
+    write(theirs, [{**row, "payload": {**row["payload"], "id": "theirs"}} if row["type"] == "session_meta" else row
+                   for row in codex_rows(other)])
+    packed = codex / "sessions" / "old.jsonl.zst"
+    packed.write_bytes(zstandard.ZstdCompressor().compress(theirs.read_bytes()))
+    write(claude / "projects" / "p" / "s.jsonl", [{"type": "user", "uuid": "u1", "sessionId": "s", "cwd": str(other),
+                                                  "timestamp": "2026-09-25T08:40:00Z", "message": {"role": "user", "content": "Hi."}}])
+    scope = Scope.resolve(folder)
+    read = []
+    real_codex, real_claude = local.parse_codex, local.parse_claude
+    monkeypatch.setattr(local, "parse_codex", lambda path, scope: read.append(path.name) or real_codex(path, scope))
+    monkeypatch.setattr(local, "parse_claude", lambda path, scope, **kw: read.append(path.name) or real_claude(path, scope, **kw))
+    first_cache = ScanCache(scan_cache_key(scope))
+    first = collect_logs(scope, codex_home=codex, claude_home=claude, cache=first_cache)
+    assert sorted(first_cache.fresh) == sorted(str(p) for p in (packed, theirs, claude / "projects" / "p" / "s.jsonl"))
+    read.clear()
+    second_cache = ScanCache(first_cache.key, first_cache.fresh)
+    second = collect_logs(scope, codex_home=codex, claude_home=claude, cache=second_cache)
+    assert read == ["ours.jsonl"] and second_cache.reused == 3  # only the file with this project's records is read
+    assert [r.source_id for r in second.records] == [r.source_id for r in first.records]
+    assert second.limitations == first.limitations
+    assert [{k: v for k, v in f.items() if k != "reused"} for f in second.files] == first.files
+    assert sum(bool(f.get("reused")) for f in second.files) == 3
+    # A file that changed is read again; one that changes while it is read is not kept.
+    with theirs.open("a", encoding="utf-8") as stream:
+        stream.write(dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "content": []}}) + "\n")
+    read.clear()
+    third_cache = ScanCache(first_cache.key, second_cache.fresh)
+    monkeypatch.setattr(local, "parse_codex", lambda path, scope: (read.append(path.name), path.name == "theirs.jsonl"
+                        and path.open("a").write("\n"), real_codex(path, scope))[2])
+    collect_logs(scope, codex_home=codex, claude_home=claude, cache=third_cache)
+    assert sorted(read) == ["ours.jsonl", "theirs.jsonl"] and str(theirs) not in third_cache.fresh
+    # Another set of folders is another cache.
+    assert scan_cache_key(scope) != scan_cache_key(Scope.resolve(other))
+
+
+def test_the_scan_cache_keeps_only_what_the_file_itself_settles(tmp_path, monkeypatch):
+    import dataclasses
+    import zstandard
+    from contexttrail.sources import local
+    from contexttrail.sources.local import ScanCache, scan_cache_key
+    folder = tmp_path / "app"
+    folder.mkdir()
+    scope = Scope.resolve(folder)
+    codex, claude = tmp_path / "codex", tmp_path / "claude"
+    # 1. A Claude Code sub-agent whose parent has not written the launch result yet: no link, nothing kept.
+    session = claude / "projects" / "p" / "parent.jsonl"
+    call = {"type": "assistant", "uuid": "a1", "sessionId": "parent", "cwd": str(folder), "timestamp": "2026-10-20T01:00:00Z",
+            "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "Agent", "input": {}}]}}
+    write(session, [call])
+    sub = claude / "projects" / "p" / "parent" / "subagents" / "agent-abc.jsonl"
+    write(sub, [{"type": "assistant", "uuid": "s1", "sessionId": "parent", "isSidechain": True, "cwd": str(folder),
+                 "timestamp": "2026-10-20T01:01:00Z", "message": {"role": "assistant", "content": "tests pass"}}])
+    (sub.parent / "agent-abc.meta.json").write_text(dumps({"toolUseId": "toolu_1", "agentType": "Explore"}))
+    first = ScanCache(scan_cache_key(scope))
+    collect_logs(scope, codex_home=codex, claude_home=claude, cache=first)
+    assert str(sub) not in first.fresh
+    with session.open("a", encoding="utf-8") as stream:  # the parent writes the result: the next scan links it
+        stream.write(dumps({"type": "user", "uuid": "r1", "sessionId": "parent", "cwd": str(folder),
+                            "timestamp": "2026-10-20T01:02:00Z", "toolUseResult": {"agentId": "abc"},
+                            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1",
+                                                                     "content": "done"}]}}) + "\n")
+    second = collect_logs(scope, codex_home=codex, claude_home=claude, cache=ScanCache(first.key, first.fresh))
+    assert any(r.content == "tests pass" for r in second.records)
+    # 2. A file recorded at a path that later becomes a symlink into the project is read again.
+    moved = tmp_path / "old-app"
+    transcript = codex / "sessions" / "moved.jsonl"
+    write(transcript, codex_rows(moved))
+    cache = ScanCache(first.key)
+    assert not collect_logs(scope, codex_home=codex, claude_home=tmp_path / "none", cache=cache).records
+    assert cache.fresh[str(transcript)]["paths"] == [str(moved)]
+    moved.symlink_to(folder)
+    # Each scan asks a scope of its own (a scope keeps its answers for one scan), as `Engine.scan` does.
+    again = collect_logs(dataclasses.replace(scope), codex_home=codex, claude_home=tmp_path / "none",
+                         cache=ScanCache(cache.key, cache.fresh))
+    assert [r.session_id for r in again.records] == ["native-session"]
+    # 3. A read an error cut short is said, even of another project's file, and is not kept.
+    other = tmp_path / "other"
+    packed = codex / "archived_sessions" / "broken.jsonl.zst"
+    packed.parent.mkdir(parents=True)
+    whole = zstandard.ZstdCompressor().compress(("\n".join(dumps(r) for r in codex_rows(other)) + "\n").encode() * 50)
+    packed.write_bytes(whole[:len(whole) // 2])  # a frame cut in two
+    monkeypatch.setattr(local, "MAX_FILE_BYTES", 10)  # too large to hold: streamed
+    broken = ScanCache(first.key)
+    found = collect_logs(scope, codex_home=codex, claude_home=tmp_path / "none", cache=broken)
+    assert any(note.startswith("log file read only in part: broken.jsonl.zst") for note in found.limitations)
+    assert str(packed) not in broken.fresh
+    # 4. The key is what attribution reads: the folder a worktree was opened from is not part of it.
+    assert scan_cache_key(dataclasses.replace(scope, folder=tmp_path)) == scan_cache_key(scope)
+    assert scan_cache_key(dataclasses.replace(scope, roots=[tmp_path])) != scan_cache_key(scope)
+
+
+def test_a_streamed_read_that_fails_part_way_is_a_limitation_not_a_crash(tmp_path, monkeypatch):
+    from contexttrail.sources import local
+    folder = tmp_path / "app"
+    folder.mkdir()
+    path = tmp_path / "big.jsonl"
+    write(path, codex_rows(folder) * 20)
+    monkeypatch.setattr(local, "MAX_FILE_BYTES", 100)
+    monkeypatch.setattr(local, "STREAM_CHUNK", 64)
+    real = local._file_chunks
+
+    def failing(descriptor, size):
+        chunks = real(descriptor, size)
+        yield next(chunks)
+        chunks.close()
+        raise OSError("device gone")
+    monkeypatch.setattr(local, "_file_chunks", failing)
+    snapshot = parse_codex(path, Scope.resolve(folder))
+    assert any(note == "log file read only in part: big.jsonl (OSError)" for note in snapshot.limitations)
+    assert snapshot.files[0]["partial"] == "error"
+
+
+def test_a_compressed_transcript_too_large_on_disk_is_read_through_as_well(tmp_path, monkeypatch):
+    import zstandard
+    from contexttrail.sources import local
+    folder = tmp_path / "app"
+    folder.mkdir()
+    plain, packed = tmp_path / "s.jsonl", tmp_path / "packed" / "s.jsonl.zst"
+    write(plain, codex_rows(folder))
+    packed.parent.mkdir()
+    packed.write_bytes(zstandard.ZstdCompressor().compress(plain.read_bytes()))
+    held = parse_codex(packed, Scope.resolve(folder))
+    monkeypatch.setattr(local, "MAX_FILE_BYTES", 10)
+    streamed = parse_codex(packed, Scope.resolve(folder))
+    assert [r.source_id for r in streamed.records] == [r.source_id for r in held.records] and streamed.files[0]["streamed"]
+    refused = parse_codex(packed, Scope.resolve(folder), stream_large=False)  # a check on a byte budget does not
+    assert not refused.records and refused.limitations[0].startswith("log file not read: s.jsonl.zst")
+
+
+def test_a_compressed_transcript_cut_inside_a_frame_is_refused_not_read_as_empty():
+    import zstandard
+    from contexttrail.sources.local import MAX_FILE_BYTES, decompress_zstd
+    from contexttrail.util import FlowError
+    whole = zstandard.ZstdCompressor().compress(b'{"a": 1}\n' * 1000)
+    try:
+        decompress_zstd(whole[:len(whole) // 2], MAX_FILE_BYTES)
+    except FlowError as exc:
+        assert "ends inside a frame" in str(exc)
+    else:
+        raise AssertionError("a cut frame was read as if whole")
+    assert decompress_zstd(b"", MAX_FILE_BYTES) == b""
+
+
+def test_a_claude_session_too_large_to_hold_is_read_and_its_sub_agent_still_linked(tmp_path, monkeypatch):
+    from contexttrail.sources import local
+    folder = tmp_path / "app"
+    folder.mkdir()
+    claude = tmp_path / "claude"
+    session = claude / "projects" / "p" / "parent.jsonl"
+    rows = [{"type": "user", "uuid": "u0", "sessionId": "parent", "cwd": str(folder), "timestamp": "2026-10-20T00:59:00Z",
+             "message": {"role": "user", "content": "Find the bug."}},
+            {"type": "assistant", "uuid": "a1", "sessionId": "parent", "cwd": str(folder), "timestamp": "2026-10-20T01:00:00Z",
+             "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "Agent", "input": {}}]}},
+            {"type": "user", "uuid": "r1", "sessionId": "parent", "cwd": str(folder), "timestamp": "2026-10-20T01:02:00Z",
+             "toolUseResult": {"agentId": "abc"},
+             "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "done"}]}}]
+    write(session, rows + [{"type": "user", "uuid": f"x{n}", "sessionId": "parent", "cwd": str(folder),
+                            "timestamp": "2026-10-20T01:03:00Z", "message": {"role": "user", "content": f"more {n}"}}
+                           for n in range(20)])
+    sub = claude / "projects" / "p" / "parent" / "subagents" / "agent-abc.jsonl"
+    write(sub, [{"type": "assistant", "uuid": "s1", "sessionId": "parent", "isSidechain": True, "cwd": str(folder),
+                 "timestamp": "2026-10-20T01:01:00Z", "message": {"role": "assistant", "content": "found it"}}])
+    (sub.parent / "agent-abc.meta.json").write_text(dumps({"toolUseId": "toolu_1", "agentType": "Explore"}))
+    held = collect_logs(Scope.resolve(folder), codex_home=tmp_path / "codex", claude_home=claude)
+    monkeypatch.setattr(local, "MAX_FILE_BYTES", 500)  # the parent is now too large to hold; the sub-agent is not
+    monkeypatch.setattr(local, "STREAM_CHUNK", 100)
+    streamed = collect_logs(Scope.resolve(folder), codex_home=tmp_path / "codex", claude_home=claude)
+    key = lambda snapshot: [(r.source_id, r.content_hash, r.lineage.get("kind")) for r in snapshot.records]
+    assert key(streamed) == key(held) and not streamed.limitations
+    assert any(r.content == "found it" and r.lineage.get("kind") == "subagent" for r in streamed.records)
+
+
+def test_a_codex_workdir_through_a_symlink_is_kept_as_written_for_the_cache_check(tmp_path):
+    import dataclasses
+    from contexttrail.sources.local import ScanCache, scan_cache_key
+    folder, elsewhere, outside = tmp_path / "app", tmp_path / "elsewhere", tmp_path / "outside"
+    for directory in (folder, elsewhere, outside):
+        directory.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(elsewhere)
+    codex = tmp_path / "codex"
+    transcript = codex / "sessions" / "s.jsonl"
+    write(transcript, [{"type": "session_meta", "payload": {"id": "s", "cwd": str(outside)}},
+                       {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": "c1",
+                                                             "arguments": dumps({"cmd": "pytest", "workdir": str(link)})}},
+                       {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1", "output": "3 passed"}}])
+    scope = Scope.resolve(folder)
+    cache = ScanCache(scan_cache_key(scope))
+    assert not collect_logs(scope, codex_home=codex, claude_home=tmp_path / "none", cache=cache).records
+    assert str(link) in cache.fresh[str(transcript)]["paths"]  # the path the log wrote, not where the link pointed
+    link.unlink()
+    link.symlink_to(folder)
+    again = collect_logs(dataclasses.replace(scope), codex_home=codex, claude_home=tmp_path / "none",
+                         cache=ScanCache(cache.key, cache.fresh))
+    assert [r.role for r in again.records] == ["tool_call", "tool_result"]
+
+
+def test_a_transcript_read_to_the_cap_is_indexed_by_its_size(tmp_path, monkeypatch):
+    from contexttrail.sources import local
+    folder = tmp_path / "app"
+    folder.mkdir()
+    path = tmp_path / "big.jsonl"
+    write(path, codex_rows(folder) * 10)
+    monkeypatch.setattr(local, "MAX_FILE_BYTES", 10)
+    monkeypatch.setattr(local, "STREAM_MAX_BYTES", 300)
+    snapshot = parse_codex(path, Scope.resolve(folder))
+    (manifest,) = snapshot.files
+    assert manifest["partial"] == "cap" and manifest["complete_bytes"] == path.stat().st_size
+
+
+def test_an_unlinked_sub_agent_of_another_project_is_settled_and_kept(tmp_path):
+    from contexttrail.sources.local import ScanCache, scan_cache_key
+    folder, other = tmp_path / "app", tmp_path / "other"
+    folder.mkdir()
+    other.mkdir()
+    claude = tmp_path / "claude"
+    sub = claude / "projects" / "q" / "parent" / "subagents" / "agent-xyz.jsonl"
+    write(sub, [{"type": "assistant", "uuid": "s1", "sessionId": "parent", "isSidechain": True, "cwd": str(other),
+                 "timestamp": "2026-10-20T01:01:00Z", "message": {"role": "assistant", "content": "elsewhere"}}])
+    with sub.open("a", encoding="utf-8") as stream:
+        stream.write("{not json\n")  # a corrupt line of another project's file is not this project's limitation
+    scope = Scope.resolve(folder)
+    cache = ScanCache(scan_cache_key(scope))
+    found = collect_logs(scope, codex_home=tmp_path / "codex", claude_home=claude, cache=cache)
+    assert not found.records and not found.limitations and str(sub) in cache.fresh  # a link would change nothing here

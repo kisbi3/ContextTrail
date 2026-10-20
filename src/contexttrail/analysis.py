@@ -26,6 +26,7 @@ from .runners.cli_runner import EFFORTS
 from .schema import (EDIT_TOOL_NAMES, EvidenceValidator, docs_only, draft_delta, edited_files, record_evidence,
                      refresh_matched, validate_shape)
 from .sources import collect_logs
+from .sources.local import ScanCache, scan_cache_key
 from .store import Store, in_journal
 from .util import BrokenOutput, Cancelled, FlowError, InputBudgetExceeded, digest, dumps, ident, input_tokens
 
@@ -234,6 +235,8 @@ LEAN_INDEX_RECORDS, LEAN_INDEX_EVENTS, LEAN_INDEX_FILES = 100, 30, 50  # the eve
 # What the extraction input carries besides the records: short IDs, a tool-step outline
 # and the user's messages. Part of the cache signature, so older extractions are redone.
 EXTRACT_INPUT_VERSION = "aliases_steps_requests_read_heads_v2"
+# What earlier scans made of the transcript files that gave this project nothing (`ScanCache`).
+SCAN_CACHE_META = "scan_cache"
 
 # IDs a model must copy back exactly; they go to the Runner as S12 / E3 and come back whole.
 ALIASED_ID = re.compile(r"(src|srcseg|ev|edge|open|file)_[0-9a-f]{24}")
@@ -1907,8 +1910,12 @@ class Engine:
     def scan(self) -> Snapshot:
         proven = [Path(p) for p in self.store.get_meta("known_worktree_roots", [])]
         source_scope = dataclasses.replace(self.scope, roots=list(dict.fromkeys(self.scope.roots + proven)))
+        # Transcript files that gave this project nothing last time and have not changed are not read again.
+        saved, key = self.store.get_meta(SCAN_CACHE_META, {}) or {}, scan_cache_key(source_scope)
+        cache = ScanCache(key, saved.get("files", {}) if saved.get("key") == key else {})
         logs = collect_logs(source_scope, codex_home=self.config.codex_home, claude_home=self.config.claude_home,
-                            opencode_home=self.config.opencode_home)
+                            opencode_home=self.config.opencode_home, cache=cache)
+        self.store.set_meta(SCAN_CACHE_META, {"key": key, "files": cache.fresh})
         artifacts = collect_git(self.scope, history_limit=self.config.history_limit,
                                 exclude=self.store.get_meta("exports", []))
         self.store.set_meta("known_worktree_roots", [str(p) for p in source_scope.roots])
