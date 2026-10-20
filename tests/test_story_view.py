@@ -78,3 +78,40 @@ def test_v_switches_views_and_a_link_to_a_folded_step_shows_every_step():
     assert panels.story and panels.current == "plan"
     panels.select("edit")  # a jump to a folded step (a link, a search, a flag) shows every step
     assert not panels.story and panels.current == "edit" and "전체 보기로 바꿈" in panels.message
+
+
+def test_the_views_follow_time_not_the_order_units_were_published():
+    """A later unit published first: the list, the turns and the story's folds follow when things happened."""
+    from contexttrail.diagram import request_turns
+    from contexttrail.schema import folded_view
+    events = [
+        event("ask2", "question", "asked", "2026-10-20T09:00:00Z", actor="user"),
+        event("work2", "action", "applied", "2026-10-20T09:05:00Z", basis="tool_record"),
+        event("ask1", "question", "asked", "2026-10-20T17:00:00+09:00", actor="user"),  # 08:00 UTC
+        event("work1", "action", "applied", "2026-10-20T08:10:00Z", basis="tool_record"),
+    ]
+    view = folded_view({"version": 1, "events": events, "edges": []})
+    assert [e["id"] for e in view["events"]] == ["ask1", "work1", "ask2", "work2"]
+    assert request_turns(view) == [("ask1", ["ask1", "work1"]), ("ask2", ["ask2", "work2"])]
+    story = story_view(view)
+    assert story["homes"] == {"work1": "ask1", "work2": "ask2"}
+
+
+def test_work_never_folds_into_another_sessions_box_and_a_choice_stays_in_its_turn():
+    from contexttrail.diagram import request_turns
+    other = dict(session_ids=["other"])
+    events = [
+        event("ask", "question", "asked", "10:00", actor="user"),
+        event("plan", "decision", "adopted", "10:01"),
+        event("choice", "decision", "adopted", "10:02", actor="user"),  # the person picked one of the agent's options
+        event("elsewhere", "action", "applied", "10:03", basis="tool_record", **other),
+        event("drawn", "outcome", "reported_complete", "10:04", authoring=SUB, session_ids=["sub"]),
+        event("edit", "action", "applied", "10:05", basis="tool_record"),
+    ]
+    view = story_view({"version": 1, "events": events, "edges": []})
+    assert view["homes"]["edit"] == "choice"  # the latest box before it in its own session
+    assert "elsewhere" not in view["homes"] and "drawn" not in view["homes"]  # no box of their own session
+    assert view["unplaced"] == 2
+    assert not any(e.get("folded_agents") for e in view["events"])
+    turns = dict(request_turns({"version": 1, "events": events, "edges": []}))
+    assert turns["ask"][:3] == ["ask", "plan", "choice"]

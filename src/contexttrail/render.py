@@ -127,10 +127,12 @@ def status_labels(graph: dict) -> dict[str, str]:
         elif event["kind"] == "question" and status == "asked":
             # No answer linked is not the same as no answer: work that followed the request in its turn says the
             # request was taken up, even when nothing is linked as its answer (`docs/plans/REQUEST_ANSWERS.md` §6).
+            # With nothing linked at all the graph knows only that: the turn may never have been analysed (a noted
+            # session's turns are not) or left no event, so it does not claim the request went unanswered.
             labels[event["id"]] = tr("요청 · ", "request · ") + (
                 tr("답변됨", "answered") if event["id"] in answered
                 else tr("답변 연결 없음", "no answer linked") if event["id"] in followed
-                else tr("답변 없음", "no answer"))
+                else tr("이어진 사건 연결 없음", "nothing linked"))
         elif event["kind"] in CHANGE_KINDS and status in CHANGE_STATUSES:
             # A change is verified only through a check of it; an observed status on the change itself (graphs
             # written before that rule) reads as applied, never as a success badge.

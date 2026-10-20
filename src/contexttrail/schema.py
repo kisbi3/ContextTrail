@@ -3,6 +3,7 @@ from __future__ import annotations
 import bisect
 import copy
 import re
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from jsonschema import Draft202012Validator
@@ -1610,10 +1611,52 @@ def fold_delegate_reports(graph: dict, source_of: Callable[[str], dict | None]) 
     return folded
 
 
+def _instant(value: str | None) -> float | None:
+    """A recorded time as seconds since the epoch, whatever its offset (`Z`, `+00:00`, `+09:00`), else None."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def event_times(events: list[dict]) -> dict[str, tuple[float, int]]:
+    """When each event happened, for ordering: its recorded time, else the time of the event before it in the list
+    in its session (else in the list), with the list position breaking ties. Nothing is stored."""
+    times: dict[str, tuple[float, int]] = {}
+    last_in: dict[str, float] = {}
+    last = 0.0
+    for n, event in enumerate(events):
+        sessions = event.get("session_ids") or []
+        found = _instant(event.get("recorded_at"))
+        if found is None:
+            found = next((last_in[s] for s in sessions if s in last_in), last)
+        for session in sessions:
+            last_in[session] = found
+        last = found
+        times[event["id"]] = (found, n)
+    return times
+
+
+def is_request(event: dict) -> bool:
+    """A person's message that starts a turn: a request (`question`), or a goal or proposal of the person's in graphs
+    written before requests were made by code. A choice the person made among the agent's options (a user `decision`)
+    answers inside the turn it belongs to (`docs/plans/REQUEST_ANSWERS.md` §2)."""
+    return event.get("actor") == "user" and event["kind"] != "decision"
+
+
 def folded_view(graph: dict) -> dict:
-    """The graph as the views draw it: an event folded into a called agent's event (`fold_delegate_reports`) is
-    left out, its relations move to that event (a loop or a repeat of a relation drawn already is dropped), and
-    the event keeps it under `received_reports` for its detail. The stored graph is unchanged."""
+    """The graph as the views draw it, in the order things happened (units are published in the order they were
+    analysed, so a list in storage order put work under a request that came after it): an event folded into a called
+    agent's event (`fold_delegate_reports`) is left out, its relations move to that event (a loop or a repeat of a
+    relation drawn already is dropped), and the event keeps it under `received_reports` for its detail. The stored
+    graph is unchanged."""
+    times = event_times(graph["events"])
+    ordered = sorted(graph["events"], key=lambda event: times[event["id"]])
+    if [event["id"] for event in ordered] != [event["id"] for event in graph["events"]]:
+        graph = {**graph, "events": ordered}
     target = {e["id"]: e[FOLDED] for e in graph["events"] if e.get(FOLDED)}
     present = {e["id"] for e in graph["events"]}
     target = {key: value for key, value in target.items() if value in present and value not in target}
@@ -1667,7 +1710,7 @@ def story_view(graph: dict) -> dict:
     from .render import status_labels, status_tones
     events = graph["events"]
     by_id = {event["id"]: event for event in events}
-    when = {event["id"]: (event.get("recorded_at") or "", n) for n, event in enumerate(events)}
+    when = event_times(events)
     active = [edge for edge in graph["edges"] if edge["active"] and edge["from_event_id"] in by_id
               and edge["to_event_id"] in by_id and edge.get("origin") not in ("dialog_turn", DELEGATION_ORIGIN)]
     passed = {edge["from_event_id"] for edge in active if edge["relation"] == "verifies"
@@ -1699,10 +1742,15 @@ def story_view(graph: dict) -> dict:
     intents = [key for key in story if by_id[key]["kind"] in INTENT_KINDS]
 
     def intention_before(key: str) -> str | None:
+        # The latest intention before it in time in its own session (else the session's first); never another
+        # session's, which time alone would make look related. Work with no intention in its session (a sub-agent's
+        # session no delegation reaches) stays unplaced and is counted (`unplaced`).
         sessions = set(by_id[key].get("session_ids") or [])
-        before = [other for other in intents if when[other] <= when[key]]
-        same = [other for other in before if sessions & set(by_id[other].get("session_ids") or [])]
-        return (same or before or intents[:1] or story[:1] or [None])[-1]
+        same = [other for other in intents if sessions & set(by_id[other].get("session_ids") or [])]
+        before = [other for other in same if when[other] <= when[key]]
+        if before:
+            return max(before, key=when.get)
+        return min(same, key=when.get) if same else None
 
     homes: dict[str, str | None] = {}
 
@@ -1757,7 +1805,8 @@ def story_view(graph: dict) -> dict:
                 if agents.get(event["id"]) else {})})
     edges = [edge for edge in graph["edges"] if edge["from_event_id"] in shown and edge["to_event_id"] in shown]
     return {**graph, "events": view_events, "edges": edges, "view": STORY_VIEW, "tones": tones, "labels": labels,
-            "homes": {key: value for key, value in homes.items() if value}, "hidden": len(events) - len(view_events)}
+            "homes": {key: value for key, value in homes.items() if value}, "hidden": len(events) - len(view_events),
+            "unplaced": sum(1 for key in by_id if key not in shown and homes.get(key) is None)}
 
 
 def step_of(event: dict, sources: list[dict]) -> str | None:

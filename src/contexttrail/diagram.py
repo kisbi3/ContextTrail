@@ -231,8 +231,9 @@ def request_turns(graph: dict) -> list[tuple[str | None, list[str]]]:
     events in no turn are gathered under None, placed where the first of them is. Empty when
     the graph has no user message.
     """
+    from .schema import is_request
     events = graph["events"]
-    if not any(event.get("actor") == "user" for event in events):
+    if not any(is_request(event) for event in events):
         return []
     position = {event["id"]: n for n, event in enumerate(events)}
     sources: dict[str, list[str]] = {}
@@ -245,7 +246,7 @@ def request_turns(graph: dict) -> list[tuple[str | None, list[str]]]:
     for event in events:
         key = event["id"]
         sessions = event.get("session_ids") or []
-        if event.get("actor") == "user":
+        if is_request(event):
             turn = key
             for session in sessions:
                 latest[session] = key

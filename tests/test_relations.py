@@ -147,7 +147,7 @@ def test_labels_show_what_checked_a_change_and_whether_a_question_was_answered()
                        link("c2", "ok", "verifies", active=False), link("c4", "syntax", "verifies"),
                        link("c5", "coded", "verifies")]}
     labels = status_labels(graph)
-    assert labels["q"] == "요청 · 답변됨" and labels["q2"] == "요청 · 답변 없음"
+    assert labels["q"] == "요청 · 답변됨" and labels["q2"] == "요청 · 이어진 사건 연결 없음"
     assert labels["c1"] == "변경 적용 · 검증 통과 1건 · 검증 실패 1건"
     assert labels["c2"] == "변경 적용 · 미검증"
     assert labels["c3"] == "완료 보고 · 미검증"
