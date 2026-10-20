@@ -188,3 +188,23 @@ def test_unsupported_methods_get_the_pages_headers_and_no_product_banner(viewer)
         assert headers['Cache-Control']=='no-store' and 'ProjectFlow' not in headers.get('Server','')
         assert 'Python' not in headers.get('Server','')
     assert not calls
+
+
+def test_serve_prints_its_link_at_once_and_stops_on_sigterm(tmp_path):
+    """Under a host or nohup stdout is a pipe: the link must arrive while the server runs, and terminate() (SIGTERM)
+    must stop it like Ctrl-C."""
+    import os, signal, subprocess, sys
+    folder = tmp_path / "project"; folder.mkdir()
+    env = {**os.environ, "CONTEXTTRAIL_LANGUAGE": "en"}
+    process = subprocess.Popen([sys.executable, "-m", "contexttrail", "serve", str(folder), "--port", "0"],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    try:
+        lines = []
+        while not any("Access URL" in line for line in lines) and len(lines) < 6:
+            lines.append(process.stdout.readline())
+        assert any("Access URL" in line and "#token=" in line for line in lines)
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=10) == 0  # stopped like Ctrl-C, not killed by the signal (-15)
+    finally:
+        if process.poll() is None:
+            process.kill()

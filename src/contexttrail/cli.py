@@ -5,6 +5,7 @@ import dataclasses
 import json
 import os
 import shutil
+import signal
 import sqlite3
 import sys
 import threading
@@ -699,8 +700,18 @@ def _screen_language(explicit: str | None, store: Store | None = None) -> None:
     i18n.set_language(i18n.resolve(explicit=explicit, saved=store.get_meta("output_language") if store else None))
 
 
+def _stop_on_signal(signum, frame) -> None:
+    raise KeyboardInterrupt(signal.Signals(signum).name)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
+    if threading.current_thread() is threading.main_thread():
+        # A host that stops the run with terminate() (SIGTERM) or a closed terminal (SIGHUP) stops it like Ctrl-C,
+        # so the runner's process group is killed and the run is recorded as cancelled, not left calling a model.
+        for name in ("SIGTERM", "SIGHUP"):
+            if hasattr(signal, name):
+                signal.signal(getattr(signal, name), _stop_on_signal)
     _screen_language(_language_option(argv))
     args = parser().parse_args(_default_command(argv))
     try:
