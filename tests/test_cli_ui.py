@@ -149,8 +149,16 @@ def test_analysis_token_footer_counts_only_reported_usage(tmp_path):
     store.start_llm_call('call_2', 'run_1', 'unit_2', 'story', 1, {})
     store.finish_llm_call('call_2', 'failed', {})
     totals = store.llm_token_totals()
-    assert totals == (150, 1, 2)
+    assert totals == (150, 1, 2, None)
     assert token_usage_label(*totals) == '분석 토큰 150+ (1/2 호출)'
+    # Claude's cache writes and reads are input it does not count in input_tokens; its reported cost is kept.
+    store.start_llm_call('call_3', 'run_1', 'unit_3', 'story', 1, {})
+    store.finish_llm_call('call_3', 'complete', {'usage': {'input_tokens': 4, 'output_tokens': 100,
+                                                          'cache_creation_input_tokens': 9000,
+                                                          'cache_read_input_tokens': 1000, 'reported_cost_usd': 0.0412}})
+    totals = store.llm_token_totals()
+    assert totals == (150 + 10104, 2, 3, 0.0412)
+    assert token_usage_label(*totals) == '분석 토큰 10,254+ (2/3 호출) · CLI 보고 비용 $0.04+'
 
 
 def test_export_protects_database_and_original_source(tmp_path,capsys):

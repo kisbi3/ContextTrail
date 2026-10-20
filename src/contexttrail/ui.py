@@ -27,14 +27,16 @@ from .util import FlowError, cell_slice, safe_text
 from .webview import LocalViewer
 
 
-def token_usage_label(tokens: int, known_calls: int, calls: int) -> str:
+def token_usage_label(tokens: int, known_calls: int, calls: int, cost: float | None = None) -> str:
     if not calls:
         return tr("분석 토큰 0", "analysis tokens 0")
     if not known_calls:
         return tr(f"분석 토큰 미확인 (0/{calls} 호출)", f"analysis tokens unknown (0/{calls} calls)")
     suffix = (tr(f"+ ({known_calls}/{calls} 호출)", f"+ ({known_calls}/{calls} calls)")
               if known_calls < calls else "")
-    return tr(f"분석 토큰 {tokens:,}{suffix}", f"analysis tokens {tokens:,}{suffix}")
+    # The cost a CLI reported for its calls (Claude's), never an estimate; a call that reported none adds nothing.
+    spent = tr(f" · CLI 보고 비용 ${cost:,.2f}+", f" · CLI-reported cost ${cost:,.2f}+") if cost else ""
+    return tr(f"분석 토큰 {tokens:,}{suffix}", f"analysis tokens {tokens:,}{suffix}") + spent
 
 
 def _wrap_cells(value: str, width: int) -> list[str]:

@@ -529,8 +529,11 @@ class Store:
             rows = list(db.execute("SELECT * FROM llm_calls WHERE run_id=? ORDER BY rowid", (run_id,))) if run_id else list(db.execute("SELECT * FROM llm_calls ORDER BY rowid"))
         return [{**dict(row), "metadata": json.loads(row["metadata"]), "details": json.loads(row["details"])} for row in rows]
 
-    def llm_token_totals(self) -> tuple[int, int, int]:
-        """Known input + output tokens, calls with both counts, all host calls."""
+    def llm_token_totals(self) -> tuple[int, int, int, float | None]:
+        """Known tokens, calls with both counts, all host calls, and the cost the CLIs reported (None when none did).
+
+        Tokens are input + output, plus Claude's cache writes and reads, which its `input_tokens` leaves out (on this
+        repository's ledger they were 18 of 18.7 million); Codex's `input_tokens` already holds its cached part."""
         input_number = "json_type(details, '$.usage.input_tokens') IN ('integer', 'real')"
         output_number = "json_type(details, '$.usage.output_tokens') IN ('integer', 'real')"
         complete = f"{input_number} AND {output_number}"
@@ -539,9 +542,13 @@ class Store:
                 COALESCE(SUM(CASE WHEN {complete} THEN 1 ELSE 0 END), 0) AS known_calls,
                 COALESCE(SUM(CASE WHEN {complete} THEN
                     json_extract(details, '$.usage.input_tokens') +
-                    json_extract(details, '$.usage.output_tokens') ELSE 0 END), 0) AS tokens
+                    json_extract(details, '$.usage.output_tokens') +
+                    COALESCE(json_extract(details, '$.usage.cache_creation_input_tokens'), 0) +
+                    COALESCE(json_extract(details, '$.usage.cache_read_input_tokens'), 0) ELSE 0 END), 0) AS tokens,
+                SUM(json_extract(details, '$.usage.reported_cost_usd')) AS cost
                 FROM llm_calls""").fetchone()
-        return int(row["tokens"]), int(row["known_calls"]), int(row["calls"])
+        return int(row["tokens"]), int(row["known_calls"]), int(row["calls"]), (
+            float(row["cost"]) if row["cost"] is not None else None)
 
     def start_run(self, run_id: str, manifest: dict) -> None:
         with self.connection() as db, db:

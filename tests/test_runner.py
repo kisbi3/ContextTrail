@@ -290,3 +290,10 @@ def test_a_claude_call_keeps_its_session_under_an_id_of_ours_and_a_follow_up_res
     again = {**first, 'repair': 'fix it'}
     assert thread.follow_up(again, 'common') == {'follow_up': thread.follow_up(again, 'common')['follow_up'], 'repair': 'fix it'}
     assert thread.answered(again, 'sid', {'input_tokens': 40, 'cache_read_input_tokens': 90}, 'common') == {'input_tokens': 40, 'cache_read_input_tokens': 90}
+
+
+def test_the_cost_claude_reports_is_kept_with_its_usage():
+    value, usage = parse_claude_output(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                                                   "structured_output": {"ok": True}, "total_cost_usd": 0.0123,
+                                                   "usage": {"input_tokens": 3, "output_tokens": 5}}))
+    assert value == {"ok": True} and usage == {"input_tokens": 3, "output_tokens": 5, "reported_cost_usd": 0.0123}

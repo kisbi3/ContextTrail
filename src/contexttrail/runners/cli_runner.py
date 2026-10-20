@@ -238,7 +238,11 @@ def parse_claude_output(text: str) -> tuple[dict, dict | None]:
         kind = BrokenOutput if isinstance(exc, (json.JSONDecodeError, TypeError)) or str(exc) == "not object" else FlowError
         raise kind(tr("Claude의 최종 구조화 JSON을 읽을 수 없습니다.",
                       "Claude's final structured JSON could not be read.")) from exc
-    return value, envelope.get("usage")
+    usage = envelope.get("usage")
+    cost = envelope.get("total_cost_usd")
+    if isinstance(usage, dict) and isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        usage = {**usage, "reported_cost_usd": cost}  # what the CLI says the call cost, kept as reported
+    return value, usage
 
 
 def claude_reported_model(text: str) -> str | None:
