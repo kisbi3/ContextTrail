@@ -126,3 +126,30 @@ def private_dir(path: Path) -> None:
     if path.stat().st_uid != os.getuid():
         raise FlowError(tr("상태 디렉터리는 현재 사용자 소유여야 합니다.", "The state directory must be owned by the current user."))
     os.chmod(path, 0o700)
+
+
+# Values shaped like credentials, hidden wherever a screen or an agent reads a quote or a summary: the stored evidence
+# stays byte-exact (its quote hash and citation lines depend on it). Not a promise that nothing secret is left
+# (`docs/SECURITY.md`): a format it does not know is shown as recorded.
+SECRET_HIDDEN = "[secret hidden]"
+_SECRET_PATTERNS = (
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.DOTALL),
+    re.compile(r"\bsk-(?:proj-|ant-|svcacct-)?[A-Za-z0-9_-]{20,}"),
+    re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
+)
+# NAME_KEY=value, "api_token": "value", PASSWORD: value — the name stays, the value goes.
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)(\b[A-Z0-9_.-]*(?:api[_-]?key|secret|token|passw(?:or)?d)[A-Z0-9_.-]*[\"']?\s*[:=]\s*[\"']?)"
+    r"(?![0-9.]+\b)([^\s\"'`,;]{8,})")  # a number (max_tokens=128000) is no secret
+
+
+def mask_secrets(text: str) -> str:
+    """The text with credential-shaped values replaced by `SECRET_HIDDEN` (display only)."""
+    if not text:
+        return text
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub(SECRET_HIDDEN, text)
+    return _SECRET_ASSIGNMENT.sub(lambda m: m.group(1) + (m.group(2) if m.group(2) == SECRET_HIDDEN else SECRET_HIDDEN), text)
