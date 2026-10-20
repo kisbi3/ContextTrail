@@ -32,7 +32,7 @@ from . import i18n
 from .i18n import tr
 from .render import event_detail, export_text, terminal_graph
 from .runners import CLIRunner
-from .runners.cli_runner import EFFORTS
+from .runners.cli_runner import DEFAULT_MODELS, EFFORTS
 from .schema import STATUSES, folded_view
 from .store import ReadOnlyStore, Store
 from .ui import GraphApp, TerminalApp, legend, token_usage_label
@@ -934,6 +934,21 @@ def main(argv: list[str] | None = None) -> int:
                 store.set_meta(key, True)
                 return True
             return False
+        def browser_ready() -> dict:
+            """Whether the browser page may start an analysis: it asks no plan, so only with a runner chosen and
+            consent to that runner already given in a terminal (CLI or TUI)."""
+            if is_demo:
+                return {"ok": True, "runner": "mock"}
+            name = effective.get("runner")
+            if not name:
+                return {"ok": False, "reason": tr("분석 Runner가 정해지지 않았습니다. 터미널에서 contexttrail analyze . --runner codex 또는 claude를 한 번 실행하세요.",
+                                                  "No analysis runner is chosen. Run contexttrail analyze . --runner codex or claude once in a terminal.")}
+            model = effective.get("model") or DEFAULT_MODELS.get(name)
+            if not store.get_meta("consent:" + name, False):
+                return {"ok": False, "runner": name, "model": model,
+                        "reason": tr(f"{name}에 보내는 데 동의한 적이 없습니다. 터미널에서 contexttrail analyze .로 한 번 동의하세요.",
+                                     f"Sending to {name} was never consented to. Consent once in a terminal with contexttrail analyze .")}
+            return {"ok": True, "runner": name, "model": model}
         def analyze_callback(cancel, update, confirm=None):
             # The screen asks again once the run knows how much it would send (demo excepted).
             ask = None if is_demo or confirm is None or args.yes else (lambda snapshot, plan: confirm(plan))
@@ -964,7 +979,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "serve":
             cancel = threading.Event()
-            viewer = LocalViewer(store, refresh=lambda: analyze_callback(cancel, lambda _: None), port=args.port, scope=scope).start()
+            viewer = LocalViewer(store, refresh=lambda: analyze_callback(cancel, lambda _: None), port=args.port, scope=scope,
+                                 refresh_ready=browser_ready).start()
             if os.environ.get("SSH_CONNECTION"):
                 print(tr("PC에서 포트 포워딩:", "Port forwarding from your PC:"))
                 print(f"ssh -L 127.0.0.1:{viewer.port}:127.0.0.1:{viewer.port} user@server")
@@ -985,7 +1001,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         use_tui = not args.no_tui and sys.stdout.isatty() and sys.stdin.isatty() and os.environ.get("TERM", "dumb") != "dumb"
         if use_tui:
-            TerminalApp(store, analyze_callback, title=scope.folder.name, initial_analyze=args.command == "analyze",
+            TerminalApp(store, analyze_callback, refresh_ready=browser_ready, title=scope.folder.name,
+                        initial_analyze=args.command == "analyze",
                         ascii_only=args.ascii, authorize=authorize_ui, color=not args.no_color,
                         mouse=not args.no_mouse, scope=scope).run()
             return 0

@@ -224,3 +224,16 @@ def test_serve_prints_its_link_at_once_and_stops_on_sigterm(tmp_path):
     finally:
         if process.poll() is None:
             process.kill()
+
+
+def test_the_page_starts_no_analysis_without_a_runner_and_its_consent(viewer):
+    """The page asks no plan, so the server checks what a terminal would have asked: a runner and consent to it."""
+    obj,calls,_=viewer
+    blocked={'ok':False,'runner':'codex','model':'gpt-luna','reason':'Sending to codex was never consented to.'}
+    obj.refresh_ready=lambda: blocked
+    headers={'Origin':f'http://127.0.0.1:{obj.port}','Content-Type':'application/json','X-Projectflow-Action':'refresh'}
+    payload=json.loads(request(obj,'GET','/graph')[1])
+    assert payload['can_refresh'] is False and payload['refresh_blocked']==blocked['reason']
+    assert payload['refresh_with']=={'runner':'codex','model':'gpt-luna'}
+    status,body,_=request(obj,'POST','/refresh',headers=headers,body='{"confirm":true}')
+    assert status==409 and 'never consented' in json.loads(body)['error'] and not calls

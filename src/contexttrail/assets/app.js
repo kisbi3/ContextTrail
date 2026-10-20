@@ -2,7 +2,7 @@
 const params = new URLSearchParams(location.hash.slice(1));
 const token = params.get("token") || sessionStorage.getItem("contexttrail.token") || "";
 if (token) sessionStorage.setItem("contexttrail.token", token);
-let version = params.get("v"), selected = params.get("event"), generation = 0, loading = 0, shown = null;
+let version = params.get("v"), selected = params.get("event"), generation = 0, loading = 0, shown = null, refreshWith = "";
 // The story view (requests, decisions, findings; the work a line in its box) or every step; the story by default.
 let view = params.get("view") || sessionStorage.getItem("contexttrail.view") || "story";
 const $ = (id) => document.getElementById(id);
@@ -21,7 +21,8 @@ const L = document.documentElement.lang === "ko" ? {
   graphVersion:(v,at)=>"그래프 v"+v+" · 분석 기준 "+(at||"없음"),
   synthetic:"합성 데이터 / Mock 분석 · ", lastCheck:(at,status)=>"마지막 확인: "+(at||"없음")+" · "+status,
   badSVG:"지원하지 않는 SVG 요소입니다.",
-  confirmRefresh:"이 프로젝트의 새 대화·코드 근거가 선택한 CLI의 클라우드 모델에 전송될 수 있습니다. 변경분 분석을 실행할까요?",
+  confirmRefresh:(runner)=>`이 프로젝트의 새 대화·코드 근거가 ${runner}의 클라우드 모델에 전송될 수 있습니다. 변경분 분석을 실행할까요?`,
+  refreshFailed:"변경분 분석 실패: ",
   refreshing:"변경분 분석 중 · 이전 그림을 유지합니다.",
   viewStory:"핵심 보기 · 모든 단계로", viewAll:"모든 단계 · 핵심 보기로",
   viewHint:"핵심 보기는 요청·결정·결론만 상자로 그리고, 작업과 하위 에이전트는 상자 안 한 줄로 접습니다"
@@ -39,7 +40,8 @@ const L = document.documentElement.lang === "ko" ? {
   graphVersion:(v,at)=>"graph v"+v+" · analyzed as of "+(at||"none"),
   synthetic:"synthetic data / mock analysis · ", lastCheck:(at,status)=>"last check: "+(at||"none")+" · "+status,
   badSVG:"Unsupported SVG element.",
-  confirmRefresh:"New conversation and code evidence of this project may be sent to the chosen CLI's cloud model. Analyze the changes?",
+  confirmRefresh:(runner)=>`New conversation and code evidence of this project may be sent to the cloud model of ${runner}. Analyze the changes?`,
+  refreshFailed:"Analysis failed: ",
   refreshing:"Analyzing changes · the previous picture stays.",
   viewStory:"Story view · show every step", viewAll:"Every step · show the story",
   viewHint:"The story view draws requests, decisions and findings as boxes and folds the work and sub-agents into a line in their box"
@@ -87,6 +89,9 @@ async function load() {
   version=String(graph.version||"");$("version").textContent=L.graphVersion(graph.version,graph.analyzed_at);
   $("status").textContent=(graph.analysis_mode==="synthetic_mock"?L.synthetic:"")+L.lastCheck(payload.last_check.at,payload.last_check.status||graph.analysis_status)+(payload.freshness?" · "+payload.freshness:"");
   $("refresh").disabled=!payload.can_refresh||payload.refreshing;
+  $("refresh").title=payload.refresh_blocked||"";
+  refreshWith=[payload.refresh_with.runner,payload.refresh_with.model].filter(Boolean).join(" · ");
+  if(payload.refresh_result&&payload.refresh_result.status==="failed"&&payload.refresh_result.error)$("status").textContent+=" · "+L.refreshFailed+payload.refresh_result.error;
   viewLabel();
   const drawing=view, text=await(await api(drawing==="story"?"/graph.svg?view=story":"/graph.svg")).text();
   if(thisLoad!==loading)return false;
@@ -118,7 +123,7 @@ $("view").addEventListener("click",()=>{
     .catch(error=>{if(thisClick===loading&&shown){view=shown;viewLabel();}showError(error);});
 });
 $("refresh").addEventListener("click",async()=>{
-  if(!confirm(L.confirmRefresh))return;
+  if(!confirm(L.confirmRefresh(refreshWith||"?")))return;
   $("refresh").disabled=true;
   try{await api("/refresh",{method:"POST",headers:{"Content-Type":"application/json","X-Projectflow-Action":"refresh"},body:JSON.stringify({confirm:true})});
     $("status").textContent=L.refreshing;

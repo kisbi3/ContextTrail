@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import json
 import secrets
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
@@ -49,8 +50,12 @@ def page_html(text: str, lang: str | None = None) -> str:
 
 
 class LocalViewer:
-    def __init__(self, store: Store, refresh=None, *, port: int = 8765, scope=None):
+    def __init__(self, store: Store, refresh=None, *, port: int = 8765, scope=None, refresh_ready=None):
         self.store, self.refresh_callback, self.scope = store, refresh, scope
+        # Whether the page may start an analysis now, asked again at every request: {"ok", "runner", "model",
+        # "reason"}. The page asks no plan (docs/DECISIONS.md), so it starts one only with a runner chosen and
+        # the person's consent for it already given in a terminal.
+        self.refresh_ready = refresh_ready or (lambda: {"ok": True})
         self._fresh: tuple[int, str] | None = None
         self.token = secrets.token_urlsafe(32)
         self.refresh_thread = None
@@ -141,9 +146,12 @@ class LocalViewer:
                     graph = folded_view(self.graph())
                     if path == "/graph":
                         refreshing = bool(viewer.refresh_thread and viewer.refresh_thread.is_alive())
+                        ready = viewer.refresh_ready() if viewer.refresh_callback is not None else {"ok": False}
                         return self.send_data(200, {"graph": graph, "last_check": viewer.store.get_meta("last_check", {}),
                             "freshness": "" if refreshing else viewer.freshness(graph["version"]), "refreshing": refreshing,
-                            "refresh_result": viewer.refresh_result, "can_refresh": viewer.refresh_callback is not None})
+                            "refresh_result": viewer.refresh_result, "can_refresh": bool(ready.get("ok")),
+                            "refresh_with": {key: ready.get(key) for key in ("runner", "model") if ready.get(key)},
+                            "refresh_blocked": ready.get("reason")})
                     if path == "/graph.svg":
                         # The story view (the page's default) or every step; any other value is every step.
                         story = parse_qs(urlsplit(self.path).query).get("view", [""])[0] == "story"
@@ -200,6 +208,9 @@ class LocalViewer:
                         raise ValueError()
                 except (ValueError, TypeError):
                     return self.send_data(400, {"error": "explicit confirmation required"})
+                ready = viewer.refresh_ready()
+                if not ready.get("ok"):
+                    return self.send_data(409, {"error": ready.get("reason") or "analysis is not available here"})
                 with viewer.refresh_lock:
                     if viewer.refresh_thread and viewer.refresh_thread.is_alive():
                         return self.send_data(409, {"error": "already refreshing"})
@@ -207,7 +218,10 @@ class LocalViewer:
                         try:
                             result = viewer.refresh_callback()
                             viewer.refresh_result = {k: v for k, v in result.items() if k != "graph"}
-                        except Exception:
+                        except FlowError as exc:
+                            viewer.refresh_result = {"status": "failed", "error": str(exc)}
+                        except Exception as exc:  # what the terminal is told to look at; never the access token
+                            print(f"contexttrail: browser analysis failed: {type(exc).__name__}", file=sys.stderr, flush=True)
                             viewer.refresh_result = {"status": "failed", "error": tr("갱신 실패; 터미널에서 상태를 확인하세요.",
                                                                                   "Update failed; check the terminal for its state.")}
                     viewer.refresh_result = None

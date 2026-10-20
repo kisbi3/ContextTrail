@@ -950,8 +950,9 @@ class TerminalApp:
 
     def __init__(self, store: Store, analyze: Callable, *, title: str, initial_analyze: bool = False,
                  ascii_only: bool = False, authorize: Callable | None = None, color: bool = True,
-                 mouse: bool = True, scope: Scope | None = None):
+                 mouse: bool = True, scope: Scope | None = None, refresh_ready: Callable | None = None):
         self.store, self.analyze, self.authorize, self.scope = store, analyze, authorize, scope
+        self.refresh_ready = refresh_ready
         self.title, self.initial, self.ascii_only, self.color = title, initial_analyze, ascii_only, color
         self.mouse = mouse
         self.cancel = threading.Event()
@@ -1118,7 +1119,8 @@ class TerminalApp:
 
     def show_browser(self, screen):
         if not self.viewer:
-            self.viewer = LocalViewer(self.store, refresh=lambda: self.analyze(self.cancel, lambda _: None), scope=self.scope).start()
+            self.viewer = LocalViewer(self.store, refresh=lambda: self.analyze(self.cancel, lambda _: None), scope=self.scope,
+                                      refresh_ready=self.refresh_ready).start()
         address = self.viewer.url(self.graph["version"], self.selected_id())
         rows, cols = screen.getmaxyx()
         screen.erase()
