@@ -18,7 +18,7 @@ project scan /path/to/project
 
 **한계:** 이것은 기록된 경로의 구조적 귀속 판정이다. 한 메시지 안의 다른 프로젝트 언급을 의미적으로 지워 주는 기능은 아니다. shell 문자열 내부의 `cd`나 임의 절대 파일 경로를 실행·해석해 프로젝트 전체 귀속을 추측하지 않는다. 기록에 없는 경로 이동, 삭제된 worktree, 별도 clone의 연결은 보장하지 않는다. 최초 전체 파일 탐색 I/O를 제거하는 전역 색인은 아직 구현하지 않았다.
 
-## 2. 모델·wo## 2. 분석 호출: 단위마다 한 번 (2026-10-20부터)
+## 2. 분석 호출: 단위마다 한 번 (2026-10-20부터)
 
 ```bash
 project analyze . --runner codex --model gpt-sol --extract-effort high --workers 2 --max-calls 50
@@ -35,7 +35,7 @@ project analyze . --runner codex --model gpt-sol --extract-effort high --workers
 
 `--workers`는 여러 단위의 이야기 호출을 같은 기준 그래프로 나란히 보내고, 게시는 입력 계획 순서로 직렬 수행한다. 기본 worker는 1, 허용 범위는 1~8이다. 실행당 기본 host call 상한은 30, eval은 20이다. 처리할 작업 단위 수(`--units N` 또는 확인 창에서 입력)를 정하면 상한은 단위당 3회(`CALLS_PER_UNIT`: 이야기 호출, 수리, 읽을 수 없는 답의 재요청)이고, `--max-calls`를 주면 그 값이 우선한다. 둘 다 그 실행에만 적용하고 저장하지 않는다. 완료되지 않은 단위는 다음 사용자의 명시적 실행에서 이어서 처리한다. 자동 rate-limit 회피나 다른 계정 전환은 없다.
 
-ps
+## 3. LLM Ops
 
 ```bash
 project ops /path/to/project
@@ -49,7 +49,7 @@ SQLite `llm_calls`에 role/model 요청값/worker/run/unit/attempt, prompt·sche
 
 호출 ledger는 **로컬**이다. LangSmith 계정·서버나 별도 사용자 대시보드는 필요하지 않다. 기존 인증을 사용하는 CLI의 실행/전송/계정 제한은 종전 Runner 계약을 따른다. 현재 구현은 파일 기반 인증만 연결하며 API-key 환경변수를 따로 주입하는 새 Runner는 추가하지 않았다.
 
-## 5. 평가 실행
+## 4. 평가 실행
 
 ```bash
 # 합성 데이터, 외부 LLM 호출 없음
@@ -79,6 +79,6 @@ project eval --fixture /tmp/my-fixture.json --runner codex \
 
 fixture는 민감한 원문을 포함한다. 내용을 직접 보고 앞뒤 맥락, call/result, fragment 완결성을 확인하고 `expectations`를 추가한다. 빈 기대 목록으로 실행하면 의미 정확도는 `not_scored`다. fixture의 원래 locator는 보존용 metadata이며 실제 파일/임의 revision을 읽을 권한을 주지 않는다.
 
-## 6. 검증되지 않은 것
+## 5. 검증되지 않은 것
 
 실제 Codex·Claude 계정별 모델 접근, 독립 CLI의 병렬 계정 제한, 실제 출력의 모델/usage metadata, 위험 규칙의 누락률은 live 평가가 필요하다. 이야기 호출의 측정은 `docs/plans/PIPELINE_V2.md` §8에 있다(두 프로젝트, Haiku·Luna·Sol). 이번 버전은 구조와 안전성 회귀를 검증했으며 이러한 성과를 실측했다고 주장하지 않는다.
