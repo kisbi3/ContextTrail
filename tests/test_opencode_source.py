@@ -398,7 +398,8 @@ def test_scan_counts_opencode_records_and_the_screen_names_the_tool(tmp_path, ca
     output = json.loads(capsys.readouterr().out)
     assert output["records"]["opencode"] == 7 and output["records"]["codex"] == 0
     assert output["runner_calls"] == 0
-    assert Store(scope.state_dir, scope.id).get_meta("options")["opencode_home"] == str(tmp_path.resolve())
+    # A scan's flags are for that scan: the project's saved settings are analyze's to change.
+    assert "opencode_home" not in (Store(scope.state_dir, scope.id).get_meta("options") or {})
 
 
 def test_opencode_records_name_the_provider_model_and_variant_that_wrote_them(tmp_path):

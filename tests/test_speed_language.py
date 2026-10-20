@@ -32,9 +32,9 @@ def test_the_language_is_detected_once_saved_and_sent_with_every_task(laboratory
     assert store.get_meta("output_language") == "Korean"
     assert {task["output_language"] for task in runner.tasks} == {"Korean"}
     options = argparse.Namespace(max_calls=None, max_units=None, session=None, output_language="English")
-    assert _options(options, store).output_language == "English"  # saved with the other options
+    assert _options(options, store, persist=True)[0].output_language == "English"  # saved with the other options
     options.output_language = "auto"
-    config = _options(options, store)
+    config = _options(options, store, persist=True)[0]
     assert config.output_language is None and store.get_meta("output_language") is None
 
 

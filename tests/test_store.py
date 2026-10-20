@@ -102,8 +102,8 @@ def test_the_call_cap_is_for_one_run_and_an_old_saved_cap_is_dropped(tmp_path):
     from contexttrail.cli import _options
     store = Store(tmp_path / "state", "scope")
     store.set_meta("options", {"runner": "codex", "max_calls": 2})
-    assert _options(argparse.Namespace(max_calls=None), store).max_calls == 30
-    assert _options(argparse.Namespace(max_calls=5), store).max_calls == 5
+    assert _options(argparse.Namespace(max_calls=None), store, persist=True)[0].max_calls == 30
+    assert _options(argparse.Namespace(max_calls=5), store, persist=True)[0].max_calls == 5
     assert store.get_meta("options") == {"runner": "codex"}
 
 

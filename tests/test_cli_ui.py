@@ -30,10 +30,10 @@ from contexttrail.ui import token_usage_label
 def test_the_analysis_effort_is_saved_for_later_runs(tmp_path):
     from contexttrail.cli import _options, parser
     store = Store(tmp_path / 'state', 'scope')
-    assert _options(parser().parse_args(['analyze', '.']), store).extract_effort == 'medium'
-    first = _options(parser().parse_args(['analyze', '.', '--extract-effort', 'xhigh']), store)
+    assert _options(parser().parse_args(['analyze', '.']), store, persist=True)[0].extract_effort == 'medium'
+    first = _options(parser().parse_args(['analyze', '.', '--extract-effort', 'xhigh']), store, persist=True)[0]
     assert first.extract_effort == 'xhigh'
-    again = _options(parser().parse_args(['analyze', '.']), store)
+    again = _options(parser().parse_args(['analyze', '.']), store, persist=True)[0]
     assert again.extract_effort == 'xhigh'
 
 
@@ -43,7 +43,7 @@ def test_settings_of_the_retired_analysis_calls_are_dropped_and_their_options_re
     # A project saved by an older version keeps the settings of the calls that are gone (integrate, review,
     # light, economy): read nowhere, dropped on the next write, the rest kept.
     store.set_meta('options', {**{key: 'old' for key in RETIRED_OPTIONS}, 'extract_effort': 'high'})
-    assert _options(parser().parse_args(['analyze', '.']), store).extract_effort == 'high'
+    assert _options(parser().parse_args(['analyze', '.']), store, persist=True)[0].extract_effort == 'high'
     assert store.get_meta('options') == {'extract_effort': 'high'}
     for command in (['analyze', '.'], ['eval', '--output', 'out']):
         for retired in (['--no-review'], ['--economy'], ['--no-economy'], ['--light'], ['--integrate-output', 'draft'],
@@ -328,3 +328,19 @@ def test_english_screen_follows_the_language_flag_env_and_saved_project_language
     monkeypatch.setenv("LC_ALL", "en_US.UTF-8")
     assert main(['view', str(folder), '--no-tui', '--language', 'auto']) == 0
     assert '이번 실행의 Runner 호출' in capsys.readouterr().out  # auto is no choice: the saved Korean shows
+
+
+def test_only_analyze_saves_settings_and_a_refused_value_is_never_saved(tmp_path, monkeypatch):
+    from contexttrail.git_context import Scope
+    from contexttrail.store import Store
+    folder = tmp_path / 'p'; folder.mkdir()
+    for name in ('CODEX_HOME', 'CLAUDE_CONFIG_DIR'):
+        monkeypatch.setenv(name, str(tmp_path / name))
+    monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'xdg'))
+    scope = Scope.resolve(folder)
+    assert main(['view', str(folder), '--no-tui', '--language', 'en', '--runner', 'codex']) == 0
+    assert main(['scan', str(folder), '--codex-home', str(tmp_path / 'typo')]) == 0
+    store = Store(scope.state_dir, scope.id)
+    assert not (store.get_meta('options') or {})  # a look and a preview change nothing the project's analyses read
+    assert main(['scan', str(folder), '--history-limit', '0']) == 1
+    assert main(['scan', str(folder)]) == 0  # the refused value was not saved, so the project still opens

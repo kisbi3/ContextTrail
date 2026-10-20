@@ -288,12 +288,20 @@ def unaudited(store: Store, sources: dict[str, dict], units: list[dict]) -> dict
     return {"sessions": len(sessions), "records": records}
 
 
+def saved_homes(store: Store) -> dict[str, Path]:
+    """The source directories a check reads: the project's saved ones, else the ones the last scan read (a scan's
+    flags are not saved, but its index is what the check compares with), else the defaults (left out here)."""
+    options = store.get_meta("options", {}) or {}
+    scanned = (store.get_meta(INDEX_KEY) or {}).get("homes") or {}
+    return {key: Path(options.get(key) or scanned[key.removesuffix("_home")])
+            for key in ("codex_home", "claude_home", "opencode_home")
+            if options.get(key) or scanned.get(key.removesuffix("_home"))}
+
+
 def check_from_store(scope: Scope, store: Store, *, budget_bytes: int | None = FIND_BUDGET_BYTES) -> dict[str, Any] | None:
-    """The check with the project's saved source directories; None when the state cannot be read."""
+    """The check with `saved_homes`; None when the state cannot be read."""
     try:
-        options = store.get_meta("options", {}) or {}
-        homes = {key: Path(options[key]) for key in ("codex_home", "claude_home", "opencode_home") if options.get(key)}
-        return check(scope, store, budget_bytes=budget_bytes, **homes)
+        return check(scope, store, budget_bytes=budget_bytes, **saved_homes(store))
     except Exception:  # a locked or half-written state must not take the read path down
         return None
 

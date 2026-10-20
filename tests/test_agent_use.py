@@ -52,7 +52,7 @@ def test_a_unit_count_sets_the_call_cap_unless_one_was_given(laboratory, tmp_pat
     plans = []
     engine.analyze(lambda: pytest.fail("declined"), consent=lambda snapshot, plan: plans.append(plan) or False)
     assert (plans[0]["units_this_run"], plans[0]["max_calls"]) == (2, 6)
-    config = _options(argparse.Namespace(max_calls=4, max_units=2, session=None), Store(tmp_path / "s", "x"))
+    config = _options(argparse.Namespace(max_calls=4, max_units=2, session=None), Store(tmp_path / "s", "x"), persist=True)[0]
     assert (config.max_units, config.max_calls, config.calls_fixed) == (2, 4, True)
     engine.config.max_calls, engine.config.calls_fixed = 4, True
     engine.analyze(lambda: pytest.fail("declined"), consent=lambda snapshot, plan: plans.append(plan) or False)

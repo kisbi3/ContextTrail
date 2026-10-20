@@ -25,7 +25,7 @@ from .diagram import flow_diagram
 from .evaluation import call_timeline, run_eval, summarize_calls
 from .eval_review import render_eval_review
 from .input_preview import preview_eval
-from .freshness import check, check_from_store, status_lines
+from .freshness import check, check_from_store, saved_homes, status_lines
 from .freshness import summary as freshness_summary
 from .git_context import Scope
 from . import i18n
@@ -343,8 +343,12 @@ RETIRED_OPTIONS = ("integrate_model", "escalation_model", "integrate_effort", "e
                    "unit_thread", "integrate_evidence", "review_output", "integrate_output", "economy", "light")
 
 
-def _options(args, store: Store) -> AnalysisConfig:
-    options = store.get_meta("options", {})
+def _options(args, store: Store, *, persist: bool) -> tuple[AnalysisConfig, dict]:
+    """This run's settings: the project's saved options with this command's flags over them, checked, and the merged
+    options. Only `analyze` saves them (`persist`): a look with `view --language en` or a `scan --codex-home` preview
+    must not change what every later analysis of the project reads, and a value the checks refuse is never saved."""
+    saved = store.get_meta("options", {}) or {}
+    options = dict(saved)
     for key in ("runner", "model", "codex_home", "claude_home", "opencode_home", "history_limit", "timeout", "record_chars", "unit_chars",
                 "extract_model", "extract_effort", "extract_workers", "output_language"):
         value = getattr(args, key, None)
@@ -352,13 +356,12 @@ def _options(args, store: Store) -> AnalysisConfig:
             options[key] = str(value.expanduser().resolve()) if isinstance(value, Path) else value
     for key in RETIRED_OPTIONS:
         options.pop(key, None)  # settings of the analysis calls that are gone; read nowhere
-    if options.get("output_language") == "auto":
+    detect_again = options.get("output_language") == "auto"
+    if detect_again:
         # Detected again at the next plan from the person's messages.
         options.pop("output_language")
-        store.set_meta("output_language", None)
     # The call cap is for this run only; one saved by an older version is dropped, not reused.
     options.pop("max_calls", None)
-    store.set_meta("options", options)
     config_keys = {field.name for field in dataclasses.fields(AnalysisConfig)}
     values = {key: value for key, value in options.items() if key in config_keys}
     for key in ("codex_home", "claude_home", "opencode_home"):
@@ -377,7 +380,13 @@ def _options(args, store: Store) -> AnalysisConfig:
     values["langsmith_enabled"] = getattr(args, "langsmith_enabled", False)
     values["langsmith_include_content"] = getattr(args, "langsmith_include_content", False)
     values["langsmith_project"] = getattr(args, "langsmith_project", None)
-    return AnalysisConfig(**values)
+    config = AnalysisConfig(**values)
+    if persist:
+        if detect_again:
+            store.set_meta("output_language", None)
+        if options != saved:
+            store.set_meta("options", options)
+    return config, options
 
 
 def _session(value: str | None) -> str | None:
@@ -591,9 +600,7 @@ def _status(args) -> int:
     scope = Scope.resolve(args.folder)
     store = Store(scope.state_dir, scope.id)
     _screen_language(None, store)
-    options = store.get_meta("options", {}) or {}
-    homes = {key: Path(options[key]) for key in ("codex_home", "claude_home", "opencode_home") if options.get(key)}
-    result = check(scope, store, budget_bytes=None, **homes)
+    result = check(scope, store, budget_bytes=None, **saved_homes(store))
     result["summary"] = freshness_summary(result)
     print(dumps(result, pretty=True) if args.json else "\n".join(status_lines(result, Path(args.folder))))
     return 0
@@ -821,12 +828,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "export":
             return _export(args, scope, store)
-        config = _options(args, store)
+        config, effective = _options(args, store, persist=args.command == "analyze")
         engine = Engine(scope, store, config)
         is_demo = store.get_meta("demo", False)
         def choose_runner() -> str:
             options = store.get_meta("options", {})
-            name = options.get("runner")
+            name = effective.get("runner")
             if not name:
                 if not sys.stdin.isatty():
                     raise FlowError(tr("분석 Runner를 지정하세요: --runner codex 또는 --runner claude",
@@ -835,18 +842,17 @@ def main(argv: list[str] | None = None) -> int:
                 name = {"1": "codex", "2": "claude"}.get(answer)
                 if not name:
                     raise FlowError(tr("Runner를 선택하지 않았습니다.", "No runner was chosen."))
-                options["runner"] = name
-                store.set_meta("options", options)
+                options["runner"] = effective["runner"] = name
+                store.set_meta("options", options)  # chosen at the prompt: the person's choice for the project
             return name
         def factory():
             if is_demo:
                 return FixtureRunner()
-            options = store.get_meta("options", {})
-            name = options.get("runner")
+            name = effective.get("runner")
             if not name:
                 raise FlowError(tr("Runner 선택이 필요합니다. contexttrail analyze . --runner codex 또는 claude를 사용하세요.",
                                    "A runner must be chosen: use contexttrail analyze . --runner codex or claude."))
-            return CLIRunner(name, model=options.get("model"), timeout=options.get("timeout", 600))
+            return CLIRunner(name, model=effective.get("model"), timeout=effective.get("timeout", 600))
         def consent(snapshot, plan):
             if is_demo:
                 return True
@@ -876,13 +882,13 @@ def main(argv: list[str] | None = None) -> int:
             if is_demo:
                 return True
             options = store.get_meta("options", {})
-            name = options.get("runner")
+            name = effective.get("runner")
             if not name:
                 choice = ask(tr("분석기 선택 [c Codex / a Claude / q 취소]", "Choose the analyzer [c Codex / a Claude / q cancels]"), "caq")
                 name = {"c": "codex", "a": "claude"}.get(choice)
                 if not name:
                     return False
-                options["runner"] = name
+                options["runner"] = effective["runner"] = name
                 store.set_meta("options", options)
             key = "consent:" + name
             if args.yes or store.get_meta(key, False):

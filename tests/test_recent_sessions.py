@@ -271,9 +271,9 @@ def test_since_reads_an_age_or_a_date():
 def test_the_command_line_options_reach_the_config(tmp_path):
     store = Store(tmp_path / "s", "x")
     args = argparse.Namespace(max_calls=None, max_units=None, session=None, recent=3, since="2026-10-01")
-    config = _options(args, store)
+    config = _options(args, store, persist=True)[0]
     assert (config.recent, config.since) == (3, "2026-10-01T00:00:00Z")
-    config = _options(argparse.Namespace(max_calls=None, max_units=None, session=None), store)
+    config = _options(argparse.Namespace(max_calls=None, max_units=None, session=None), store, persist=True)[0]
     assert (config.recent, config.since) == (None, None)  # per run, never saved
     assert "recent" not in (store.get_meta("options") or {})
 
