@@ -488,3 +488,11 @@
 - 소유자: v2에서 Sol이 가장 정확하다는 측정을 보고 "sol로 하면 가격이 비싸지 않나?", Luna를 기본으로 두고 Sol은 선택으로 남기자는 제안에 "그렇게 하자".
 - 공개 API 가격(2026-10-10 기록)으로 환산한 priceimpact 단위당 비용: v2 Sol $0.052, v2 Haiku $0.006, v2 Luna $0.002, v1 Luna $0.013, v1 Sol 약 $0.42. Sol은 토큰당 Luna의 약 20배다. 구독 한도에서 빠지는 양은 재지 않았다.
 - 기본값 코드는 바꾸지 않는다(2026-10-17부터 `gpt-luna`). README에 Sol의 품질과 가격 차이를 적었다. 대신 v2에서 Luna가 약한 곳(✓)을 고쳤다: v2 Luna(기본 추론)의 ✓ 17/43으로 v1 Luna(17)와 같고, 요청 답은 7~10개로 v1 Luna(6)보다 많다(`docs/plans/PIPELINE_V2.md` §8.5).
+
+## 2026-10-20: 파이프라인 v1 삭제, 분석은 이야기 호출 하나로
+
+- 소유자: "v1 삭제하고 v2로 옮겨버리는 것은 어떠니", 위험과 할 일을 정리한 뒤 "삭제하고, 결과 나도 좀 보고싶네".
+- 근거(`docs/plans/PIPELINE_V2.md` §8.3~8.5): 두 프로젝트에서 v2가 요청 답(priceimpact 14개 중 Haiku 12, Sol 13 대 v1 Haiku 9·8)과 수정의 ✓(43개 중 Haiku 29~31, Sol 36 대 v1 Haiku 30·25)에서 v1 이상이고, 단위당 입력은 약 10분의 1, 호출은 1번(v1은 첫 시도 실패가 잦았다). Luna(기본 추론)는 ✓가 v1 Luna와 같고(17), 답은 더 많다.
+- 지운 것: 추출·통합·의미 재검토·light 호출과 그 프롬프트(common/extract/integrate/light.md), 증거 요청 라운드, escalation, 단위 대화 공유, 요청 줄이기, economy·light·context-mode·integrate-*·review-output·unit-summary·pipeline 옵션, prefetch, `prelive_walkthrough.py`·`measure_unit_payloads.py`. 저장된 옛 설정은 다음 저장 때 지운다(`cli.RETIRED_OPTIONS`).
+- 옮긴 것: 감사(`--audit`)는 이야기 호출로(노트가 이미 기록한 항목에 `noted_by`, 노트와 같은 단계는 그 노트의 중복). 데모와 eval fixture는 도구 호출이 있는 이야기로(수정 → 실패한 테스트, 수정 → 통과한 테스트 ✓). 다시 분석한 단위가 사건을 두 번 넣지 않도록 코드가 같은 사건을 맞춘다(`match_existing_duplicates`). 이야기에서 살릴 것이 없거나 초안이 검사에 떨어지면 그 단위만 건너뛴다.
+- 남는 것: `--extract-model`/`--extract-effort`(이야기 호출의 모델·추론 수준). 그래프 저장 형식은 그대로라 이미 분석한 결과는 다시 보내지 않는다.

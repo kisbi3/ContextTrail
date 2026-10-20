@@ -21,83 +21,101 @@ The demo writes a small Codex log and a small Claude Code log for one folder, ru
 
 ## What goes in, what comes out
 
-The demo's input is six records in two logs, the kind of thing the CLIs write all day:
+The demo's input is twelve records in two logs, the kind of thing the CLIs write all day:
 
 | Source | Role | Record |
 | --- | --- | --- |
 | Codex session | user | Let's store it as a JSON file for now. |
 | Codex session | assistant | SQLite is also worth considering. |
-| Codex session | tool result | Patch applied: JSON storage code. |
-| Codex session | tool result | concurrent write test: FAILED — JSONDecodeError |
+| Codex session | tool call → result | patch `store.py` → Patch applied: JSON storage code. |
+| Codex session | tool call → result | `pytest tests/test_store.py -q` → concurrent write test: FAILED — JSONDecodeError (1 failed, 3 passed) |
 | Claude Code session | user | Concurrent writes break it, so let's switch to SQLite. |
+| Claude Code session | tool call → result | Edit `store.py` → The file has been updated. |
+| Claude Code session | tool call → result | `pytest tests/test_store.py -q` → SQLite concurrent write test: 4 passed |
 | Claude Code session | assistant | Switched to SQLite and the tests pass too. |
 
-Out of that, the pipeline (extract events with the record lines behind them → merge them into the existing graph → check every claim in code) publishes six events and seven relations. The terminal shows them as a flow:
+Out of that, code finds the work in the tool calls (two edits, two test runs, and that each run tested the file just edited), one model call per stretch of work writes the story over it (the alternative proposed, the report, which reply answered which request), and code checks every claim against the records before it publishes eight events and their relations. The terminal shows them as a flow:
 
 ```text
- ┌─ [01] decision ─────────────────┐
- │ JSON file storage adopted       │
- │ · adopted                       │
- └─────────────────────────────────┘
-    │ follows
-    ▼
- ┌─ [02] proposal ─────────────────┐
- │ SQLite proposed as an           │
- │ alternative                     │
- │ · proposed                      │
- └─────────────────────────────────┘
+══ flow 1/2 · 4 events · 1 sessions · 09-22 19:00–19:05 ═══════════════════════════════════════════════
 
- ┌─ [03] change ───────────────────┐      ◀ [01] follows
- │ JSON storage implemented        │
- │ ✗ applied                       │
- │   · check failed: Concurrent    │
- │     write test failed           │
- └─────────────────────────────────┘
-    │ verifies
-    ▼
- ┌─ [04] result ───────────────────┐
- │ Concurrent write test failed    │
- │ ✗ observed failure              │
- └─────────────────────────────────┘
-    │ motivates
-    ▼
- ┌─ [05] fix ──────────────────────┐      ◀ [01] revises   ◀ [02] follows
- │ Switch to SQLite decided        │
- │ · adopted                       │
- └─────────────────────────────────┘
-    │ follows
-    ▼
- ┌─ [06] result ───────────────────┐
- │ SQLite change reported done     │
- │ ! reported done·unverified      │
- └─────────────────────────────────┘
+                       stretch · Synthetic stretch: the storage chosen and changed
+                  ┌─ [01] request ──────────────────┐
+ ┌────────────────┤ Let's store it as a JSON file   │
+ │                │ for now.                        │
+ │                │ ✓ request · answered            │
+ │                └─────────────────────────────────┘
+ │                   │ answers
+ │                   ▼
+ │                ┌─ [02] proposal ─────────────────┐
+ │                │ SQLite proposed as an           │
+ │                │ alternative                     │
+ │                │ · proposed                      │
+ │                └─────────────────────────────────┘
+ │                   ┊
+ │                   ▽
+ │                ┌─ [03] change ───────────────────┐               ┌─ [04] result ───────────────────┐
+ └─ [01] follows ▶│ Edit store.py                   ├────verifies──▶│ Check failed: pytest            │
+                  │ ✗ applied                       │               │ tests/test_store.py -q          │
+                  │   · check failed: Check failed: │               │ ✗ observed failure              │
+                  │     pytest tests/test_store...  │               └─────────────────────────────────┘
+                  └─────────────────────────────────┘
+
+══ flow 2/2 · 4 events · 1 sessions · 09-22 19:06–19:11 ═══════════════════════════════════════════════
+
+                       stretch · Synthetic stretch: the storage chosen and changed
+                  ┌─ [05] request ──────────────────┐
+ ┌────────────────┤ Concurrent writes break it, so  │
+ │                │ let's switch to SQLite.         │
+ │                │ ✓ request · answered            │
+ │                └─────────────────────────────────┘
+ │                   │ follows
+ │                   ▼
+ │                ┌─ [06] change ───────────────────┐               ┌─ [07] result ───────────────────┐
+ │                │ Edit store.py                   ├────verifies──▶│ Check passed: pytest            │
+ │                │ ✓ applied                       │               │ tests/test_store.py -q          │
+ │                │   · verified: Check passed:     │               │ ✓ observed success              │
+ │                │     pytest tests/test_store...  │               └─────────────────────────────────┘
+ │                └─────────────────────────────────┘
+ │                   ┊
+ │                   ▽
+ │                ┌─ [08] result ───────────────────┐
+ └─ [05] answers ▶│ SQLite change reported done     │
+                  │ Switched to SQLite and the      │
+                  │ tests pass too.                 │
+                  │ ! reported done·unverified      │
+                  └─────────────────────────────────┘
 ```
 
 Three things in that picture are the point of the tool:
 
-- **A change never gets a success badge of its own.** Event 03 is `applied`, and it is marked ✗ only because a run that *verifies* it failed. Verification is an arrow to a result, never a word in a summary.
-- **Words are not results.** Event 06, "Switched to SQLite and the tests pass too", is `reported done·unverified` (!) because no test output in the records backs it. The flag goes away only when a run result is linked.
-- **Every arrow has a basis.** `motivates` from 04 to 05 is explicit: the person said "Concurrent writes break it". Links the model merely infers are drawn dotted and labelled, or left out.
+- **A change never gets a success badge of its own.** Event 03 is `applied`, and it is marked ✗ only because the run that *verifies* it failed; event 06 is ✓ because the run after it passed. Verification is an arrow to a result, never a word in a summary.
+- **Words are not results.** Event 08, "Switched to SQLite and the tests pass too", is `reported done·unverified` (!): it is what the assistant said, linked as the answer to request 05. The run result is event 07.
+- **Every arrow has a basis.** Code draws `verifies` when the test run names the edited file's tests, and keeps one the model claims only when the records agree (a run after the edit, with a known result, that the assistant reported after it); an `answers` is kept only when it cites the assistant's reply after the request. Dialog order (`follows`) is order, never a cause.
 
 Any event can be opened with its quotes, in the terminal or by an agent:
 
 ```text
-$ contexttrail show ev_53ee4e0e
+$ contexttrail show ev_d4806318
 ContextTrail event · current graph v2 · saved result · no AI calls
-ev_53ee4e0e  JSON storage implemented
-  status: applied · check failed: Concurrent write test failed
-  change · tool · 2026-09-22 19:02
-  reference: contexttrail:ev_53ee4e0e@v2
-
-What happened
-  Patch applied: JSON storage code.
+ev_d4806318  Edit store.py
+  status: applied · check failed: Check failed: pytest tests/test_store...
+  change · assistant · 2026-09-22 19:02
+  reference: contexttrail:ev_d4806318@v2
+  agent: codex
 
 Linked events
-  ← follows  ev_bedb4f79  JSON file storage adopted [adopted]
-  → verifies  ev_eb72c0aa  Concurrent write test failed [observed failure]
+  → verifies  ev_90643010  Check failed: pytest tests/test_store.py -q [observed failure]
+  ← follows (dialog order, not causation)  ev_94746de6  Let's store it as a JSON file for now. [request · answered]
 
---- source evidence 1 (Codex · tool result · 2026-09-22 19:02 · session demo-cod · line 1) ---
-> Patch applied: JSON storage code.
+--- source evidence 1 (Codex · tool call · 2026-09-22 19:02 · session demo-cod · lines 1–2) ---
+> Tool: exec
+> text(await tools.apply_patch("*** Begin Patch
+> *** Update File: store.py
+> @@
+> -pass
+> +json.dump(data, file)
+> *** End Patch"));
 --- end ---
 ```
 
@@ -250,7 +268,7 @@ contexttrail doctor --runner codex --smoke --yes
 contexttrail doctor --runner claude --smoke --yes
 ```
 
-This smoke test is a simple structured JSON round-trip. **It does not substitute for full integration validation of mixed-log analysis, all ReadRequests, or permission blocking.** Per-CLI flags and unvalidated items are in [Implementation Status](docs/reports/IMPLEMENTATION_STATUS.md); isolation constraints are in [Security](docs/SECURITY.md).
+This smoke test is a simple structured JSON round-trip. **It does not substitute for full integration validation of mixed-log analysis or permission blocking.** Per-CLI flags and unvalidated items are in [Implementation Status](docs/reports/IMPLEMENTATION_STATUS.md); isolation constraints are in [Security](docs/SECURITY.md).
 
 Current alpha authentication constraints:
 
@@ -276,19 +294,13 @@ The chosen runner, settings, and consent are stored in the per-scope local DB. A
 
 **Output language.** Event titles and summaries are written in one language per project, determined by the dominant language of user messages during the first analysis run. Script-distinct languages (Korean, Japanese, etc.) are identified directly; for Latin-script languages (English, Spanish, etc.) the system locale is used as a tiebreaker. Source text in other languages is still summarized in the chosen language. Code names, filenames, commands, and quotations remain verbatim. Use `--language Korean` to change; `--language auto` re-detects. Already-analyzed events are not re-translated unless re-analyzed.
 
-**Speed.** While integrating one work unit, extraction for the next unit begins in parallel (with one extraction worker). Token cost is identical; only wall-clock time is reduced. For read-only tool calls (file reads, listings, searches), only the first 400 and last 200 characters are sent; the model may request the rest via a ReadRequest.
+**One call per unit.** Code finds the work in the tool calls (edits, the checks after them and their results, commits, other runs); the model reads only what the person and the assistant wrote, cut into numbered blocks, plus an outline of that work, and writes the story over it: what was asked and where it was answered, goals, decisions and their stated reasons, findings, changes of course, and which later run tried each edit. It cites block IDs, so code puts the exact source lines in the graph, and code keeps a claimed check or answer only when the records agree. A unit takes one call, two when its answer needs a repair; extraction of several units can run side by side with `--workers`. On ten units of a real research project this read about a tenth of the input of the earlier extract-and-integrate pipeline, linked more requests to their answers and as many changes to their checks ([measurements](docs/plans/PIPELINE_V2.md) §8).
 
 `--session <session-id>` prioritizes that session and its sub-agents over older records. `--session current` refers to the Codex/Claude Code conversation that invoked this command. Events added this way are marked "out-of-order analysis" — relationships to earlier unanalyzed records may be missing. Use `contexttrail analyze /path/to/project` for subsequent runs.
 
 **Recent sessions first (large projects).** The default order stays oldest first, because relations point from earlier events to later ones. For a first analysis of a big project, `--recent N` (the N most recent sessions) and `--since WHEN` (sessions that ended after an age such as `7d`, `36h`, `2w`, or a date such as `2026-10-01`) analyze only those sessions and their sub-agents, oldest first within them, and mark what they add as out-of-order analysis while older records still wait. A session is as recent as the latest record of it and its sub-agents; sessions with notes are left out and not counted. The consent screen names the sessions it will send first; `contexttrail scan --recent 5` previews that with no model call. The other sessions are filled in by a later ordinary run (the project stays `partial` until then). `--units` and `--max-calls` work as usual; the options cannot be combined with `--session`, `--audit` or the automatic hook. Design: `docs/plans/RECENT_SESSIONS_FIRST.md`. Runner does not switch silently; completed segments are not re-analyzed just because settings changed.
 
-**Analysis model and reasoning level.** ContextTrail always specifies the model by name because the isolation environment does not carry the user's CLI config file (`~/.codex/config.toml`, etc.). Defaults: Codex `gpt-luna`, Claude `haiku` (the light models, since 2026-10-17; `gpt-sol` and `sonnet` are what they are compared against); override with `--model`. On Codex, `gpt-sol` reads the records more reliably than `gpt-luna` (more requests linked to their answers, more changes linked to the checks that tried them) at about twenty times the price per token. Codex accepts only versioned names, so a name without a version (`gpt-sol`, `gpt-luna`) is resolved before the first call to the newest listed model of that family in the catalog shipped with the installed Codex (`codex debug models --bundled`, run inside the sandbox; today `gpt-6-luna` and `gpt-6.1-sol`), and calls record the resolved name. Per-stage reasoning level defaults to `medium` for all stages (lowered from `high` for integrate/re-review on 2026-09-27). Adjust with `--extract-effort`, `--integrate-effort`, `--escalation-effort` (`low`·`medium`·`high`·`xhigh`·`max`). Every call logs the requested model and reasoning level in the local call ledger (`contexttrail ops --details`) and evaluation reports. Claude records the responding model; Codex does not report it in its response.
-
-**Change re-review.** With `--no-economy`, if integration results contain unlinked execution results, unlinked fixes, or modifications to existing events/relationships, the same runner reviews the proposed changes one more time. This adds one call to that work unit. Use `--no-review` to skip for the current run only.
-
-**Light mode.** `contexttrail analyze --light` (saved for the project; `--no-light` turns it off) is the cheapest: code builds the edits, test runs and commits from the tool records, and one model call per unit writes titles, summaries, decisions and their reasons, pointing at records by ID; code cuts the cited lines. Nothing is quoted by the model, so nothing is matched or repaired, and there is no integrate or review call. On the repair-fix fixture it took about 2 model minutes and a fifth of the cost of the full path (`--no-economy`), and scored 10 of 18 (the events, not the relations between them). An agent that needs the detail opens the linked records with `contexttrail show`.
-
-**Economy mode (the default).** Since 0.1.0a8 `contexttrail analyze` builds the graph from the extraction call alone: code merges the extracted events into the existing graph and checks them, with no integrate call and no change re-review, so a unit takes one call (two when its answer needs a repair). Links across units are then only those the extraction proposes from the related existing events it is shown. `--no-economy` (saved for the project; `--economy` turns it back on) restores the integrate call and the re-review, which catch more links between units. On the repair-fix fixture with Codex `gpt-6.1-sol` economy used about a third of the input tokens of the full path and scored 13·13·12 of 18 against its 13·14·13 ([record](docs/plans/PERFORMANCE_PLAN.md) §18).
+**Analysis model and reasoning level.** ContextTrail always specifies the model by name because the isolation environment does not carry the user's CLI config file (`~/.codex/config.toml`, etc.). Defaults: Codex `gpt-luna`, Claude `haiku` (the light models, since 2026-10-17; `gpt-sol` and `sonnet` are what they are compared against); override with `--model`. On Codex, `gpt-sol` reads the records more reliably than `gpt-luna` (more requests linked to their answers, more changes linked to the checks that tried them) at about twenty times the price per token. Codex accepts only versioned names, so a name without a version (`gpt-sol`, `gpt-luna`) is resolved before the first call to the newest listed model of that family in the catalog shipped with the installed Codex (`codex debug models --bundled`, run inside the sandbox; today `gpt-6-luna` and `gpt-6.1-sol`), and calls record the resolved name. The reasoning level defaults to `medium`; adjust it with `--extract-effort` (`low`·`medium`·`high`·`xhigh`·`max`), and pick the analysis model apart from the runner's with `--extract-model`. Every call logs the requested model and reasoning level in the local call ledger (`contexttrail ops --details`) and evaluation reports. Claude records the responding model; Codex does not report it in its response.
 
 For non-interactive use, consent can be given with explicit `--yes`. The following command goes beyond a simple example and allows real transmission — confirm scope first:
 
@@ -541,8 +553,6 @@ Redaction in those files: real project names, native session UUIDs, source snaps
 
 > The quality row is the honest one: extraction is good enough to be useful on a project you remember well, and there is no measurement showing it is stable across repeated runs. Treat a reconstructed flow as a draft to check, not a record.
 
-A zero-real-model walkthrough is available after installation: `python scripts/prelive_walkthrough.py --output /tmp/pf-prelive-walkthrough`
-
 ## 7. Explicit Limitations of This Alpha
 
 1. **Analysis quality is measured only on two small fixtures and this repository's own logs.** Both CLIs have run end to end (Codex on Linux and macOS, Claude on macOS), but a reconstruction of a large, unfamiliar project has not been checked by a person. The known failure modes are events split or merged differently between runs, and two-hop `verifies` links (a test run that covers the code it calls) that cheap models do not draw.
@@ -583,7 +593,9 @@ Structure:
 src/contexttrail/
   sources/           local log adapters
   runners/           Codex·Claude CLI / bubblewrap isolation
-  analysis.py        incremental planning, ReadRequest, extract/integrate
+  analysis.py        incremental planning, the story call, publishing
+  light.py           the work code finds in the tool calls, the story request and answer
+  blocks.py          what was written, cut into citable blocks
   schema.py          JSON contract, evidence validation, GraphDelta application
   git_context.py     scope/worktree, pinned Git evidence
   store.py           SQLite, lock, ledger, atomic publish

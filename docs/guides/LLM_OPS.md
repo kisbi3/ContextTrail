@@ -7,20 +7,20 @@ Project Flow는 재현성·증분 재사용·오류 진단을 위한 로컬 실�
 ```text
 Source snapshot
   → WorkUnit 계획
-  → Extract LLM
-      ↔ bounded ReadRequest (최대 2 round, round당 최대 3 request)
+  → 작업 기록 (코드: 수정·검사·커밋·실행, 확실한 검증 연결)
+  → 이야기 LLM (단위마다 한 번; 쓴 글 블록·요청·작업 개요·기존 사건만 읽음)
       ↘ validation error → bounded repair (최대 1회)
-  → Integrate LLM (후보가 있을 때만)
-  → schema/evidence/snapshot/base-version 검증
+  → 주장한 검증·답 거르기, 블록 → 정확한 원문 줄 (코드)
+  → schema/evidence/snapshot/base-version 검증, 초안 게시 (코드, 모델 호출 없음)
   → 사용자 발화 노드·대화 차례 연결 (코드, 모델 호출 없음)
   → SQLite transaction publish
 ```
 
 모델에게 보내는 입력에서는 긴 ID(`src_…`, `ev_…`, `edge_…` 등 24자리)를 `S12`, `E3`, `L2` 같은 짧은 ID로 바꾼다. 문자열 값 전체가 ID일 때만 바꾸므로 원문 안에 적힌 ID는 그대로다. 응답은 검증 전에 원래 ID로 되돌리고, 저장·검증·호출 기록은 모두 원래 ID를 쓴다. `input_chars`·`input_digest`는 실제로 보낸 입력 기준이다. 평가의 `call-review/`에는 대응표(`id_aliases`)도 남는다.
 
-추출 입력에는 원문 외에 코드가 만든 두 목록이 붙는다. `user_requests`는 이 단위의 사용자 발화, `tool_steps`는 도구 호출마다 edit·read·run 힌트와 대상 파일·명령, 결과 첫 줄이다. 파일을 바꾼 것이 확실한 호출(`edit`, 실패 결과 제외)은 모두 추출된 사건의 근거에 들어가야 하며, 빠지면 검증 오류로 수리 기회를 쓴다.
+이야기 입력에는 도구 출력이 없다. 사람과 어시스턴트가 쓴 글을 코드가 나눈 블록(`written`), 사람의 요청(`user_requests`, Q1…, 이어 가는 앞 요청은 `open_requests`), 코드가 찾은 작업 개요(`work`: K1… 수정·검사·커밋, R1… 다른 실행; 수정 뒤 실행은 명령과 마지막 줄, 항목마다 그 뒤 첫 글 블록 `next_written`), 기존 사건과 관계만 들어간다. 파일을 바꾼 것이 확실한 호출은 모두 작업 항목이 인용한다.
 
-같은 완료 input은 재호출하지 않는다. 이미 저장된 extraction은 integration 실패 뒤에도 재사용한다. append는 새 records와 실제 제공한 context/evidence dependency만 처리한다.
+같은 완료 input은 재호출하지 않는다. 저장된 추출은 게시가 실패한 뒤에도 같은 routing signature와 맥락이면 재사용한다. append는 새 records와 실제 제공한 context/evidence dependency만 처리한다.
 
 ## 각 LLM 호출에 저장하는 관측값
 
@@ -28,7 +28,7 @@ Source snapshot
 - runner, runner_version, adapter_version, model(=requested_model), reasoning_effort
 - actual_model: Claude가 응답에 보고한 모델. Codex는 모델을 보고하지 않아 비어 있다
 - prompt_hash, schema_hash, input_digest, input_chars
-- read_round, repair_round
+- repair_round
 - output_digest, output_chars, duration_ms
 - Runner가 실제 제공한 usage (없으면 추정하지 않음)
 - validation/runner failure의 제한된 error type/message
@@ -45,17 +45,17 @@ Runner는 모델을 항상 이름으로 지정한다. 격리 환경은 사용자
 
 ## 개발용 LangSmith 추적
 
-`python -m pip install -e '.[langsmith]'`로 SDK를 설치하고, 별도로 `LANGSMITH_API_KEY`를 환경변수에 설정한다. `--langsmith --langsmith-project NAME`은 새 extract/integrate/repair/추가근거 LLM 호출을 그 LangSmith 프로젝트에 보낸다. `LANGSMITH_PROJECT` 환경변수도 기본 프로젝트 이름으로 사용할 수 있다. 키는 Runner 샌드박스에 전달하지 않으며 로컬 호출 ledger에도 저장하지 않는다. trace는 실제 실행 그래프를 그대로 따른다. 루트 `ContextTrail analysis` 아래에 LangGraph 노드(`scan_sources`, `extract_model_and_validate`, `publish_result` 등)가 있고, 모델 노드 아래에 `build_*_request`, 모델 호출 `Project Flow extract/integrate`, `validate_*_contract`, `validate_*_claims`, `read_requested_evidence`, `prepare_repair_request`가 실행 순서대로 붙는다. `--langsmith`만 주면 각 단계에는 개수·상태·ID만 담긴다. 예를 들어 후보 사건 수와 상태별 개수, 인용 정규화 방식별 개수, 모델 호출의 입력·출력 digest·문자 수·토큰 수, `publish_result`의 `graph_summary`(사건·관계 종류별 개수, 검증된 변경·미검증 변경, 확인 대상이 연결되지 않은 실행 결과, 답변된 질문 수)를 볼 수 있다. 검증에 실패한 단계는 원문 값이 지워진 오류 줄과 함께 표시된다.
+`python -m pip install -e '.[langsmith]'`로 SDK를 설치하고, 별도로 `LANGSMITH_API_KEY`를 환경변수에 설정한다. `--langsmith --langsmith-project NAME`은 새 이야기·수리 LLM 호출을 그 LangSmith 프로젝트에 보낸다. `LANGSMITH_PROJECT` 환경변수도 기본 프로젝트 이름으로 사용할 수 있다. 키는 Runner 샌드박스에 전달하지 않으며 로컬 호출 ledger에도 저장하지 않는다. trace는 실제 실행 그래프를 그대로 따른다. 루트 `ContextTrail analysis` 아래에 LangGraph 노드(`scan_sources`, `extract_model_and_validate`, `publish_result` 등)가 있고, 모델 노드 아래에 `build_*_request`, 모델 호출 `Project Flow extract/integrate`, `validate_*_contract`, `validate_*_claims`, `read_requested_evidence`, `prepare_repair_request`가 실행 순서대로 붙는다. `--langsmith`만 주면 각 단계에는 개수·상태·ID만 담긴다. 예를 들어 후보 사건 수와 상태별 개수, 인용 정규화 방식별 개수, 모델 호출의 입력·출력 digest·문자 수·토큰 수, `publish_result`의 `graph_summary`(사건·관계 종류별 개수, 검증된 변경·미검증 변경, 확인 대상이 연결되지 않은 실행 결과, 답변된 질문 수)를 볼 수 있다. 검증에 실패한 단계는 원문 값이 지워진 오류 줄과 함께 표시된다.
 
 `--langsmith-content`를 함께 주면 각 호출의 구조화된 **전체 task와 schema, 모델의 구조화 응답**을 포함한다. task에는 선택된 대화·코드·도구 출력 및 추가로 읽은 근거가 포함될 수 있다. 사용자가 전송 범위를 확인해야 한다. 옵션은 실행할 때마다 지정하며 scope 설정에 저장하지 않는다. `project view`와 `project ops`는 LangSmith 호출이 없고, 이미 완료된 호출은 재생하거나 소급 전송하지 않는다. trace 전송이 실패하면 로컬 ledger의 `langsmith_trace=failed`와 오류 종류를 확인할 수 있으며 분석 결과의 유효성은 독립적으로 처리한다. `--max-calls`는 모델 호출 상한이다.
 
 ## Studio 개발 그래프
 
-`langgraph.json`의 `contexttrail_analysis`가 `project analyze`·`project eval`과 같은 실행 그래프를 제공한다. 기본 Studio 입력 `{}`은 합성 fixture와 Mock Runner를 사용하며 실제 계정을 호출하지 않는다. 각 단위는 `prepare_run → scan_sources → plan_work_units → select_unit → prepare_extract_input → extract_model_and_validate → validate_candidates → prepare_integrate_input → integrate_model_and_validate → route_semantic_review → [semantic_review_model_validate] → summarize_graph_changes → publish_result → advance_unit`을 반복한다. 구조 계약에 실패한 경우의 bounded extraction recovery는 extraction 노드 내부에서 수행된다. 요청 task·후보와 인용·GraphDelta 및 게시 전 변경을 각 노드 상태에서 확인할 수 있다. 추가 근거 읽기와 수리 시도는 모델 노드 아래 trace에 나타난다. Studio에서 `mode=eval` 또는 `mode=live`를 명시하면 서버에 고정된 입력으로 실제 Codex CLI를 호출한다. CLI는 같은 그래프에서 설정된 worker 수만큼 병렬 추출할 수 있다. `--langsmith --langsmith-content`를 지정한 CLI 실행은 그래프 노드 trace도 남긴다. 상세 동작과 Studio 입력 상한은 [Studio 설계](STUDIO_ARCHITECTURE.md)를 본다.
+`langgraph.json`의 `contexttrail_analysis`가 `project analyze`·`project eval`과 같은 실행 그래프를 제공한다. 기본 Studio 입력 `{}`은 합성 fixture와 Mock Runner를 사용하며 실제 계정을 호출하지 않는다. 각 단위는 `prepare_run → scan_sources → classify_steps → plan_work_units → select_unit → prepare_extract_input → extract_model_and_validate → validate_candidates → publish_draft → link_request_turns → summarize_graph_changes → publish_result → advance_unit`을 반복한다. `prepare_extract_input`은 모델이 받는 이야기 요청을 그대로 보여 주고, 수리 시도는 모델 노드 아래 trace에 나타난다. 후보와 인용, 게시할 초안과 게시 전 변경을 각 노드 상태에서 확인할 수 있다. Studio에서 `mode=eval` 또는 `mode=live`를 명시하면 서버에 고정된 입력으로 실제 Codex CLI를 호출한다. CLI는 같은 그래프에서 설정된 worker 수만큼 병렬 추출할 수 있다. `--langsmith --langsmith-content`를 지정한 CLI 실행은 그래프 노드 trace도 남긴다. 상세 동작과 Studio 입력 상한은 [Studio 설계](STUDIO_ARCHITECTURE.md)를 본다.
 
 ## 아직 live 검증이 필요한 것
 
-실제 Codex/Claude CLI가 보고하는 model/version/usage의 일관성, 실제 계정에서의 구조화 출력·추가 근거 왕복·repair/cancel, 그리고 같은 snapshot에 대한 prompt 변경 전후 의미 회귀 비교는 live Runner smoke/evaluation 단계에서 확인해야 한다. LangSmith 연결은 2026-09-26 실제 API 키로 합성 데모를 보내 확인했다. `--langsmith`만 준 실행은 26개 실행이 `ContextTrail analysis` 트리로 저장됐고 원문 7개 중 0개가 남았다. `--langsmith-content`는 7개 모두 포함했다.
+실제 Codex/Claude CLI가 보고하는 model/version/usage의 일관성, 실제 계정에서의 구조화 출력·repair/cancel, 그리고 같은 snapshot에 대한 prompt 변경 전후 의미 회귀 비교는 live Runner smoke/evaluation 단계에서 확인해야 한다. LangSmith 연결은 2026-09-26 실제 API 키로 합성 데모를 보내 확인했다. `--langsmith`만 준 실행은 26개 실행이 `ContextTrail analysis` 트리로 저장됐고 원문 7개 중 0개가 남았다. `--langsmith-content`는 7개 모두 포함했다.
 
 ## a3 추가
 

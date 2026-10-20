@@ -102,7 +102,7 @@ a3의 완료 기록은 예전 hash와 현재 본문, 신규 hash 대상 metadata
 실행:
 
 ```bash
-python scripts/prelive_walkthrough.py --output /tmp/pf-prelive-walkthrough
+python scripts/prelive_walkthrough.py --output /tmp/pf-prelive-walkthrough   (2026-10-20 파이프라인 v1과 함께 삭제)
 ```
 
 출력은 새/빈 디렉터리여야 한다. 정상 제품 Ops는 metadata 중심이지만 이 예제의 `calls/`는 **전부 합성 데이터이므로** task/schema/response를 저장한다. private 로그를 이 캡처 스크립트에 대입하는 용도로 설계하지 않았다.
