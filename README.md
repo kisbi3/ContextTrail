@@ -41,21 +41,21 @@ Out of that, code finds the work in the tool calls (two edits, two test runs, an
 
                        stretch · Synthetic stretch: the storage chosen and changed
                   ┌─ [01] request ──────────────────┐
- ┌────────────────┤ Let's store it as a JSON file   │
- │                │ for now.                        │
- │                │ ✓ request · answered            │
- │                └─────────────────────────────────┘
- │                   │ answers
- │                   ▼
- │                ┌─ [02] proposal ─────────────────┐
- │                │ SQLite proposed as an           │
- │                │ alternative                     │
- │                │ · proposed                      │
- │                └─────────────────────────────────┘
- │                   ┊
- │                   ▽
- │                ┌─ [03] change ───────────────────┐               ┌─ [04] result ───────────────────┐
- └─ [01] follows ▶│ Edit store.py                   ├────verifies──▶│ Check failed: pytest            │
+                  │ Let's store it as a JSON file   │
+                  │ for now.                        │
+                  │ ✓ request · answered            │
+                  └─────────────────────────────────┘
+                     │ answers
+                     ▼
+                  ┌─ [02] proposal ─────────────────┐
+                  │ SQLite proposed as an           │
+                  │ alternative                     │
+                  │ · proposed                      │
+                  └─────────────────────────────────┘
+                     ┊
+                     ▽
+                  ┌─ [03] change ───────────────────┐               ┌─ [04] result ───────────────────┐
+                  │ Edit store.py                   ├────verifies──▶│ Check failed: pytest            │
                   │ ✗ applied                       │               │ tests/test_store.py -q          │
                   │   · check failed: pytest        │               │ ✗ observed failure              │
                   │     tests/test_store.py -q      │               └─────────────────────────────────┘
@@ -69,8 +69,8 @@ Out of that, code finds the work in the tool calls (two edits, two test runs, an
  │                │ let's switch to SQLite.         │
  │                │ ✓ request · answered            │
  │                └─────────────────────────────────┘
- │                   │ follows
- │                   ▼
+ │                   ┊
+ │                   ▽
  │                ┌─ [06] change ───────────────────┐               ┌─ [07] result ───────────────────┐
  │                │ Edit store.py                   ├────verifies──▶│ Check passed: pytest            │
  │                │ ✓ applied                       │               │ tests/test_store.py -q          │
