@@ -17,7 +17,7 @@ from .schema import folded_view, story_view
 from .freshness import check_from_store, scanned_at
 from .freshness import summary as freshness_summary
 from .store import Store
-from .util import FlowError, dumps
+from .util import FlowError, dumps, mask_secrets
 
 
 # The page ships in Korean; the English screen gets the same markup with these texts swapped.
@@ -179,6 +179,8 @@ class LocalViewer:
                             item["original_state"] = ("missing" if not source or not source["available"] else
                                 "changed" if source["content_hash"] != item["content_hash"] else "available_at_last_scan")
                             item["excerpt"] = evidence_excerpt(item)
+                            item["quote"] = mask_secrets(item.get("quote") or "")  # display only; the store keeps it
+                            item["excerpt"] = mask_secrets(item["excerpt"]) if item["excerpt"] else item["excerpt"]
                         event = {**event, "status_label": status_labels(graph)[event["id"]],
                                  "reference": reference(graph, event["id"])}
                         return self.send_data(200, {"version": graph["version"], "event": event,

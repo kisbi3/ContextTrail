@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from .i18n import Labels, tr
-from .util import FlowError, cell_slice, dumps, ellipsis, merge_focus, safe_text
+from .util import FlowError, cell_slice, dumps, ellipsis, mask_secrets, merge_focus, safe_text
 
 # Screen labels follow the screen language at lookup time (`i18n.Labels`), so a module that
 # imports them keeps working whichever language the process chooses later.
@@ -194,7 +194,7 @@ def readable_quote(text: str) -> str:
     if "\n" not in text and text.count("\\n") >= 2:
         text = (text.replace("\\r\\n", "\n").replace("\\n", "\n")
                 .replace("\\t", "    ").replace('\\"', '"'))
-    return text
+    return mask_secrets(text)
 
 
 def _when(value: str | None) -> str:
@@ -311,7 +311,7 @@ def event_detail(graph: dict, event_id: str, evidence: Callable[[str], dict | No
         # The caller's own result for the same report, drawn as this box (`schema.folded_view`).
         lines.append((tr("호출한 쪽이 받은 보고: ", "report as its caller received it: ") + clean(report["title"]), "dim"))
     lines += [("", ""), (tr("무슨 일이 있었나", "What happened"), "heading")]
-    lines += [("  " + clean(part), "") for part in safe_text(event["summary"]).splitlines() if part.strip()]
+    lines += [("  " + clean(part), "") for part in safe_text(mask_secrets(event["summary"])).splitlines() if part.strip()]
     active = context["edges"].get(event_id, [])
     def other(edge: dict) -> dict | None:
         return events.get(edge["to_event_id"] if edge["from_event_id"] == event_id else edge["from_event_id"])
