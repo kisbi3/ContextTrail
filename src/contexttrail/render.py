@@ -26,6 +26,15 @@ KIND = Labels({"goal": "목표", "question": "요청", "proposal": "제안", "de
                "outcome": "결과", "revision": "수정"},
               {"goal": "goal", "question": "request", "proposal": "proposal", "decision": "decision",
                "action": "change", "outcome": "result", "revision": "fix"})
+
+
+def kind_label(event: dict) -> str:
+    """An event's kind as the views name it: a change that only handed work to another agent reads `위임`."""
+    if event.get("step") == "delegate":
+        return tr("위임", "delegation")
+    return KIND.get(event["kind"], event["kind"])
+
+
 ACTOR = Labels({"user": "사용자", "assistant": "어시스턴트", "tool": "도구", "system": "시스템",
                 "subagent": "하위 에이전트", "git": "Git"},
                {"user": "user", "assistant": "assistant", "tool": "tool", "system": "system",
@@ -67,7 +76,7 @@ def graph_summary(graph: dict) -> dict:
     active = [edge for edge in graph["edges"] if edge["active"]]
     answered = {edge["from_event_id"] for edge in active if edge["relation"] == "answers"}
     changes = [event for event in graph["events"] if event["kind"] in ("action", "revision")
-               and event["status"] in ("applied", "reported_complete")]
+               and event["status"] in ("applied", "reported_complete") and event.get("step") != "delegate"]
     questions = [event for event in graph["events"] if event["kind"] == "question"]
     revised = {edge["to_event_id"] for edge in active if edge["relation"] == "revises"}
     return {"events": len(graph["events"]), "relations": len(active),
@@ -97,13 +106,21 @@ CHECK_TITLE_HEADS = ("검사 실패: ", "검사 통과: ", "Check failed: ", "Ch
 
 
 def status_labels(graph: dict) -> dict[str, str]:
-    """Each event's status plus what its relations add: checks of a change, an answer to a question."""
+    """Each event's status plus what its relations add: checks of a change, an answer to a question, the work a
+    delegation started."""
     checks, unlinked = verification_links(graph)
     answered, followed = request_links(graph)
+    handed = Counter(event["delegated_by"] for event in graph["events"] if event.get("delegated_by"))
     labels = {}
     for event in graph["events"]:
         status = event["status"]
-        if event["kind"] == "question" and status == "asked":
+        if event.get("step") == "delegate":
+            # Handing work over is no change to check: it reads as what the other agent did with it.
+            count = handed.get(event["id"], 0)
+            labels[event["id"]] = tr("위임함 · ", "delegated · ") + (
+                tr(f"하위 작업 {count}건", f"{count} sub-agent events") if count
+                else tr("하위 작업 연결 없음", "no sub-agent work linked"))
+        elif event["kind"] == "question" and status == "asked":
             # No answer linked is not the same as no answer: work that followed the request in its turn says the
             # request was taken up, even when nothing is linked as its answer (`docs/plans/REQUEST_ANSWERS.md` §6).
             labels[event["id"]] = tr("요청 · ", "request · ") + (
@@ -140,7 +157,9 @@ def status_tones(graph: dict) -> dict[str, str]:
     tones = {}
     for event in graph["events"]:
         kind, status = event["kind"], event["status"]
-        if kind == "question" and status == "asked":
+        if event.get("step") == "delegate":
+            tone = "plain"
+        elif kind == "question" and status == "asked":
             tone = "ok" if event["id"] in answered else "plain" if event["id"] in followed else "warn"
         elif kind in ("action", "revision") and status in ("applied", "reported_complete"):
             results = {item["status"] for item in checks.get(event["id"], [])}
@@ -257,7 +276,7 @@ def event_detail(graph: dict, event_id: str, evidence: Callable[[str], dict | No
     lines: list[tuple[str, str]] = [
         (f"{numbers[event_id]} {clean(event['title'])}", "title"),
         (f"{marks[tones[event_id]]} {clean(labels[event_id])}", tones[event_id]),
-        (" · ".join(part for part in (KIND.get(event["kind"], event["kind"]),
+        (" · ".join(part for part in (kind_label(event),
                                       ACTOR.get(event.get("actor"), clean(event.get("actor") or "")),
                                       _when(event.get("occurred_at") or event.get("recorded_at"))) if part), "dim")]
     if agents_label(event):
@@ -298,7 +317,8 @@ def event_detail(graph: dict, event_id: str, evidence: Callable[[str], dict | No
                     "<-" if ascii_only else "←")
                 # A turn link is the dialog's order, not a claim the model made.
                 turn = (tr(" (대화 순서)", " (dialog order)") if edge.get("origin") == "dialog_turn" else
-                        tr(" (갈라진 세션)", " (forked session)") if edge.get("origin") == "fork" else "")
+                        tr(" (갈라진 세션)", " (forked session)") if edge.get("origin") == "fork" else
+                        tr(" (위임)", " (delegation)") if edge.get("origin") == "delegation" else "")
                 lines.append((f"  {key(item)}{arrow} {RELATION.get(edge['relation'], edge['relation'])}{turn}  "
                               f"{numbers[item['id']]} {clean(item['title'])}", "dim" if turn else ""))
     if event["evidence_ids"]:

@@ -10,7 +10,7 @@ import re
 from datetime import datetime
 from typing import Callable
 
-from .render import (ACTOR, KIND, PROVIDER, RELATION, ROLE, agents_label, analysis_label, evidence_excerpt,
+from .render import (ACTOR, PROVIDER, RELATION, ROLE, agents_label, analysis_label, evidence_excerpt, kind_label,
                      readable_quote, status_labels)
 from .i18n import tr
 from .util import FlowError, safe_text
@@ -118,6 +118,7 @@ def event_record(graph: dict, event_id: str, evidence: Callable[[str], dict | No
             links.append({"direction": "out" if outgoing else "in", "relation": edge["relation"],
                           "relation_label": RELATION.get(edge["relation"], edge["relation"]),
                           "dialog_turn": edge.get("origin") == "dialog_turn", "fork": edge.get("origin") == "fork",
+                          **({"delegation": True} if edge.get("origin") == "delegation" else {}),
                           "event": short_id(graph, other["id"]), "title": other["title"],
                           "status_label": labels[other["id"]]})
     quotes = []
@@ -139,8 +140,8 @@ def event_record(graph: dict, event_id: str, evidence: Callable[[str], dict | No
     open_items = [item.get("text", "") for item in graph.get("open_items", [])
                   if isinstance(item, dict) and event_id in item.get("related_event_ids", [])]
     return {"id": event_id, "short_id": short_id(graph, event_id), "reference": reference(graph, event_id),
-            "title": event["title"], "kind": event["kind"], "status": event["status"],
-            "status_label": labels[event_id], "actor": event.get("actor"),
+            "title": event["title"], "kind": event["kind"], **({"step": event["step"]} if event.get("step") else {}),
+            "status": event["status"], "status_label": labels[event_id], "actor": event.get("actor"),
             "occurred_at": event.get("occurred_at") or event.get("recorded_at"),
             "authoring": event.get("authoring", []), "analysis": event.get("analysis"),
             "summary": event["summary"], "out_of_order": event_id in graph.get("out_of_order_events", []),
@@ -185,7 +186,7 @@ def show_text(result: dict) -> list[str]:
                         f"Changed since the cited v{result['cited_version']}: ") + " · ".join(result["changes_since"]))
     lines += [f"{event['short_id']}  {_clean(event['title'])}",
               tr(f"  상태: {_clean(event['status_label'])}", f"  status: {_clean(event['status_label'])}"),
-              "  " + " · ".join(part for part in (KIND.get(event["kind"], event["kind"]),
+              "  " + " · ".join(part for part in (kind_label(event),
                                                   ACTOR.get(event["actor"], _clean(event["actor"])),
                                                   _when(event["occurred_at"])) if part),
               tr(f"  참조: {event['reference']}", f"  reference: {event['reference']}")]
@@ -202,7 +203,8 @@ def show_text(result: dict) -> list[str]:
         for link in event["links"]:
             arrow = "→" if link["direction"] == "out" else "←"
             turn = (tr(" (대화 순서, 인과 아님)", " (dialog order, not causation)") if link["dialog_turn"] else
-                    tr(" (갈라진 세션, 인과 아님)", " (forked session, not causation)") if link.get("fork") else "")
+                    tr(" (갈라진 세션, 인과 아님)", " (forked session, not causation)") if link.get("fork") else
+                    tr(" (위임, 인과 아님)", " (delegation, not causation)") if link.get("delegation") else "")
             lines.append(f"  {arrow} {link['relation_label']}{turn}  {link['event']}  "
                          f"{_clean(link['title'])} [{_clean(link['status_label'])}]")
     if event["open_items"]:
@@ -238,7 +240,7 @@ def event_row(graph: dict, event: dict, labels: dict[str, str]) -> dict:
     """One line of a listing: the event's reference, time, kind, status label and title."""
     return {"event": short_id(graph, event["id"]), "reference": reference(graph, event["id"]),
             "when": event.get("occurred_at") or event.get("recorded_at"), "kind": event["kind"],
-            "status_label": labels[event["id"]], "title": event["title"], "authoring": event.get("authoring", []),
+            **({"step": event["step"]} if event.get("step") else {}), "status_label": labels[event["id"]], "title": event["title"], "authoring": event.get("authoring", []),
             "out_of_order": event["id"] in graph.get("out_of_order_events", [])}
 
 
@@ -298,7 +300,7 @@ def find_text(result: dict) -> list[str]:
         mark = tr(" [순서 밖 분석]", " [out-of-order analysis]") if row["out_of_order"] else ""
         when = _when(row["when"]) or tr("시각 없음", "no time")
         lines.append(f"  {row['event']}  {when:16}  "
-                     f"{KIND.get(row['kind'], row['kind'])} · {_clean(row['status_label'])}  "
+                     f"{kind_label(row)} · {_clean(row['status_label'])}  "
                      f"{_clean(row['title'])}{mark}")
     if result["open_items"]:
         lines += ["", tr("아직 확인되지 않은 일", "Open items")] + ["  • " + _clean(text) for text in result["open_items"]]

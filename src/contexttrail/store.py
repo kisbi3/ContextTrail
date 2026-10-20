@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterator
 
 from .i18n import tr
 from .model import SourceRecord, empty_graph
-from .schema import fill_authoring, fill_steps, fold_delegate_reports, link_forks
+from .schema import fill_authoring, fill_steps, fold_delegate_reports, link_delegations, link_forks
 from .util import FlowError, dumps, merge_focus, now, private_dir
 
 # Conservative floor for SQLite's per-statement bound variable limit (999).
@@ -475,6 +475,7 @@ class Store:
                 fill_authoring(graph, source_of)
                 fill_steps(graph, source_of)
                 link_forks(graph, source_of)
+                link_delegations(graph, source_of)
                 fold_delegate_reports(graph, source_of)
                 db.execute("INSERT INTO graph_versions VALUES (?,?,?)", (graph["version"], pack_text(dumps(graph)), now()))
                 for unit_id in unit_ids:

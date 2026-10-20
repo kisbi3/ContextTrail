@@ -26,7 +26,7 @@ from typing import Any
 from wcwidth import wcswidth, wcwidth
 
 from .i18n import tr
-from .render import ASCII_MARK, KIND, MARK, RELATION, _when, delegate_label, status_labels, status_tones
+from .render import ASCII_MARK, MARK, RELATION, _when, delegate_label, kind_label, status_labels, status_tones
 from .util import cell_slice, safe_text
 
 OBSERVED = {"observed_success", "observed_failure"}
@@ -81,6 +81,8 @@ def _edge_label(edge: dict) -> str:
     request to the parent's conversation (`schema.link_forks`)."""
     if edge.get("origin") == "fork":
         return tr("갈라짐", "forked")
+    if edge.get("origin") == "delegation":
+        return tr("위임", "delegated")
     return RELATION.get(edge["relation"], edge["relation"])
 
 
@@ -284,7 +286,8 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
     # Where a right-hand box stands is decided by a relation first; with none, a check or an edit stands beside
     # the main step before it and a sub-agent's work beside the one after it, with a plain line that is layout,
     # never a relation. A failure or a claim that leads into a main step stands beside it as its cause.
-    relations = [edge for edge in edges if edge.get("origin") != "dialog_turn"]
+    relations = [edge for edge in edges if edge.get("origin") not in ("dialog_turn", "delegation")]
+    handed = {edge["to_event_id"]: edge for edge in edges if edge.get("origin") == "delegation"}
     placed: dict[str, tuple[str, str, dict | None]] = {}  # right-hand box → (main step, out|in|near|sub, edge)
     for group in groups:
         detail = {key for key in group if _sub_agent(by_id[key]) or _detail(by_id[key])}
@@ -311,7 +314,16 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
             sessions = set(by_id[key].get("session_ids") or [])
             own = [s for s in story if sessions & set(by_id[s].get("session_ids") or [])] or story
             if _sub_agent(by_id[key]):
-                placed[key] = (next((s for s in own if when(s) > when(key)), own[-1]), "sub", None)
+                # Beside the delegation that gave its agent the task (`schema.link_delegations`; a nested
+                # agent's, beside the step its caller's work stands beside), else beside the step after it.
+                delegation, seen = by_id[key].get("delegated_by"), {key}
+                while delegation in detail and delegation not in seen:
+                    seen.add(delegation)
+                    delegation = by_id[delegation].get("delegated_by")
+                if delegation in main:
+                    placed[key] = (delegation, "sub", handed.get(key))
+                else:
+                    placed[key] = (next((s for s in own if when(s) > when(key)), own[-1]), "sub", None)
                 continue
             options = []
             for edge in relations:
@@ -399,7 +411,8 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
             # A link to or from a right-hand box is written inside both boxes, unless it is the one that places
             # the box (drawn as its line); its turn link is the main step it stands beside.
             ends = [edge[end] for end in ("from_event_id", "to_event_id") if edge[end] in placed]
-            if ends and edge.get("origin") != "dialog_turn" and all(placed[end][2] is not edge for end in ends):
+            if ends and edge.get("origin") not in ("dialog_turn", "delegation") and all(
+                    placed[end][2] is not edge for end in ends):
                 note(edge)
         col_of = {key: n for n, (column, _) in enumerate(drawn) for key in column}
         for column, allow in drawn:
@@ -559,7 +572,7 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
         # the status keeps its mark and label inside. The header says whose work it is.
         delegate = delegate_label(by_id[key])
         border = border_of(key)
-        kind = KIND.get(by_id[key]["kind"], by_id[key]["kind"]) + (f" · {delegate}" if delegate else "")
+        kind = kind_label(by_id[key]) + (f" · {delegate}" if delegate else "")
         lines = contents(key, box_w, fold)
         header = f"{g['h']} {number[key]} {kind} "
         diagram.put(top, x, g["tl"] + g["h"] * (box_w - 2) + g["tr"], border, key, True)

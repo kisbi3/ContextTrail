@@ -297,6 +297,13 @@ READ_TOOLS = {"Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "web_search
 # Handing work to another agent and waiting for it: neither a run nor an outcome of its own.
 DELEGATE_TOOLS = {"spawn_agent", "wait_agent", "send_message", "followup_task", "list_agents", "close_agent",
                   "resume_agent", "Agent", "Task", "SendMessage", "TaskStop", "task"}
+# Of those, the calls that hand another agent a task (start one, or give a running one a new task): each is a work
+# item of its own (`light.delegation_items`), joined at publish to the work of the agent it started
+# (`schema.link_delegations`). The rest only wait, message, list or stop.
+DELEGATION_CALLS = {"spawn_agent", "followup_task", "Agent", "Task", "task"}
+# Codex names its sub-agents by path from the root session's (`/root/plots`), as `agent_path` in their lineage.
+CODEX_ROOT_PATH = "/root"
+_TASK_PATH = re.compile(r'"task_name"\s*:\s*"([^"]+)"')
 # Codex's exec tool runs JavaScript that calls these; they only read or look things up.
 READ_INNER_TOOLS = {"web__run", "view_image", "clock__curr_time"}
 READ_COMMANDS = re.compile(r"^\s*(cat|sed -n|grep|rg|ls|head|tail|find|wc|pwd|git (status|diff|log|show))\b")
@@ -496,10 +503,38 @@ def tool_steps(assigned: list[SourceRecord]) -> list[dict]:
     return steps
 
 
+def _arguments(call: SourceRecord) -> dict:
+    """A tool call's arguments when its body is one JSON object, else {}."""
+    try:
+        found = json.loads(call.content.partition("\n")[2])
+    except ValueError:
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+def delegated_path(call: SourceRecord, result: SourceRecord | None) -> str | None:
+    """The path of the Codex sub-agent a delegation call gave its task to (`/root/plots`, what the sub-agent's
+    lineage carries as `agent_path`): the path the spawn's result names, else the task name or target under the
+    caller's own path. None for the other tools, whose sub-agents name the call itself (`parent_tool_call_id`)."""
+    name = call.content.partition("\n")[0].removeprefix("Tool: ").strip()
+    if call.provider != "codex" or name not in ("spawn_agent", "followup_task"):
+        return None
+    if name == "spawn_agent" and result is not None and (found := _TASK_PATH.search(result.content)):
+        return found.group(1)
+    target = _arguments(call).get("task_name" if name == "spawn_agent" else "target")
+    if not isinstance(target, str) or not target.strip():
+        return None
+    if target.startswith("/"):
+        return target.strip()
+    own = (call.lineage or {}).get("agent_path") or CODEX_ROOT_PATH
+    return f"{own.rstrip('/')}/{target.strip()}"
+
+
 def mark_steps(records: list[SourceRecord]) -> None:
     """Set `SourceRecord.step` on every tool call and its result: what `tool_steps` makes of the call. Run at
     scan, per session, so the flow can tell a check or a documentation edit from the records an event cites
-    (`schema.fill_steps`) instead of from its title."""
+    (`schema.fill_steps`) instead of from its title. A Codex delegation also names the path of the agent it gave
+    the task to (`agent`), which `schema.link_delegations` matches to that agent's lineage."""
     sessions: dict[str | None, list[SourceRecord]] = {}
     for record in records:
         if record.role in ("tool_call", "tool_result"):
@@ -508,6 +543,10 @@ def mark_steps(records: list[SourceRecord]) -> None:
     for session in sessions.values():
         for step in tool_steps(session):
             mark = {"hint": step["hint"], **({"doc": True} if step.get("doc") else {})}
+            if step["hint"] == "delegate" and step["tool"] in DELEGATION_CALLS:
+                path = delegated_path(by_id[step["call"]], by_id.get(step["result"]))
+                if path:
+                    mark["agent"] = path
             for key in (step["call"], step["result"]):
                 if key in by_id:
                     by_id[key].step = mark
@@ -1943,12 +1982,15 @@ class Engine:
     def story_input(self, prepared: PreparedExtraction, unit: dict, pool: dict[str, SourceRecord],
                     snapshot_id: str) -> tuple[dict, dict]:
         """The story request (the data the runner receives) and the parts code reads the answer with: the work it
-        found (`light.skeleton`, `light.run_items`) and what was written, cut into blocks. In an audit, the items and
-        blocks a note already cites say so (`noted_by`)."""
+        found (`light.skeleton`, `light.delegation_items`, `light.run_items`) and what was written, cut into blocks.
+        In an audit, the items and blocks a note already cites say so (`noted_by`)."""
         from . import light
         h, data = prepared.harness, prepared.data
         assigned = [pool[i] for i in unit["sources"]]
         items, edges = light.skeleton(assigned, split_at_runs=True)
+        # The tasks handed to other agents stand among the work in the order they were written.
+        position = {r.source_id: n for n, r in enumerate(assigned)}
+        items = sorted(items + light.delegation_items(assigned), key=lambda item: position[item["sources"][0]])
         blocks = light.written_blocks(assigned)
         runs = light.run_items(assigned)
         noted: dict[str, list[str]] = {}

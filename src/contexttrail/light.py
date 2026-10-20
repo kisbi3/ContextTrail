@@ -387,6 +387,39 @@ def run_items(assigned: list[SourceRecord]) -> list[dict]:
     return found
 
 
+TASK_CHARS = 160
+
+
+def delegation_task(call: SourceRecord) -> tuple[str, str]:
+    """Whom a delegation call handed a task and the task in one line (at most `TASK_CHARS`): Codex `spawn_agent`
+    (`task_name`, `message`) and `followup_task` (`target`, `message`), Claude Code `Agent`/`Task` and opencode `task`
+    (`subagent_type`, `description` else `prompt`)."""
+    from .analysis import _arguments, _one_line
+    arguments = _arguments(call)
+    agent = next((arguments[key] for key in ("task_name", "target", "subagent_type")
+                  if isinstance(arguments.get(key), str) and arguments[key].strip()), "")
+    task = next((arguments[key] for key in ("description", "message", "prompt")
+                 if isinstance(arguments.get(key), str) and arguments[key].strip()), "")
+    return agent.strip() or "sub-agent", _one_line(task, TASK_CHARS) if task else ""
+
+
+def delegation_items(assigned: list[SourceRecord]) -> list[dict]:
+    """The tasks these records hand to other agents (`DELEGATION_CALLS`: a sub-agent started, or given a new task),
+    as work items `D1`, `D2`, … The story names them and may point a decision at them; at publish code hangs the
+    work of the agent each one started under it (`schema.link_delegations`). A refused call is no delegation."""
+    from .analysis import DELEGATION_CALLS, tool_steps
+    by_id = {r.source_id: r for r in assigned}
+    found = []
+    for step in tool_steps(assigned):
+        if step["hint"] != "delegate" or step["tool"] not in DELEGATION_CALLS or step["failed"]:
+            continue
+        agent, task = delegation_task(by_id[step["call"]])
+        found.append({"id": f"D{len(found) + 1}", "kind": "action", "status": "applied", "delegate": True,
+                      "agent": agent, "task": task, "title": f"Delegate to {agent}" + (f": {task[:60]}" if task else ""),
+                      "sources": [step["call"]] + ([step["result"]] if step["result"] else [])})
+    return found
+
+
 def code_title(item: dict, language: str | None) -> str:
     """A work item's title as code writes it into the graph, in the output language when it is Korean (the model's
     own name for the item replaces it when given)."""
@@ -400,6 +433,8 @@ def code_title(item: dict, language: str | None) -> str:
         return ("검사 실패: " if item["status"] == "observed_failure" else "검사 통과: ") + item["check"][:60]
     if item["title"].startswith("Commit: "):
         return "커밋: " + item["title"].removeprefix("Commit: ")
+    if item.get("delegate"):
+        return f"위임: {item['agent']}" + (f" — {item['task'][:60]}" if item.get("task") else "")
     if item.get("run"):
         return "실행: " + item.get("target", "")[:80]
     return item["title"]
@@ -530,6 +565,9 @@ def story_request(unit: dict, snapshot_id: str, data: dict, items: list[dict], a
     work = []
     for item in items:
         entry = {"id": item["id"], "kind": item["kind"], "status": item["status"], "title": item["title"]}
+        if item.get("delegate"):
+            entry.update(kind="delegation", delegated_to=item["agent"], task=item["task"])
+            del entry["status"]
         lineage = next(((by_id[s].lineage or {}) for s in item["sources"] if s in by_id), {})
         if lineage.get("kind") == "subagent":
             entry["agent"] = lineage.get("agent_type") or lineage.get("agent_nickname") or "sub-agent"

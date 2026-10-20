@@ -1471,6 +1471,83 @@ def link_forks(graph: dict, source_of: Callable[[str], dict | None]) -> int:
     return added
 
 
+DELEGATION_ORIGIN = "delegation"
+DELEGATED = "delegated_by"
+DELEGATION_RATIONALE = ("work of the agent this delegation handed its task to (dialog structure, not a causal "
+                        "claim)")
+
+
+def link_delegations(graph: dict, source_of: Callable[[str], dict | None]) -> int:
+    """A sub-agent's work belongs to the delegation that gave it its task, not to whatever the parent's person
+    said last before it ran. Every event of a sub-agent gets `delegated_by`: the delegation event (`step`
+    `delegate`) whose call started that agent, or gave it the task it was on then (the latest such call before the
+    event, for a Codex agent given follow-up tasks). The pair is found by name, never by time: a Claude Code or
+    opencode sub-agent's lineage names the call (`parent_tool_call_id`), a Codex one its path, which the call's
+    record names (`step.agent`, `analysis.delegated_path`). An event of it that nothing but turn links reaches
+    hangs under the delegation as a structural `follows` of origin `delegation`, and those turn links
+    (`analysis.link_request_turns`) are set inactive. Run at every publish over the whole graph, since the
+    parent's and the sub-agent's units are published in either order; returns how many links were added."""
+    sources = {event["id"]: [s for s in (source_of(i) for i in event.get("evidence_ids", [])) if s]
+               for event in graph["events"]}
+    delegations: dict[tuple, list[tuple[str, dict]]] = {}
+    for event in graph["events"]:
+        if event.get("step") != "delegate":
+            continue
+        for source in sources[event["id"]]:
+            if source.get("role") != "tool_call":
+                continue
+            agent, session = (source.get("step") or {}).get("agent"), source.get("session_id")
+            key = (session, "path", agent) if agent else (session, "call", source.get("tool_call_id"))
+            if key[2]:
+                delegations.setdefault(key, []).append((source.get("recorded_at") or event.get("recorded_at") or "", event))
+
+    def agent_of(event: dict) -> tuple | None:
+        for source in sources[event["id"]]:
+            lineage = source.get("lineage") or {}
+            if lineage.get("kind") != "subagent" or not lineage.get("parent_session_id"):
+                continue
+            if lineage.get("parent_tool_call_id"):
+                return lineage["parent_session_id"], "call", lineage["parent_tool_call_id"]
+            if lineage.get("agent_path"):
+                return lineage["parent_session_id"], "path", lineage["agent_path"]
+        return None
+
+    incoming: dict[str, list[dict]] = {}
+    for edge in graph["edges"]:
+        if edge["active"]:
+            incoming.setdefault(edge["to_event_id"], []).append(edge)
+    known = {edge["id"] for edge in graph["edges"]}
+    added = 0
+    for event in graph["events"]:
+        event.pop(DELEGATED, None)
+        key = agent_of(event)
+        if key is None or key not in delegations:
+            continue
+        calls = sorted(delegations[key], key=lambda pair: pair[0])
+        at = event.get("recorded_at") or ""
+        delegation = ([e for when, e in calls if when <= at] or [calls[0][1]])[-1]
+        if delegation["id"] == event["id"]:
+            continue
+        event[DELEGATED] = delegation["id"]
+        hangs = incoming.get(event["id"], [])
+        if any(edge.get("origin") != "dialog_turn" for edge in hangs):
+            continue  # reached by a relation of its own (or already by the delegation)
+        edge_id = ident("edge_", DELEGATION_ORIGIN, delegation["id"], event["id"])
+        if edge_id in known:
+            continue  # set inactive since: left as it is
+        graph["edges"].append({"id": edge_id, "from_event_id": delegation["id"], "to_event_id": event["id"],
+                               "relation": "follows", "basis": "structural",
+                               "evidence_ids": list(delegation["evidence_ids"][:1]),
+                               "rationale": DELEGATION_RATIONALE, "active": True, "origin": DELEGATION_ORIGIN})
+        known.add(edge_id)
+        added += 1
+        for edge in hangs:
+            edge["active"] = False
+            edge["invalidation"] = {"reason": "the work hangs under the delegation that gave its agent the task",
+                                    "evidence_ids": [], "replaced_by": edge_id}
+    return added
+
+
 FOLDED = "folded_into"
 
 
@@ -1547,13 +1624,16 @@ def folded_view(graph: dict) -> dict:
 
 def step_of(event: dict, sources: list[dict]) -> str | None:
     """What kind of step an event is, from the tool records it cites (`SourceRecord.step`), for the flow's lanes:
-    `check` for a result resting only on test runs, `doc` for a change resting only on documentation edits.
+    `check` for a result resting only on test runs, `doc` for a change resting only on documentation edits,
+    `delegate` for a change resting only on calls that handed work to another agent (`light.delegation_items`).
     None when the records do not say (a claim in words, a code change, a record read before `step` existed)."""
     steps = [source.get("step") or {} for source in sources if source.get("role") in ("tool_call", "tool_result")]
     if not steps or any(not step for step in steps):
         return None
     if event["kind"] == "outcome" and all(step.get("hint") == "test" for step in steps):
         return "check"
+    if event["kind"] == "action" and all(step.get("hint") == "delegate" for step in steps):
+        return "delegate"
     edits = [step for step in steps if step.get("hint") == "edit"]
     if event["kind"] in CHANGE_KINDS and edits and all(step.get("doc") for step in edits):
         return "doc"
