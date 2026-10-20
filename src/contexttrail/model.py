@@ -95,7 +95,15 @@ HARNESS_TEXT = ("<task-notification>", "<command-name>", "<command-message>", "<
                 "Base directory for this skill:",
                 # Claude Code (2.1.x): a sub-agent's or another session's report handed back to the session, and the
                 # notices about the account's usage limit.
-                "Another Claude session sent a message:", "[Usage limit reached;", "[Earlier usage-limit notes")
+                "Another Claude session sent a message:", "[Usage limit reached;", "[Earlier usage-limit notes",
+                # The Codex app's list of plugins it offers, put in the user role at a session's start.
+                "<recommended_plugins>")
+
+# A message that is only one of the host's own control commands (Codex and opencode write a typed `/compact` as the
+# person's message): it steers the tool, asks nothing of the agent, and starts no turn. A custom command (a skill
+# or a prompt the person wrote) is the person's request and stays one.
+HOST_COMMAND = re.compile(r"\A/(?:compact|clear|new|model|effort|status|cost|usage|fast|config|permissions|mcp|help|"
+                          r"resume|exit|quit)(?:\s+\S+)?\s*\Z")
 
 # The note Claude Code puts before an image the person attached ("[Image: original 2520x540, displayed at …]");
 # the person's own words, if any, follow it.
@@ -141,7 +149,7 @@ def is_user_prompt(record: SourceRecord) -> bool:
     A message a program sent through the tool's queue is not theirs either (`is_queued_message`)."""
     text = _person_text(record)
     return (bool(text) and not text.startswith(HARNESS_TEXT) and not APP_EVENT.match(text)
-            and not QUESTION_REPLY.match(text) and not is_queued_message(record))
+            and not QUESTION_REPLY.match(text) and not HOST_COMMAND.match(text) and not is_queued_message(record))
 
 
 def is_queued_message(record: SourceRecord) -> bool:

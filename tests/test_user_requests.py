@@ -182,3 +182,12 @@ def test_a_queued_message_ends_the_turn_before_it_and_its_own_work_hangs_on_no_r
     assert [e["title"] for e in result["events"] if e["actor"] == "user"] == ["다운로드를 켜고 매시간 보고해 줘"]
     turns = {edge["to_event_id"] for edge in result["edges"] if edge.get("origin") == "dialog_turn"}
     assert turns == {"started"}  # the report's turn was the queue's, not the person's
+
+
+def test_a_hosts_control_command_and_the_codex_plugin_list_are_no_requests(laboratory):
+    from contexttrail.model import is_user_prompt
+    _, _, _, _, make = laboratory
+    for text in ("/compact", "/model gpt-sol", "<recommended_plugins> Here is a list of plugins that are available"):
+        assert not is_user_prompt(make(text, key="x"))
+    for text in ("/init", "/contexttrail-update 3", "/review the parser please", "compact the store"):
+        assert is_user_prompt(make(text, key="y"))  # a custom command or a prompt is the person's request
