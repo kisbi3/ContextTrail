@@ -101,6 +101,10 @@ def request_links(graph: dict) -> tuple[set[str], set[str]]:
     return answered, followed - answered
 
 
+# A change and the statuses it is drawn with: applied or reported, and the observed statuses older graphs gave a
+# change itself, which read as applied.
+CHANGE_KINDS = ("action", "revision")
+CHANGE_STATUSES = ("applied", "reported_complete", "observed_success", "observed_failure")
 # The heads code puts on a check's title (`light.code_title`, `light.skeleton`).
 CHECK_TITLE_HEADS = ("검사 실패: ", "검사 통과: ", "Check failed: ", "Check passed: ")
 
@@ -127,11 +131,13 @@ def status_labels(graph: dict) -> dict[str, str]:
                 tr("답변됨", "answered") if event["id"] in answered
                 else tr("답변 연결 없음", "no answer linked") if event["id"] in followed
                 else tr("답변 없음", "no answer"))
-        elif event["kind"] in ("action", "revision") and status in ("applied", "reported_complete"):
+        elif event["kind"] in CHANGE_KINDS and status in CHANGE_STATUSES:
+            # A change is verified only through a check of it; an observed status on the change itself (graphs
+            # written before that rule) reads as applied, never as a success badge.
             results = checks.get(event["id"], [])
             passed = sum(item["status"] == "observed_success" for item in results)
             failed = sum(item["status"] == "observed_failure" for item in results)
-            base = tr("변경 적용", "applied") if status == "applied" else tr("완료 보고", "reported done")
+            base = tr("완료 보고", "reported done") if status == "reported_complete" else tr("변경 적용", "applied")
             if len(results) == 1:
                 # A lone check is named, so a syntax check does not read like a full run.
                 verdict = tr("검증", "verified") if passed else tr("검증 실패", "check failed")
@@ -161,7 +167,7 @@ def status_tones(graph: dict) -> dict[str, str]:
             tone = "plain"
         elif kind == "question" and status == "asked":
             tone = "ok" if event["id"] in answered else "plain" if event["id"] in followed else "warn"
-        elif kind in ("action", "revision") and status in ("applied", "reported_complete"):
+        elif kind in CHANGE_KINDS and status in CHANGE_STATUSES:
             results = {item["status"] for item in checks.get(event["id"], [])}
             tone = "fail" if "observed_failure" in results else "ok" if results else "warn"
         elif status == "observed_failure":

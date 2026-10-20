@@ -216,6 +216,25 @@ def copy_text(text: str) -> str | None:
     return "osc52" if sent else None
 
 
+def utf8_locale() -> None:
+    """Set the user's locale for curses, but one that can draw Korean and box lines: under `LANG=C` the codeset is
+    ASCII and curses blanks every wide character, so a UTF-8 locale is taken instead when one exists."""
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
+    if "UTF-8" in locale.nl_langinfo(locale.CODESET).upper().replace("UTF8", "UTF-8"):
+        return
+    for name in ("C.UTF-8", "en_US.UTF-8", "ko_KR.UTF-8"):
+        try:
+            locale.setlocale(locale.LC_ALL, name)
+            return
+        except locale.Error:
+            continue
+    raise FlowError(tr("UTF-8 로캘이 없어 화면을 그릴 수 없습니다. LANG을 UTF-8 로캘로 두거나 --no-tui를 쓰세요.",
+                       "No UTF-8 locale is available to draw the screen. Set LANG to a UTF-8 locale or use --no-tui."))
+
+
 def latin(key):
     return JAMO.get(key, key) if isinstance(key, str) else key
 
@@ -914,8 +933,8 @@ class GraphApp:
             self.panels.handle(key)
 
     def run(self) -> None:
+        utf8_locale()
         try:
-            locale.setlocale(locale.LC_ALL, "")
             curses.wrapper(self._run)
         except curses.error as exc:
             raise FlowError(tr("그래프 화면을 열 수 없습니다. TERM과 터미널 크기를 확인하세요.",
@@ -1161,18 +1180,17 @@ class TerminalApp:
                         self.notice = tr("분석 취소·자식 프로세스 정리 중", "Cancelling the analysis · cleaning up child processes")
                 else:
                     break
-            elif key in ("r", "R"):
+            elif key == "R":  # uppercase only (ㄲ in Korean input): a stray r or ㄱ must not send records anywhere
                 self.start_analysis(screen)
+            elif key == "r":
+                self.panels.message = tr("분석은 대문자 R(Shift+r)로 시작합니다.", "Analysis starts with capital R (Shift+r).")
             elif key in ("b", "B"):
                 self.show_browser(screen)
             else:
                 self.panels.handle(key)
 
     def run(self):
-        try:
-            locale.setlocale(locale.LC_ALL, "")
-        except locale.Error:
-            locale.setlocale(locale.LC_ALL, "C.UTF-8")
+        utf8_locale()
         try:
             curses.wrapper(self._run)
         except curses.error as exc:

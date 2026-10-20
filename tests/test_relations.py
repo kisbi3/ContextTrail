@@ -275,3 +275,11 @@ def test_an_observed_result_without_a_tool_result_and_a_tool_basis_without_a_too
         ("reported_complete", said["basis"]), ("observed_success", "tool_record"), ("reported_complete", "explicit_statement")]
     assert sorted(n["mode"] for n in checker.normalizations) == ["observed_without_result_as_reported",
                                                                   "tool_basis_without_tool_record"]
+
+
+def test_a_change_stored_with_an_observed_status_reads_as_applied_never_as_a_success():
+    """Graphs written before the rule gave some changes `observed_success`; the screens show them as unverified."""
+    from contexttrail.render import status_tones
+    graph = {"events": [{"id": "c", "kind": "action", "status": "observed_success", "title": "repo search"}],
+             "edges": []}
+    assert status_labels(graph)["c"] == "변경 적용 · 미검증" and status_tones(graph)["c"] == "warn"
