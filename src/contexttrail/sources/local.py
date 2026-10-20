@@ -161,7 +161,8 @@ def decompress_zstd(data: bytes, limit: int = 0) -> bytes:
             except ImportError:
                 zstandard = None
             if zstandard is not None:
-                with zstandard.ZstdDecompressor().stream_reader(io.BytesIO(data)) as stream:
+                # Every frame, as `compression.zstd` and the `zstd` command read them (the default stops at the first).
+                with zstandard.ZstdDecompressor().stream_reader(io.BytesIO(data), read_across_frames=True) as stream:
                     out = stream.read(bound)
             else:
                 command = shutil.which("zstd")
@@ -226,8 +227,11 @@ def _jsonl(path: Path) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
             rows.append((line_no, value, digest(raw)))
         except (UnicodeError, ValueError):
             warnings.append(f"corrupt JSONL record: {path.name}:{line_no}")
+    # `complete_bytes` is the length of the file that was read, which the freshness index compares with the file's
+    # size: a compressed file is read whole, so it is the size on disk, not the decompressed length.
+    compressed = path.name.endswith(COMPRESSED_SUFFIX)
     return rows, warnings, {"path": str(path), "bytes": before.st_size,
-                            "complete_bytes": boundary, "digest": digest(data[:boundary])}
+                            "complete_bytes": before.st_size if compressed else boundary, "digest": digest(data[:boundary])}
 
 
 def _binary_marker(block: dict[str, Any]) -> str | None:

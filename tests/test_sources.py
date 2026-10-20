@@ -610,3 +610,11 @@ def test_a_log_rewritten_while_it_is_read_is_not_read(tmp_path, monkeypatch):
     monkeypatch.setattr(local.os, "fdopen", lambda fd, mode: Rewritten(real(fd, mode)))
     rows, warnings, _ = local._jsonl(path)
     assert rows == [] and "rewritten or truncated while being read" in warnings[0]
+
+
+def test_a_compressed_transcript_of_several_frames_is_read_whole():
+    import zstandard
+    from contexttrail.sources.local import MAX_FILE_BYTES, decompress_zstd
+    first, second = b'{"a": 1}\n' * 1000, b'{"b": 2}\n' * 1000
+    packed = zstandard.ZstdCompressor().compress(first) + zstandard.ZstdCompressor().compress(second)
+    assert decompress_zstd(packed, MAX_FILE_BYTES) == first + second

@@ -162,6 +162,21 @@ def test_the_index_records_the_length_the_parser_read(tmp_path):
     assert index["files"][str(path)]["bytes"] < path.stat().st_size
 
 
+def test_a_compressed_transcript_is_unchanged_after_its_scan(tmp_path):
+    import zstandard
+    folder, scope, store, engine, homes = laboratory(tmp_path)
+    path = homes["codex_home"] / "sessions" / "rollout-2026-10-06T01-00-00-s1.jsonl.zst"
+    path.parent.mkdir(parents=True)
+    rows = [{"type": "session_meta", "payload": {"id": "s1", "cwd": str(folder)}},
+            {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                                  "content": [{"type": "input_text", "text": "Use SQLite."}]}}]
+    path.write_bytes(zstandard.ZstdCompressor().compress(("\n".join(dumps(r) for r in rows) + "\n").encode()))
+    engine.preview_plan(engine.scan())
+    # The index keeps the size on disk the scan read, not the decompressed length, so nothing reads as changed.
+    result = check(scope, store, **homes)
+    assert result["since_scan"]["files_changed"] == 0 and result["since_scan"]["records"] == 0
+
+
 def test_ago_is_coarse_and_never_negative():
     reference = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
     assert ago("2026-10-06T11:59:30Z", reference) == "방금"
