@@ -455,6 +455,46 @@ def step_hint(record: SourceRecord) -> tuple[str, str, str]:
     return name, target, hint
 
 
+def whole_records(records: list[SourceRecord]) -> list[SourceRecord]:
+    """The records with the fragments of one long record (`segment_record`: a tool call or result over 32k
+    characters) joined back into one, under the first fragment's ID, so a tool call is read once: its name, target
+    and edited files come from its first line and arguments, its exit status and summary from the whole output.
+    Fragments are contiguous slices, so joining them in order gives the original text."""
+    parts: dict[str, list[SourceRecord]] = {}
+    for record in records:
+        origin = record.lineage.get("fragment_of")
+        if origin:
+            parts.setdefault(str(origin), []).append(record)
+    if not parts:
+        return records
+    joined: dict[str, SourceRecord] = {}
+    for origin, pieces in parts.items():
+        pieces.sort(key=lambda piece: piece.lineage.get("fragment_index") or 0)
+        joined[origin] = dataclasses.replace(pieces[0], content="".join(piece.content for piece in pieces))
+    output, seen = [], set()
+    for record in records:
+        origin = record.lineage.get("fragment_of")
+        if not origin:
+            output.append(record)
+        elif origin not in seen:
+            seen.add(origin)
+            output.append(joined[str(origin)])
+    return output
+
+
+def fragment_ids(records: list[SourceRecord]) -> dict[str, list[str]]:
+    """The first fragment's ID → the IDs of every fragment of its record (`whole_records` keeps the first)."""
+    parts: dict[str, list[SourceRecord]] = {}
+    for record in records:
+        if record.lineage.get("fragment_of"):
+            parts.setdefault(str(record.lineage["fragment_of"]), []).append(record)
+    found = {}
+    for pieces in parts.values():
+        pieces.sort(key=lambda piece: piece.lineage.get("fragment_index") or 0)
+        found[pieces[0].source_id] = [piece.source_id for piece in pieces]
+    return found
+
+
 def classify_steps(records: list[SourceRecord]) -> dict:
     """How the tool calls in these records were classified by code, counts only (no content).
 
@@ -464,7 +504,7 @@ def classify_steps(records: list[SourceRecord]) -> dict:
     hints: dict[str, int] = {}
     run_tools: dict[str, int] = {}
     commands: set[str] = set()
-    for record in records:
+    for record in whole_records(records):
         if record.role != "tool_call":
             continue
         name, _, hint = step_hint(record)
@@ -490,6 +530,7 @@ def tool_steps(assigned: list[SourceRecord]) -> list[dict]:
     Hints come from the tool name, patch markers and the command line only; the records stay the
     evidence. edit / read / run, and run is refined to commit, test (tests, lint, build) or vcs.
     """
+    assigned = whole_records(assigned)
     results = {r.tool_call_id: r for r in assigned if r.role == "tool_result" and r.tool_call_id}
     steps = []
     for record in assigned:
@@ -553,16 +594,19 @@ def mark_steps(records: list[SourceRecord]) -> None:
         if record.role in ("tool_call", "tool_result"):
             sessions.setdefault(record.session_id, []).append(record)
     by_id = {record.source_id: record for record in records}
+    whole = {record.source_id: record for record in whole_records(records)}
     for session in sessions.values():
+        parts = fragment_ids(session)
         for step in tool_steps(session):
             mark = {"hint": step["hint"], **({"doc": True} if step.get("doc") else {})}
             if step["hint"] == "delegate" and step["tool"] in DELEGATION_CALLS:
-                call, result = by_id[step["call"]], by_id.get(step["result"])
+                call, result = whole[step["call"]], whole.get(step["result"])
                 path, name = delegated_path(call, result), delegated_to(call, result)
                 mark.update({"agent": path} if path else {}, **({"to": name} if name else {}))
             for key in (step["call"], step["result"]):
-                if key in by_id:
-                    by_id[key].step = mark
+                for part in parts.get(key, [key]):
+                    if part in by_id:
+                        by_id[part].step = mark
 
 
 # A long tool result, injected instruction or summary is shown as its head and tail; the lines
@@ -631,7 +675,12 @@ def shown_quote(quote: str, focus: list[list[int]] | None) -> str:
 
 
 def unit_cost(record: SourceRecord) -> int:
-    """Characters this record puts into a unit's input."""
+    """Characters this record puts into a unit's input. The story is shown no tool output but the last lines of a
+    run, so a long tool result split into fragments costs only its last fragment: one 10 MB output was eight units."""
+    lineage = record.lineage or {}
+    if (record.role == "tool_result" and lineage.get("fragment_of")
+            and (lineage.get("fragment_index") or 0) < (lineage.get("fragment_count") or 0)):
+        return 0
     view = _view(record)
     lines = record.content.splitlines()
     if view is None:
@@ -1239,7 +1288,8 @@ def _session_unit_chunks(records: list[SourceRecord], config: AnalysisConfig,
                 if value:
                     last_link[(kind, str(value))] = index
 
-        call_hint = {r.tool_call_id: step_hint(r)[2] for r in ordered if r.role == "tool_call" and r.tool_call_id}
+        call_hint = {r.tool_call_id: step_hint(r)[2] for r in whole_records(ordered)
+                     if r.role == "tool_call" and r.tool_call_id}
         costs = [unit_cost(r) for r in ordered]
         safe, natural, turns, results, commits = set(), set(), set(), set(), set()
         open_until = -1

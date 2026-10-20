@@ -606,3 +606,30 @@ def test_v2_a_draft_that_fails_its_checks_fails_the_unit_with_no_integrate_call(
     result = engine.analyze(lambda: runner)
     assert [task["stage"] for task in runner.tasks] == ["story"] and result["status"] == "failed"
     assert any("draft failed its checks" in failure.get("message", "") for failure in store.unit_failures().values())
+
+
+def test_a_tool_call_split_into_fragments_is_one_step(laboratory):
+    """A call over 32k characters is split by `segment_record`; it is still one edit of its file, and a long test
+    output split the same way is one check, failed by the exit status at its start and its summary at its end."""
+    from contexttrail.analysis import classify_steps, tool_steps, unit_cost
+    from contexttrail.model import segment_record
+    _, _, _, _, make = laboratory
+    def tool(key, role, text, call_id):
+        return replace(make(text, key=key, role=role), tool_call_id=call_id)
+    body = "\n".join(f"line_{n} = compute_value({n})" for n in range(3_000))
+    write = tool("write", "tool_call", "Tool: Write\n" + json.dumps({"content": body, "file_path": "/work/app/big.py"}), "w1")
+    run = tool("run", "tool_call", "Tool: Bash\n" + json.dumps({"command": "python -m pytest -q"}), "r1")
+    output = tool("run-out", "tool_result", '{"exit_code": 1, "output": "' + "x" * 70_000 + '\\n2 failed, 9 passed"}', "r1")
+    parts = (segment_record(write) + [tool("write-out", "tool_result", "File created.", "w1"), run]
+             + segment_record(output))
+    assert len(parts) > 5
+    steps = tool_steps(parts)
+    assert [(step["hint"], step["target"]) for step in steps] == [("edit", "/work/app/big.py"),
+                                                                   ("test", "python -m pytest -q")]
+    assert classify_steps(parts)["tool_calls"] == 2
+    items, _ = skeleton(parts)
+    assert [(item["kind"], item["status"]) for item in items] == [("action", "applied"), ("outcome", "observed_failure")]
+    assert items[0]["files"] == ["big.py"]
+    # A long output costs a unit what the story is shown of it: its last fragment.
+    pieces = [part for part in parts if part.role == "tool_result" and part.lineage.get("fragment_of")]
+    assert [unit_cost(piece) == 0 for piece in pieces] == [True] * (len(pieces) - 1) + [False]
