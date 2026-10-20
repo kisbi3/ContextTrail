@@ -170,7 +170,7 @@ Linked events
 --- end ---
 ```
 
-Earlier in the same flow a change is `applied · unverified` because its tests were never run in the log, a `request · no answer` marks a question the assistant never answered, and an open item records that a pytest run was aborted with no result. Those are the states the tool is for.
+Earlier in the same flow a change is `applied · unverified` because its tests were never run in the log, a `request · nothing linked` marks a request no event of the graph is linked to (an unanalysed turn reads the same), and an open item records that a pytest run was aborted with no result. Those are the states the tool is for.
 
 ## What it does and does not do
 
