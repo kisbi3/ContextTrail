@@ -93,7 +93,8 @@ def test_the_screen_keeps_its_last_values_when_a_read_is_locked_out(tmp_path):
     locked.locked = True
     app._token_checked_at = 0.0
     app.draw(screen)
-    assert "2026-09-26T09:00:00+00:00 (ok)" in screen.text()
+    from contexttrail.freshness import _local
+    assert f"{_local('2026-09-26T09:00:00+00:00')} (ok)" in screen.text()  # local time, as status shows it
     assert app.panels.evidence("ev_missing") is None
 
 

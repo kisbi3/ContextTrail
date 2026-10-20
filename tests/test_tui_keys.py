@@ -140,7 +140,7 @@ def test_english_screen_language_renders_help_titles_and_footer():
     assert "Event flow" in text and "Selected event" in text
     boxes = "\n".join(flow_diagram(story(), 110).lines())
     assert "─verifies──▶" in boxes and "→ [04] verifies" in boxes and "no linked events" not in boxes
-    assert ui.keys().startswith("↑↓←→ move") and "verified" in ui.legend()
+    assert ui.keys().startswith("? help  ↑↓←→ move") and "verified" in ui.legend()
     panels.handle("?")
     text = drawn(panels).text()
     assert "Key help" in text and "next place that needs a look" in text and "This screen" in text

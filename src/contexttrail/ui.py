@@ -13,13 +13,13 @@ from typing import Callable
 from wcwidth import wcswidth
 
 from .diagram import HEAVY, Diagram, _wrap, flow_diagram, request_turns
-from .i18n import language, tr
+from .i18n import Labels, language, tr
 from .schema import folded_view, story_view
 from .render import (ASCII_MARK, MARK, event_detail, linked_events, status_labels, status_tones,
                      terminal_graph)
 from .agent_view import reference
 from .analysis import plan_choices_text, plan_text
-from .freshness import check_from_store, scanned_at
+from .freshness import _local, check_from_store, scanned_at
 from .freshness import summary as freshness_summary
 from .git_context import Scope
 from .store import Store
@@ -39,8 +39,10 @@ def token_usage_label(tokens: int, known_calls: int, calls: int, cost: float | N
     return tr(f"분석 토큰 {tokens:,}{suffix}", f"analysis tokens {tokens:,}{suffix}") + spent
 
 
-def _wrap_cells(value: str, width: int) -> list[str]:
-    """Wrap terminal text at display-cell boundaries, including wide Korean glyphs."""
+def _wrap_cells(value: str, width: int, *, words: bool = False) -> list[str]:
+    """Wrap terminal text at display-cell boundaries, including wide Korean glyphs. With `words`, a line breaks after
+    the last space that fits, so a word is not split in the middle ('patc / h'); a word longer than the line still is.
+    Spacing inside a line (code indentation in a quote) is kept."""
     from wcwidth import wcwidth
     width = max(1, width)
     lines: list[str] = []
@@ -49,8 +51,14 @@ def _wrap_cells(value: str, width: int) -> list[str]:
         for char in paragraph:
             size = max(0, wcwidth(char))
             if line and cells + size > width:
-                lines.append(line)
-                line, cells = "", 0
+                cut = line.rfind(" ") + 1 if words else 0
+                if 0 < cut < len(line) and line[:cut].strip():
+                    lines.append(line[:cut].rstrip())
+                    line = line[cut:]
+                    cells = sum(max(0, wcwidth(c)) for c in line)
+                else:
+                    lines.append(line)
+                    line, cells = "", 0
             line += char
             cells += size
         lines.append(line)
@@ -133,9 +141,19 @@ WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0) or curses.REPORT_MOUSE_POSITI
 CLICK = curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
 
 # The footer lists the common panel keys; `?` shows every key (`help_sections` plus the screen's own).
-def keys() -> str:
-    return tr("↑↓←→ 이동  [ ] 요청  1-9 연결  ! 확인 필요  / 검색  v 핵심↔전체  Tab 상세  ? 도움말",
-              "↑↓←→ move  [ ] request  1-9 link  ! needs a look  / search  v story↔full  Tab detail  ? help")
+# A run's end state in the screen language (`last_check.status`, from `analysis_runs`).
+RUN_STATE = Labels({"complete": "완료", "partial": "일부 완료", "failed": "실패", "noop": "새 기록 없음",
+                    "no_data": "기록 없음", "cancelled": "취소됨", "call_limit": "호출 상한", "running": "실행 중"},
+                   {"complete": "complete", "partial": "partial", "failed": "failed", "noop": "nothing new",
+                    "no_data": "no records", "cancelled": "cancelled", "call_limit": "call cap reached",
+                    "running": "running"})
+
+
+def keys(first: str = "") -> str:
+    """The footer: help and the screen's own keys (`first`: quit, analyze) come first, so a narrow terminal cuts the
+    panel keys the help lists, never how to get help or quit."""
+    return tr("? 도움말", "? help") + first + tr("  ↑↓←→ 이동  [ ] 요청  1-9 연결  ! 확인 필요  / 검색  v 핵심↔전체  Tab 상세",
+                                                 "  ↑↓←→ move  [ ] request  1-9 link  ! needs a look  / search  v story↔full  Tab detail")
 
 
 def help_sections() -> list[tuple[str, list[tuple[str, str]]]]:
@@ -421,7 +439,7 @@ class FlowPanels:
                                              "Select an event to see its description and quoted evidence."), "dim")])
             for text, style in source:
                 indent = len(text) - len(text.lstrip(" "))
-                parts = _wrap_cells(text[indent:], max(1, width - indent)) if text.strip() else [""]
+                parts = _wrap_cells(text[indent:], max(1, width - indent), words=True) if text.strip() else [""]
                 lines += [(" " * indent + part, style) for part in parts]
                 number = None
                 if len(text) > 3 and text.startswith("  ") and text[2] in "123456789" and text[3] == " ":
@@ -499,14 +517,22 @@ class FlowPanels:
             parts.append(tr("크게 보기", "full screen"))
         return " · ".join(parts)
 
-    def _help_lines(self) -> list[tuple[str, str]]:
+    def _help_lines(self, width: int = 10 ** 6) -> list[tuple[str, str]]:
+        """The key help, each description wrapped under its column (never cut) at `width` cells."""
         sections = help_sections() + ([(tr("이 화면", "This screen"), list(self.app_keys))] if self.app_keys else [])
         lines: list[tuple[str, str]] = []
+        column = 21  # two spaces, the key in 18 cells, a space
         for heading, keys in sections:
-            lines += [(heading, "heading")] + [(f"  {key}{' ' * (18 - wcswidth(key))} {text}", "")
-                                               for key, text in keys] + [("", "")]
-        lines.append((tr("한글 입력 상태에서도 같은 자리의 키로 동작합니다. 아무 키나 누르면 닫힙니다.",
-                         "Keys work in the same place while a Korean input method is on. Any key closes this."), "dim"))
+            lines.append((heading, "heading"))
+            for key, text in keys:
+                parts = _wrap_cells(text, max(10, width - column), words=True)
+                lines.append((f"  {key}{' ' * (18 - wcswidth(key))} {parts[0]}", ""))
+                lines += [(" " * column + part, "") for part in parts[1:]]
+            lines.append(("", ""))
+        note = tr("한글 입력 상태에서도 같은 자리의 키로 동작합니다(대문자 키는 영문 입력에서). ↑↓로 넘기고, 다른 키를 누르면 닫힙니다.",
+                  "Keys work in the same place while a Korean input method is on (capital keys need Latin input). "
+                  "↑↓ scroll; any other key closes this.")
+        lines += [(part, "dim") for part in _wrap_cells(note, max(10, width), words=True)]
         return lines
 
     def draw(self, screen, top: int, height: int, columns: int) -> None:
@@ -579,8 +605,8 @@ class FlowPanels:
                 _put_runs(screen, detail_y + 1 + offset, detail_x + 2, [(line, self.styles.get(style, 0))],
                           max(1, detail_w - 4))
         if self.help:
-            lines = self._help_lines()
-            self._panel(screen, top, 0, height, columns, tr("키 도움말 · 아무 키나 누르면 닫힘", "Key help · any key closes"))
+            lines = self._help_lines(columns - 4)
+            self._panel(screen, top, 0, height, columns, tr("키 도움말 · ↑↓ 넘김 · 다른 키는 닫힘", "Key help · ↑↓ scroll · any other key closes"))
             visible = max(1, height - 2)
             self.help_top = min(self.help_top, max(0, len(lines) - visible))
             for offset, (line, style) in enumerate(lines[self.help_top:self.help_top + visible]):
@@ -920,7 +946,7 @@ class GraphApp:
             return
         self.panels.draw(screen, 3, rows - 5, cols)
         status = self.panels.status_line()
-        _put_runs(screen, rows - 2, 1, [(status, 0) if status else (keys() + tr("  Q 종료", "  Q quit"), styles["dim"])],
+        _put_runs(screen, rows - 2, 1, [(status, 0) if status else (keys(tr("  Q 종료", "  Q quit")), styles["dim"])],
                   cols)
         _put_runs(screen, rows - 1, 1, [(legend(self.panels.ascii_only)
                                          + tr("   ·   저장된 결과만 표시", "   ·   saved results only"), styles["dim"])], cols)
@@ -982,9 +1008,18 @@ class TerminalApp:
             self._fresh = (key, freshness_summary(check_from_store(self.scope, self.store)))
         return self._fresh[1]
 
-    @staticmethod
-    def _idle_notice() -> str:
-        """The notice before anything happens in a session: saved results, no analysis running."""
+    def _idle_notice(self) -> str:
+        """The notice before anything happens in a session: saved results, and whether the tools' hooks analyse
+        this project on their own (`auto-update`), which the screen shows when a new graph is published."""
+        try:
+            auto = (self.store.get_meta("auto_update", {}) or {}) if self.store is not None else {}
+        except Exception:
+            auto = {}
+        if auto.get("enabled_at"):
+            return tr(f"저장된 결과 열람 · 자동 분석 켜짐({auto.get('runner')} · 한 번에 {auto.get('units')}단위 · "
+                      f"하루 {auto.get('max_runs_per_day')}회, auto-update --status)",
+                      f"Showing saved results · automatic analysis on ({auto.get('runner')} · {auto.get('units')} units "
+                      f"a run · {auto.get('max_runs_per_day')} a day, auto-update --status)")
         return tr("저장된 결과 열람 · 자동 분석 없음", "Showing saved results · no automatic analysis")
 
     def _read(self, read: Callable, fallback):
@@ -1097,10 +1132,13 @@ class TerminalApp:
                   + (tr(f" · 상자에 들지 않은 단계 {unplaced} (v)", f" · {unplaced} steps in no box (v)") if unplaced else ""),
                   curses.A_BOLD | styles["frame"])
         none = tr("없음", "none")
-        analyzed, checked, state = graph.get("analyzed_at") or none, check.get("at", none), check.get("status", "no_data")
-        fresh = "" if self.busy() or self.scope is None else "   ·   " + self._freshness(graph["version"])
-        self._put(screen, 1, 1, tr(f"분석 기준 {analyzed}   ·   마지막 확인 {checked} ({state})",
-                                   f"analyzed as of {analyzed}   ·   last check {checked} ({state})") + fresh, styles["dim"])
+        analyzed, checked = _local(graph.get("analyzed_at")) or none, _local(check.get("at")) or none
+        state = RUN_STATE.get(check.get("status", "no_data"), check.get("status", "no_data"))
+        # What the graph does not hold yet first: a narrow terminal keeps it and loses the times.
+        fresh = "" if self.busy() or self.scope is None else self._freshness(graph["version"]) + " · "
+        self._put(screen, 1, 1, fresh + tr(f"분석 기준 {analyzed} · 마지막 분석 실행 {checked} ({state})",
+                                           f"analyzed as of {analyzed} · last analysis run {checked} ({state})"),
+                  styles["dim"])
         # Before anything happens in this session, a failed last check says why.
         idle = not self.busy() and self.notice == self._idle_notice()
         self._put(screen, 2, 1, tr("마지막 확인 오류: ", "Last check error: ") + check["error"]
@@ -1111,13 +1149,13 @@ class TerminalApp:
             return
         self.panels.draw(screen, 3, rows - 5, columns)
         status = self.panels.status_line()
-        self._put(screen, rows - 2, 1, status or keys() + tr("  R 분석  B 브라우저  Q 종료", "  R analyze  B browser  Q quit"),
+        self._put(screen, rows - 2, 1, status or keys(tr("  Q 종료  R 분석  B 브라우저", "  Q quit  R analyze  B browser")),
                   0 if status else styles["dim"])
         if time.monotonic() - self._token_checked_at >= 1:
             self._token_totals = self._read(self.store.llm_token_totals, self._token_totals)
             self._token_checked_at = time.monotonic()
-        self._put(screen, rows - 1, 1, f"{legend(self.ascii_only)}   ·   {token_usage_label(*self._token_totals)}"
-                  + tr("   ·   자동 감시 없음", "   ·   no automatic watching"), styles["dim"])
+        self._put(screen, rows - 1, 1, f"{legend(self.ascii_only)}   ·   {token_usage_label(*self._token_totals)}",
+                  styles["dim"])
         screen.refresh()
 
     def show_browser(self, screen):
