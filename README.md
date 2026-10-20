@@ -511,8 +511,8 @@ Analysis still runs only on request. If you want a project's graph to follow you
 ```bash
 cd /path/to/project
 contexttrail auto-update --enable --runner claude --units 2 --cooldown 15m --max-runs-per-day 8
-contexttrail install-hooks --claude --codex --opencode     # merges into ~/.claude/settings.json (Stop, async),
-                                                          # ~/.codex/hooks.json (Stop), ~/.config/opencode/plugins/contexttrail.ts (session.idle)
+contexttrail install-hooks --claude --codex --opencode     # merges into settings.json under CLAUDE_CONFIG_DIR or ~/.claude (Stop, async),
+                                                          # hooks.json under CODEX_HOME or ~/.codex (Stop), plugins/contexttrail.ts under $XDG_CONFIG_HOME/opencode or ~/.config/opencode (session.idle)
 contexttrail auto-update --status
 ```
 
