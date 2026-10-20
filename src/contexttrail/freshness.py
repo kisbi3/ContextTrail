@@ -84,8 +84,10 @@ def stored(store: Store) -> tuple[dict[str, Any], dict[str, Any] | None, dict[st
         "pending": {"records": pending, "units": units},
         # Records no analysis processed that the last scan no longer found (a moved, compressed or unreadable file):
         # they leave the pending count, which must not read as progress.
+        # Git commits that left the history window are not lost transcripts and are not counted here.
         "unavailable_unprocessed": sum(1 for row in sources.values() if not row["available"]
-                                       and row["processed_hash"] != row["content_hash"]),
+                                       and row["processed_hash"] != row["content_hash"]
+                                       and row["metadata"].get("provider") != "git"),
         "failed_units": len(failed),
         "unaudited": unaudited(store, sources, stored_units),
         "since_scan": None, "took_ms": 0}
@@ -397,10 +399,10 @@ def status_lines(result: dict[str, Any], folder: Path) -> list[str]:
     if not scanned:
         if pending["records"]:
             # A state an older version wrote has records but no index of the files: it was scanned, not indexed.
-            lines.append(tr(f"기록 파일 색인이 없습니다(이전 버전의 상태) · 저장된 미분석 기록 {pending['records']}개 · "
+            lines.append(tr(f"기록 파일 색인이 아직 없습니다 · 저장된 미분석 기록 {pending['records']}개 · "
                             "색인 만들기: contexttrail scan . (AI 호출 없음)",
-                            f"No index of the transcript files (a state from an older version) · {pending['records']} stored "
-                            "records not analyzed · to index them: contexttrail scan . (no AI calls)"))
+                            f"No index of the transcript files yet · {pending['records']} stored records not analyzed · "
+                            "to index them: contexttrail scan . (no AI calls)"))
         else:
             lines.append(tr("기록을 아직 scan하지 않았습니다: contexttrail scan . 또는 contexttrail analyze .",
                             "Transcripts were never scanned: contexttrail scan . or contexttrail analyze ."))

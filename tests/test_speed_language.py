@@ -112,6 +112,9 @@ def test_a_preview_or_a_declined_run_saves_no_language_and_no_message_means_the_
     records.append(make("run it", key="a", role="assistant"))
     assert engine.preview_plan(engine.scan())["output_language"] == "Korean"  # nobody wrote yet: the locale
     assert store.get_meta("output_language") is None
+    records.append(make("ok", key="o"))  # the person wrote, but nothing that says a language
+    engine.analyze(FixtureRunner)
+    assert store.get_meta("output_language") is None
     records.append(make("Please add a --units option.", key="u"))
     declined = engine.analyze(FixtureRunner, consent=lambda snapshot, plan: False)
     assert declined["status"] != "complete"

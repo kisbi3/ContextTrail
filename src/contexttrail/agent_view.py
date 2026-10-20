@@ -180,7 +180,7 @@ def show_text(result: dict) -> list[str]:
               f"ContextTrail event · current graph v{result['graph_version']} · saved result · no AI calls")
     if result["state"] == "gone":
         earlier = result["earlier"]
-        return [head, tr(f"이 사건은 v{result['cited_version']} 이후 그래프에서 사라졌습니다.",
+        return [head, text_note(), tr(f"이 사건은 v{result['cited_version']} 이후 그래프에서 사라졌습니다.",
                          f"This event is gone from the graph since v{result['cited_version']}."),
                 tr(f"  당시: {_clean(earlier['title'])} ({_clean(earlier['status_label'])})",
                    f"  then: {_clean(earlier['title'])} ({_clean(earlier['status_label'])})"),

@@ -138,6 +138,17 @@ _LATIN_LOCALES = {"es": "Spanish", "fr": "French", "de": "German", "pt": "Portug
 
 def detect_language(records: list[SourceRecord], locale: str | None = None) -> str:
     """The language most of the person's own messages are written in (a vote per message)."""
+    votes = language_votes(records, locale)
+    if votes:
+        return votes.most_common(1)[0][0]
+    # No message of the person's that says a language yet ('ok', a path): the locale's language, for this plan only
+    # (`Engine.resolve_language` saves only a language some message voted for).
+    code = (locale or "").split("_")[0].split(".")[0].lower()
+    return _LOCALE_LANGUAGES.get(code) or _LATIN_LOCALES.get(code, DEFAULT_LANGUAGE)
+
+
+def language_votes(records: list[SourceRecord], locale: str | None = None) -> Counter:
+    """One vote per message of the person's: its script, or for Latin letters the locale's language."""
     votes: Counter = Counter()
     for record in records:
         if not is_user_prompt(record):
@@ -149,12 +160,7 @@ def detect_language(records: list[SourceRecord], locale: str | None = None) -> s
         elif re.search(r"[A-Za-z]{3,}", record.content):
             code = (locale or "").split("_")[0].split(".")[0].lower()
             votes[_LATIN_LOCALES.get(code, DEFAULT_LANGUAGE)] += 1
-    if votes:
-        return votes.most_common(1)[0][0]
-    # No message of the person's yet: the locale's language, for this plan only (`Engine.resolve_language` saves
-    # nothing it did not read from a message).
-    code = (locale or "").split("_")[0].split(".")[0].lower()
-    return _LOCALE_LANGUAGES.get(code) or _LATIN_LOCALES.get(code, DEFAULT_LANGUAGE)
+    return votes
 
 
 _LOCALE_LANGUAGES = {"ko": "Korean", "ja": "Japanese", "zh": "Chinese", "ru": "Russian", "en": "English"}
@@ -1943,8 +1949,9 @@ class Engine:
             saved = self.store.get_meta("output_language")
             self._language_detected = not saved
             if not saved:
-                saved = detect_language(snapshot.records, os.environ.get("LC_ALL") or os.environ.get("LANG"))
-                if save and any(is_user_prompt(record) for record in snapshot.records):
+                locale = os.environ.get("LC_ALL") or os.environ.get("LANG")
+                saved = detect_language(snapshot.records, locale)
+                if save and language_votes(snapshot.records, locale):
                     self.store.set_meta("output_language", saved)
                     self._language_detected = False
             self.config.output_language = saved
@@ -2176,7 +2183,8 @@ class Engine:
             # The files whose records no analysis reached before they went missing, by count: the backlog that
             # shrank without being analysed (the cause is not known here; the scan's own limitations may say it).
             lost = Counter(str((source_rows[i]["metadata"].get("locator") or {}).get("path") or "unknown file")
-                           for i in missing if source_rows[i]["processed_hash"] != source_rows[i]["content_hash"])
+                           for i in missing if source_rows[i]["processed_hash"] != source_rows[i]["content_hash"]
+                           and source_rows[i]["metadata"].get("provider") != "git")
             for path, count in lost.most_common(3):
                 issues.append(f"records no longer read before any analysis: {count} from {path}")
         pending = {i for i, row in source_rows.items()

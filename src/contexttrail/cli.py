@@ -385,6 +385,7 @@ def _options(args, store: Store, *, persist: bool) -> tuple[AnalysisConfig, dict
     values["langsmith_include_content"] = getattr(args, "langsmith_include_content", False)
     values["langsmith_project"] = getattr(args, "langsmith_project", None)
     config = AnalysisConfig(**values)
+    config.validate()  # a value the checks refuse is never saved (it would lock every later run of the project)
     if persist:
         if detect_again:
             store.set_meta("output_language", None)
@@ -939,11 +940,17 @@ def main(argv: list[str] | None = None) -> int:
             consent to that runner already given in a terminal (CLI or TUI)."""
             if is_demo:
                 return {"ok": True, "runner": "mock"}
-            name = effective.get("runner")
+            # Read again each time: a runner chosen in another terminal while this page is open counts.
+            saved = store.get_meta("options", {}) or {}
+            name = effective.get("runner") or saved.get("runner")
+            if name and not effective.get("runner"):
+                effective.update({key: saved[key] for key in ("runner", "model") if saved.get(key)})
+                config.runner_name, config.base_model = name, effective.get("model")
             if not name:
                 return {"ok": False, "reason": tr("분석 Runner가 정해지지 않았습니다. 터미널에서 contexttrail analyze . --runner codex 또는 claude를 한 번 실행하세요.",
                                                   "No analysis runner is chosen. Run contexttrail analyze . --runner codex or claude once in a terminal.")}
-            model = effective.get("model") or DEFAULT_MODELS.get(name)
+            # The model the story call uses: --extract-model when set, else the runner's model.
+            model = config.extract_model or effective.get("model") or DEFAULT_MODELS.get(name)
             if not store.get_meta("consent:" + name, False):
                 return {"ok": False, "runner": name, "model": model,
                         "reason": tr(f"{name}에 보내는 데 동의한 적이 없습니다. 터미널에서 contexttrail analyze .로 한 번 동의하세요.",
