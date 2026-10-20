@@ -83,6 +83,8 @@ async function select(id) {
     area.append(box);}
   // In the story view a folded step has no box of its own: the box it folded into is lit.
   for(const node of document.querySelectorAll("[data-event-id]"))node.classList.toggle("selected",node.dataset.eventId===id||(node.dataset.folds||"").split(" ").includes(id));
+  const lit=document.querySelector("#graph .selected");
+  if(lit&&lit.scrollIntoView)lit.scrollIntoView({block:"center",inline:"nearest"});  // a deep link or the start lands on it
   const fragment=new URLSearchParams();if(pinned&&version)fragment.set("v",version);fragment.set("event",id);fragment.set("view",view);history.replaceState(null,"","#"+fragment);
 }
 // Resolves true when this load drew its picture, false when a later load overtook it (a second click).
@@ -112,7 +114,10 @@ async function load() {
   $("limits").replaceChildren();for(const message of [...new Set([...(graph.limitations||[]),...(graph.input_limitations||[]),...(payload.last_check.limitations||[])])])$("limits").append(el("p",message));
   for(const item of (graph.open_items||[]))$("limits").append(el("p","["+item.status+"] "+item.text));
   if(payload.last_check.error)$("limits").append(el("p",payload.last_check.error));
-  if(selected&&graph.events.some(e=>e.id===selected))await select(selected);else if(graph.events.length)await select(graph.events[0].id);
+  // Opened without a selection, the page starts at the latest request (the graph is in time order).
+  const requests=graph.events.filter(e=>e.actor==="user"&&e.kind!=="decision");
+  const start=requests.length?requests[requests.length-1].id:(graph.events.length?graph.events[graph.events.length-1].id:null);
+  if(selected&&graph.events.some(e=>e.id===selected))await select(selected);else if(start)await select(start);
   return true;
 }
 function showError(error){$("status").textContent=error.message;}

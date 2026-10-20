@@ -177,7 +177,9 @@ def test_panels_move_by_request_and_follow_links_back():
     import curses
     from contexttrail.ui import FlowPanels
     panels = FlowPanels(conversation(), lambda _: None)
-    assert panels.current == "m1" and panels.turn() == 0
+    assert panels.current == "m2" and panels.turn() == 1  # it opens at the latest request
+    panels.handle("[")
+    assert (panels.current, panels.turn()) == ("m1", 0)
     panels.handle("]")
     assert (panels.current, panels.turn()) == ("m2", 1)
     panels.handle("a")
