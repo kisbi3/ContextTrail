@@ -673,7 +673,9 @@ def _export(args, scope: Scope, store: Store) -> int:
         else:
             raise FlowError(tr("출력 상위 디렉터리가 없습니다.", "The output's parent directory does not exist."))
     graph = store.graph()
-    text = export_text(graph, store.evidence_many(_evidence_ids(graph)), args.format)
+    # md and mmd number events as the screens do (in time order, folded reports moved); json stays the stored graph.
+    shown = graph if args.format == "json" else folded_view(graph)
+    text = export_text(shown, store.evidence_many(_evidence_ids(graph)), args.format)
     store.set_meta("exports", list(dict.fromkeys(store.get_meta("exports", []) + [str(output)])))
     flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | (os.O_TRUNC if args.force else os.O_EXCL)
     fd = os.open(output, flags, 0o600)

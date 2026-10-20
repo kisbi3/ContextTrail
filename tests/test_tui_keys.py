@@ -215,3 +215,12 @@ def test_the_screen_takes_a_utf8_character_set_under_an_ascii_locale(monkeypatch
         assert "UTF-8" in locale.nl_langinfo(locale.CODESET).upper().replace("UTF8", "UTF-8")
     finally:
         locale.setlocale(locale.LC_ALL, saved)
+
+
+def test_word_wrap_breaks_at_spaces_and_keeps_words_whole():
+    from contexttrail.ui import _wrap_cells
+    assert _wrap_cells("hello world foo", 11, words=True) == ["hello world", "foo"]
+    assert _wrap_cells("hello world", 5, words=True) == ["hello", "world"]
+    assert _wrap_cells("aaaa bbbb cccc dddd", 4, words=True) == ["aaaa", "bbbb", "cccc", "dddd"]
+    assert _wrap_cells("  indented code line here", 10, words=True) == ["  indented", "code line", "here"]
+    assert _wrap_cells("abcdefghij", 4, words=True) == ["abcd", "efgh", "ij"]  # a word longer than the line is cut

@@ -252,3 +252,12 @@ def test_graph_versions_are_kept_compressed_and_older_text_ones_are_packed_once(
     assert reopened.graph(1) == published and reopened.graph()["version"] == 2
     with pytest.raises(FlowError, match="Unsupported DB schema: 3|지원하지 않는 DB schema: 3"):
         Store(tmp_path / "state", "scope")
+
+
+def test_the_screen_says_when_automatic_analysis_stopped_after_failures(tmp_path):
+    from contexttrail import auto_update
+    store = Store(tmp_path / "state", "scope")
+    store.set_meta(auto_update.META_KEY, {"runner": "claude", "units": 1, "max_runs_per_day": 8, "enabled_at": "x"})
+    assert "자동 분석 켜짐" in ui.TerminalApp(store, lambda *_: None, title="p")._idle_notice()
+    store.set_meta(auto_update.STATE_KEY, {"runs": [{"finished": "t", "ok": False}] * auto_update.FAILURE_STOP})
+    assert "자동 분석 멈춤" in ui.TerminalApp(store, lambda *_: None, title="p")._idle_notice()

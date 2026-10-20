@@ -51,14 +51,21 @@ def _wrap_cells(value: str, width: int, *, words: bool = False) -> list[str]:
         for char in paragraph:
             size = max(0, wcwidth(char))
             if line and cells + size > width:
+                if words and char == " ":
+                    # The line is full at a word's end: break here and drop the space.
+                    lines.append(line.rstrip())
+                    line, cells = "", 0
+                    continue
                 cut = line.rfind(" ") + 1 if words else 0
-                if 0 < cut < len(line) and line[:cut].strip():
+                if words and 0 < cut < len(line) and line[:cut].strip():
                     lines.append(line[:cut].rstrip())
                     line = line[cut:]
                     cells = sum(max(0, wcwidth(c)) for c in line)
                 else:
-                    lines.append(line)
+                    lines.append(line.rstrip() if words else line)
                     line, cells = "", 0
+            if words and not line and lines and char == " ":
+                continue  # a wrapped line does not start with the space it broke at
             line += char
             cells += size
         lines.append(line)
@@ -1015,6 +1022,15 @@ class TerminalApp:
             auto = (self.store.get_meta("auto_update", {}) or {}) if self.store is not None else {}
         except Exception:
             auto = {}
+        try:
+            from .auto_update import STATE_KEY, failing
+            stopped = failing(self.store.get_meta(STATE_KEY, {}) or {}) if self.store is not None else False
+        except Exception:
+            stopped = False
+        if auto.get("enabled_at") and stopped:
+            return tr("저장된 결과 열람 · 자동 분석 멈춤: 연달아 실패했습니다(auto-update --status, 다시 켜기: --enable)",
+                      "Showing saved results · automatic analysis stopped after failed runs in a row "
+                      "(auto-update --status; --enable resumes)")
         if auto.get("enabled_at"):
             return tr(f"저장된 결과 열람 · 자동 분석 켜짐({auto.get('runner')} · 한 번에 {auto.get('units')}단위 · "
                       f"하루 {auto.get('max_runs_per_day')}회, auto-update --status)",
