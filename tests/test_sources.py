@@ -87,6 +87,52 @@ def test_archiving_same_content_keeps_ids(tmp_path):
     assert first.records[0].locator != second.records[0].locator
 
 
+def test_a_transcript_codex_compressed_keeps_its_records_and_ids(tmp_path):
+    import zstandard
+    folder = tmp_path / "app"
+    folder.mkdir()
+    home = tmp_path / "codex"
+    path = home / "sessions" / "2026" / "10" / "12" / "rollout-2026-10-12T11-24-23-native-session.jsonl"
+    rows = codex_rows(folder)
+    rows[0]["payload"].pop("id")  # the session is then named after the file, which must not change either
+    write(path, rows)
+    scope = Scope.resolve(folder)
+    plain = collect_logs(scope, codex_home=home, claude_home=tmp_path / "none")
+    packed = path.with_name(path.name + ".zst")
+    packed.write_bytes(zstandard.ZstdCompressor().compress(path.read_bytes()))
+    # While both copies are there the plain one is read, once.
+    both = collect_logs(scope, codex_home=home, claude_home=tmp_path / "none")
+    assert [r.source_id for r in both.records] == [r.source_id for r in plain.records]
+    path.unlink()
+    compressed = collect_logs(scope, codex_home=home, claude_home=tmp_path / "none")
+    assert [(r.source_id, r.content_hash, r.session_id) for r in compressed.records] == \
+        [(r.source_id, r.content_hash, r.session_id) for r in plain.records]
+    assert compressed.records[0].locator["path"] == str(packed)
+
+
+def test_a_compressed_transcript_with_no_decompressor_is_said_and_skipped(tmp_path, monkeypatch):
+    import builtins
+    import zstandard
+    from contexttrail.sources import local
+    folder = tmp_path / "app"
+    folder.mkdir()
+    home = tmp_path / "codex"
+    packed = home / "sessions" / "rollout.jsonl.zst"
+    packed.parent.mkdir(parents=True)
+    packed.write_bytes(zstandard.ZstdCompressor().compress(("\n".join(dumps(r) for r in codex_rows(folder)) + "\n").encode()))
+    real_import = builtins.__import__
+
+    def no_zstd(name, *args, **kwargs):
+        if name in ("zstandard", "compression"):
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", no_zstd)
+    monkeypatch.setattr(local.shutil, "which", lambda name: None)
+    found = collect_logs(Scope.resolve(folder), codex_home=home, claude_home=tmp_path / "none")
+    assert found.records == []
+    assert any("log file not read: rollout.jsonl.zst" in note and "zstd" in note for note in found.limitations)
+
+
 def test_tool_call_result_link_and_cwd(tmp_path):
     folder = tmp_path / "app"
     folder.mkdir()

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -130,8 +133,57 @@ def _warning_path(path: Path) -> str:
     return f"{label}#{digest(str(path))[:8]}"
 
 
+# Codex compresses a session's transcript once it is about a week old (`rollout-….jsonl.zst`, Codex CLI 0.163).
+COMPRESSED_SUFFIX = ".jsonl.zst"
+
+
+def transcript_stem(path: Path) -> str:
+    """The transcript's name without `.jsonl` or `.jsonl.zst`: the same session whether Codex compressed it or not."""
+    return path.name.removesuffix(".zst").removesuffix(".jsonl")
+
+
+def decompress_zstd(data: bytes, limit: int = 0) -> bytes:
+    """A zstd frame's content: with the standard library's `compression.zstd` (Python 3.14), the `zstandard`
+    package, or the `zstd` command, whichever is here. More than `limit` bytes (when given) is refused, so a small
+    file cannot unpack into a huge one. Every failure is a FlowError naming why."""
+    bound = limit + 1 if limit else -1
+    try:
+        try:
+            from compression import zstd  # type: ignore[import-not-found]
+        except ImportError:
+            zstd = None
+        if zstd is not None:
+            with zstd.ZstdFile(io.BytesIO(data)) as stream:
+                out = stream.read(bound)
+        else:
+            try:
+                import zstandard  # type: ignore[import-not-found]
+            except ImportError:
+                zstandard = None
+            if zstandard is not None:
+                with zstandard.ZstdDecompressor().stream_reader(io.BytesIO(data)) as stream:
+                    out = stream.read(bound)
+            else:
+                command = shutil.which("zstd")
+                if command is None:
+                    raise FlowError("zstd-compressed, and neither the zstandard package nor the zstd command is installed")
+                done = subprocess.run([command, "-dcq"], input=data, capture_output=True, timeout=120)
+                if done.returncode != 0:
+                    raise FlowError("zstd could not decompress it")
+                out = done.stdout
+    except FlowError:
+        raise
+    except Exception as exc:  # a corrupt frame, whichever decompressor met it
+        raise FlowError(f"zstd could not decompress it ({type(exc).__name__})") from None
+    if limit and len(out) > limit:
+        raise FlowError(f"over the size limit of {limit} bytes once decompressed")
+    return out
+
+
 def _jsonl(path: Path) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
-    """Freeze the initial byte length. Only newline-terminated records are committed."""
+    """Freeze the initial byte length. Only newline-terminated records are committed. A zstd-compressed transcript
+    (`COMPRESSED_SUFFIX`) is read the same way and then decompressed; its records are the ones it held uncompressed
+    (a record's ID and hash do not depend on the file's path)."""
     rows, warnings = [], []
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -153,6 +205,8 @@ def _jsonl(path: Path) -> tuple[list[tuple[int, dict, str]], list[str], dict]:
                 offset += len(piece)
             if after.st_size < before.st_size or len(data) < before.st_size:
                 raise FlowError("rewritten or truncated while being read")
+        if path.name.endswith(COMPRESSED_SUFFIX):
+            data = decompress_zstd(data, MAX_FILE_BYTES)
     except (OSError, FlowError) as exc:
         # The reason stays in the limitation: a file over the size limit used to read as a bare "FlowError".
         return [], [f"log file not read: {path.name} ({exc if isinstance(exc, FlowError) else type(exc).__name__})"], {}
@@ -310,7 +364,7 @@ def parse_codex(path: Path, scope: Scope) -> Snapshot:
             audit["inherited_rows_skipped"] = skipped
         return Snapshot(records, notes, [{**manifest, "selection": audit}] if manifest else [])
     metadata = next((d.get("payload", {}) for _, d, _ in rows if d.get("type") == "session_meta"), {})
-    session = metadata.get("id") or path.stem
+    session = metadata.get("id") or transcript_stem(path)
     cwd = metadata.get("cwd")
     cwd = cwd if isinstance(cwd, str) and Path(cwd).is_absolute() else None
     lineage = _codex_lineage(metadata)
@@ -533,7 +587,7 @@ def _claude_subagent_links(directory: Path) -> dict[str, dict[str, Any]]:
         rows, _, _ = _jsonl(main)
         if not rows:
             continue
-        session = next((d.get("sessionId") for _, d, _ in rows if d.get("sessionId")), main.stem)
+        session = next((d.get("sessionId") for _, d, _ in rows if d.get("sessionId")), transcript_stem(main))
         # An opaque session ID must never become an arbitrary path capability.
         if not isinstance(session, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", session):
             continue
@@ -592,7 +646,7 @@ def _claude_subagent_links(directory: Path) -> dict[str, dict[str, Any]]:
 
 def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | None = None) -> Snapshot:
     rows, warnings, manifest = _jsonl(path)
-    session = next((d.get("sessionId") for _, d, _ in rows if d.get("sessionId")), path.stem)
+    session = next((d.get("sessionId") for _, d, _ in rows if d.get("sessionId")), transcript_stem(path))
     cwd = None
     result, unknown, relevant = [], set(), False
     deferred: dict[str, int] = {}
@@ -770,7 +824,12 @@ def jsonl_files(codex_home: Path, claude_home: Path) -> list[tuple[Path, str]]:
                                 (claude_home / "projects", "claude")):
         if not directory.is_dir():
             continue
-        for path in sorted(directory.rglob("*.jsonl")):
+        paths = sorted(directory.rglob("*.jsonl"))
+        plain = set(paths)
+        # A compressed transcript is read unless its uncompressed copy is still there (the same records).
+        paths += sorted(p for p in directory.rglob("*" + COMPRESSED_SUFFIX)
+                        if p.with_name(p.name.removesuffix(".zst")) not in plain)
+        for path in paths:
             if not path.is_symlink() and within(path, directory):
                 found.append((path, provider))
     return found

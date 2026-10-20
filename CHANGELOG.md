@@ -4,6 +4,9 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 
 ## Unreleased
 
+### Fixed
+- **Codex transcripts compressed by Codex are read again.** Codex CLI 0.163 stores a session about a week old as `rollout-….jsonl.zst`; ContextTrail listed only `*.jsonl`, so on this machine 560 of 636 Codex transcripts dropped out of every scan, and a session compressed before it was analysed was never analysed. They are now decompressed (Python 3.14's `compression.zstd`, else the new `zstandard` dependency, else the `zstd` command) and give the same records with the same IDs and hashes, so nothing already analysed is sent again; a file that cannot be decompressed is named in the limitations. The note hook reads a compressed transcript too.
+
 ### Added
 - **The screen opens on the story view.** One box per request, goal, decision, change of course, finding the assistant stated, and failure nothing came of, with its title only. The work folds into the box it belongs to, each sub-agent becomes one line there with what it last said, and the status is the border's colour. `v` switches to every step, and so does a jump to a folded step; the detail, search and agents still read every step. On one priceimpact request (64 events, 100 columns) it drew 12 boxes in 73 rows instead of 426.
 - In every view, a request's turn is no longer a bracket down the margin (the column's order says it), a margin rail joins boxes at most three apart (a longer link is written in both boxes), and a sub-agent's name is written once at the top of its stack.

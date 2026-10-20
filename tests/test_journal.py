@@ -527,6 +527,14 @@ def test_a_run_with_no_person_at_the_terminal_is_not_sent_back(project, tmp_path
     assert journal.unattended({"transcript_path": str(rollout)}, "x", **homes)
     rollout.write_text(dumps({"type": "session_meta", "payload": {"id": "x", "originator": "codex-tui", "source": "cli"}}) + "\n")
     assert not journal.unattended({"transcript_path": str(rollout)}, "x", **homes)
+    # A transcript Codex has compressed (`.jsonl.zst`) is read the same way.
+    import zstandard
+    packed = tmp_path / "rollout-exec.jsonl.zst"
+    packed.write_bytes(zstandard.ZstdCompressor().compress(
+        (dumps({"type": "session_meta", "payload": {"id": "x", "originator": "codex_exec", "source": "exec"}}) + "\n").encode()))
+    assert journal.unattended({"transcript_path": str(packed)}, "x", **homes)
+    packed.write_bytes(b"not zstd")
+    assert not journal.unattended({"transcript_path": str(packed)}, "x", **homes)
 
 
 def test_a_note_from_codex_run_by_claude_code_in_the_same_project_finds_its_own_session(project, tmp_path):

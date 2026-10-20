@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import fcntl
 import difflib
+import io
 import json
 import os
 import re
@@ -36,7 +37,8 @@ from .git_context import Scope
 from .i18n import tr
 from .model import SourceRecord, Snapshot
 from .schema import SHORT_QUOTE_CHARS, STATUSES, EvidenceValidator, draft_delta, occurrences, resolve_quote
-from .sources.local import jsonl_files, parse_claude, parse_codex, source_homes
+from .sources.local import (COMPRESSED_SUFFIX, MAX_FILE_BYTES, decompress_zstd, jsonl_files, parse_claude,
+                            parse_codex, source_homes)
 from .sources.opencode import opencode_databases, parse_opencode
 from .store import Store, in_journal
 from .util import FlowError, ident, now, private_dir, safe_text
@@ -805,12 +807,22 @@ def _work_since(scope: Scope, store: Store, payload: dict, session_id: str, sinc
     activity = store.get_meta(ACTIVITY_KEY, {}) or {}
     entry = activity.setdefault(session_id, {})
     state = entry.get(SCAN_KEY) or {}
-    size = path.stat().st_size
+    # A transcript Codex has compressed is read whole; offsets count its uncompressed bytes.
+    whole = None
+    if path.name.endswith(COMPRESSED_SUFFIX):
+        try:
+            whole = decompress_zstd(path.read_bytes(), MAX_FILE_BYTES)
+        except (OSError, FlowError):
+            return None
+    size = len(whole) if whole is not None else path.stat().st_size
     if state.get("path") != str(path) or size < state.get("offset", 0):
         state = {"path": str(path), "offset": 0, "items": [], "latest": 0.0}
-    with path.open("rb") as stream:
-        stream.seek(state["offset"])
-        data = stream.read(size - state["offset"])
+    if whole is not None:
+        data = whole[state["offset"]:size]
+    else:
+        with path.open("rb") as stream:
+            stream.seek(state["offset"])
+            data = stream.read(size - state["offset"])
     complete = data.rfind(b"\n") + 1  # a line still being written is read next time
     items, latest = list(state["items"]), state["latest"]
     for raw in data[:complete].splitlines():
@@ -869,7 +881,9 @@ def unattended(payload: dict, session_id: str, *, codex_home: Path | None = None
     if path is None:
         return False
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
+        compressed = path.name.endswith(COMPRESSED_SUFFIX)
+        with (io.StringIO(decompress_zstd(path.read_bytes(), MAX_FILE_BYTES).decode("utf-8", errors="replace"))
+              if compressed else path.open("r", encoding="utf-8", errors="replace")) as handle:
             for _, line in zip(range(UNATTENDED_LINES), handle):
                 try:
                     row = json.loads(line)
@@ -883,7 +897,7 @@ def unattended(payload: dict, session_id: str, *, codex_home: Path | None = None
                 entry = row.get("entrypoint")
                 if isinstance(entry, str):
                     return entry.startswith("sdk-")
-    except OSError:
+    except (OSError, FlowError):
         return False
     return False
 

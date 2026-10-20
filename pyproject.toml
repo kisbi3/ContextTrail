@@ -11,7 +11,9 @@ license = "MIT"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 authors = [{ name = "Jaesung Kim" }]
 requires-python = ">=3.11"
-dependencies = ["jsonschema>=4.23,<5", "wcwidth>=0.2.13,<1", "langgraph>=1,<2"]
+dependencies = ["jsonschema>=4.23,<5", "wcwidth>=0.2.13,<1", "langgraph>=1,<2",
+                # Codex compresses older transcripts (.jsonl.zst); Python 3.14 reads zstd itself.
+                "zstandard>=0.22,<1; python_version < '3.14'"]
 classifiers = ["Development Status :: 3 - Alpha", "Operating System :: POSIX :: Linux", "Operating System :: MacOS :: MacOS X", "Programming Language :: Python :: 3"]
 
 [project.optional-dependencies]
