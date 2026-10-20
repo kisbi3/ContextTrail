@@ -962,6 +962,12 @@ def main(argv: list[str] | None = None) -> int:
             ask = None if is_demo or confirm is None or args.yes else (lambda snapshot, plan: confirm(plan))
             return engine.analyze(factory, cancel=cancel, update=update, consent=ask)
         if args.command == "scan":
+            if sys.stderr.isatty():
+                # The JSON stays on stdout; the person watching sees the scan move (a first scan takes minutes).
+                def shown(done: int, total: int) -> None:
+                    print("\r" + tr(f"기록 파일 읽는 중 {done}/{total}", f"reading transcript files {done}/{total}"),
+                          end="" if done < total else "\n", file=sys.stderr, flush=True)
+                engine.scan_progress = shown
             snapshot = engine.scan()
             try:
                 plan, plan_error = engine.preview_plan(snapshot), None

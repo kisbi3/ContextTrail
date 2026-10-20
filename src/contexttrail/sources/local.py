@@ -1190,7 +1190,8 @@ def _stat(path: Path) -> tuple[int, int] | None:
 
 
 def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: Path | None = None,
-                 opencode_home: Path | None = None, cache: ScanCache | None = None) -> Snapshot:
+                 opencode_home: Path | None = None, cache: ScanCache | None = None,
+                 progress=None) -> Snapshot:
     """Every in-scope record of the three tools: Codex and Claude Code JSONL files, the opencode database. With a
     `cache`, a transcript file an earlier scan found no records in, and that has not changed since, is not read:
     its limitations and manifest are replayed (marked `reused`), and the cache keeps what this scan found."""
@@ -1206,7 +1207,10 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
             if previous and previous.content_hash != record.content_hash:
                 warnings.append(f"different content under the same native ID: {record.source_id}; the copy found later was kept.")
             result[record.source_id] = record
-    for path, provider in jsonl_files(codex_home, claude_home):
+    transcripts = jsonl_files(codex_home, claude_home)
+    for done, (path, provider) in enumerate(transcripts, 1):
+        if progress is not None and (done % 25 == 0 or done == len(transcripts)):
+            progress(done, len(transcripts))  # counts only, never a path or content
         before = _stat(path) if cache is not None else None
         if before is not None:
             entry = cache.entries.get(str(path))

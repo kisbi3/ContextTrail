@@ -1918,6 +1918,8 @@ class Engine:
         self.held_back: set[str] = set()
         # The output language was detected for this plan, not configured or saved (`resolve_language`).
         self._language_detected = False
+        # Called with (files read, files) while a scan reads the transcripts (`scan` on a terminal shows it).
+        self.scan_progress: Callable[[int, int], None] | None = None
         # The sessions this run takes ahead of the oldest-first order, and whether records outside them still
         # wait (then what the run adds is out of order); set by `_plan_units`.
         self.selection: dict | None = None
@@ -1930,7 +1932,7 @@ class Engine:
         saved, key = self.store.get_meta(SCAN_CACHE_META, {}) or {}, scan_cache_key(source_scope)
         cache = ScanCache(key, saved.get("files", {}) if saved.get("key") == key else {})
         logs = collect_logs(source_scope, codex_home=self.config.codex_home, claude_home=self.config.claude_home,
-                            opencode_home=self.config.opencode_home, cache=cache)
+                            opencode_home=self.config.opencode_home, cache=cache, progress=self.scan_progress)
         self.store.set_meta(SCAN_CACHE_META, {"key": key, "files": cache.fresh})
         artifacts = collect_git(self.scope, history_limit=self.config.history_limit,
                                 exclude=self.store.get_meta("exports", []))

@@ -910,3 +910,18 @@ def test_an_unlinked_sub_agent_of_another_project_is_settled_and_kept(tmp_path):
     cache = ScanCache(scan_cache_key(scope))
     found = collect_logs(scope, codex_home=tmp_path / "codex", claude_home=claude, cache=cache)
     assert not found.records and not found.limitations and str(sub) in cache.fresh  # a link would change nothing here
+
+
+def test_a_scan_reports_its_progress_in_counts_only(tmp_path):
+    from contexttrail.git_context import Scope
+    from contexttrail.sources.local import collect_logs
+    folder = tmp_path / "app"; folder.mkdir()
+    for n in range(30):
+        path = tmp_path / "claude" / "projects" / "p" / f"s{n}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"type": "user", "uuid": "u", "sessionId": "s%d", "cwd": "/elsewhere", '
+                        '"timestamp": "2026-10-01T00:00:00Z", "message": {"content": "hi"}}\n' % n)
+    seen = []
+    collect_logs(Scope.resolve(folder), codex_home=tmp_path / "codex", claude_home=tmp_path / "claude",
+                 opencode_home=tmp_path / "oc", progress=lambda done, total: seen.append((done, total)))
+    assert seen == [(25, 30), (30, 30)]
