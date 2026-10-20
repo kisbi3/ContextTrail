@@ -178,3 +178,13 @@ def test_the_story_svg_draws_every_relation_between_neighbours_and_wraps_its_emp
     empty = story_svg(story_view({"version": 1, "events": [event("w", "action", "10:02", basis="tool_record")], "edges": []}))
     lines = [line for line in empty.split("<text")[1:] if 'font-size="15"' in line]
     assert len(lines) >= 2 and "every step" in empty  # wrapped onto lines that fit, the pointer to the button kept
+
+
+def test_unsupported_methods_get_the_pages_headers_and_no_product_banner(viewer):
+    obj,calls,_=viewer
+    for method in ('PUT','DELETE','OPTIONS','HEAD'):
+        status,_,headers=request(obj,method,'/graph')
+        assert status in (405,501) and "default-src 'none'" in headers['Content-Security-Policy']
+        assert headers['Cache-Control']=='no-store' and 'ProjectFlow' not in headers.get('Server','')
+        assert 'Python' not in headers.get('Server','')
+    assert not calls

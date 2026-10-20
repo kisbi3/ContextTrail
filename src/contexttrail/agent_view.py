@@ -240,7 +240,8 @@ def event_row(graph: dict, event: dict, labels: dict[str, str]) -> dict:
     """One line of a listing: the event's reference, time, kind, status label and title."""
     return {"event": short_id(graph, event["id"]), "reference": reference(graph, event["id"]),
             "when": event.get("occurred_at") or event.get("recorded_at"), "kind": event["kind"],
-            **({"step": event["step"]} if event.get("step") else {}), "status_label": labels[event["id"]], "title": event["title"], "authoring": event.get("authoring", []),
+            **({"step": event["step"]} if event.get("step") else {}), "status": event["status"],
+            "status_label": labels[event["id"]], "title": event["title"], "authoring": event.get("authoring", []),
             "out_of_order": event["id"] in graph.get("out_of_order_events", [])}
 
 
@@ -272,11 +273,26 @@ def find(graph: dict, query: str, evidence_many: Callable[[list[str]], dict[str,
     else:
         matched = newest_first(events)
     rows = [event_row(graph, event, labels) for event in matched[:limit]]
-    open_items = [] if words else [item.get("text", "") for item in graph.get("open_items", [])
-                                   if isinstance(item, dict)][:limit]
+    open_items = [] if words else open_items_newest(graph, labels)[:limit]
     return {"graph_version": graph["version"], "analysis_status": graph.get("analysis_status"),
             "analyzed_at": graph.get("analyzed_at"), "query": query, "matches": len(matched),
             "events": rows, "open_items": open_items, "ai_calls": 0}
+
+
+def open_items_newest(graph: dict, labels: dict[str, str]) -> list[str]:
+    """The open items still open, newest first by their related events (as the session memory picks them), each with
+    the reference of the event it is about: the stored order is oldest first and keeps resolved items."""
+    events = {event["id"]: event for event in graph["events"]}
+    def latest(item: dict) -> str:
+        return max((events[i].get("occurred_at") or events[i].get("recorded_at") or ""
+                    for i in item.get("related_event_ids", []) if i in events), default="")
+    items = [item for item in graph.get("open_items", []) if isinstance(item, dict)
+             and item.get("status") != "resolved" and str(item.get("text", "")).strip()]
+    found = []
+    for item in sorted(items, key=latest, reverse=True):
+        related = next((events[i] for i in item.get("related_event_ids", []) if i in events), None)
+        found.append(item["text"] + (f" ({event_row(graph, related, labels)['reference']})" if related else ""))
+    return found
 
 
 def find_text(result: dict) -> list[str]:

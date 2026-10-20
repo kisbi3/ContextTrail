@@ -421,6 +421,12 @@ def _brief(result: dict) -> None:
 
 
 def _find(args) -> int:
+    if args.folder == "." and args.query and Path(args.query).expanduser().is_dir():
+        # `find .` or `find ~/proj`: a folder alone is where to look, not words to look for.
+        args.query, args.folder = "", args.query
+    elif not Path(args.folder).expanduser().is_dir():
+        raise FlowError(tr(f"폴더가 없습니다: {args.folder}. 여러 단어를 찾으려면 따옴표로 묶으세요: find \"{args.query} {args.folder}\"",
+                           f"No such folder: {args.folder}. To search for several words, quote them: find \"{args.query} {args.folder}\""))
     scope = Scope.resolve(args.folder)
     store = Store(scope.state_dir, scope.id)
     _screen_language(None, store)
@@ -900,10 +906,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "serve":
             cancel = threading.Event()
             viewer = LocalViewer(store, refresh=lambda: analyze_callback(cancel, lambda _: None), port=args.port, scope=scope).start()
-            print(tr("PC에서 포트 포워딩:", "Port forwarding from your PC:"))
-            print(f"ssh -L 127.0.0.1:{viewer.port}:127.0.0.1:{viewer.port} user@server")
+            if os.environ.get("SSH_CONNECTION"):
+                print(tr("PC에서 포트 포워딩:", "Port forwarding from your PC:"))
+                print(f"ssh -L 127.0.0.1:{viewer.port}:127.0.0.1:{viewer.port} user@server")
             print(tr("접근 주소 (외부 공유 금지):", "Access URL (do not share):"), viewer.url())
-            print(tr("종료: Ctrl+C. 페이지 조회는 AI를 호출하지 않습니다.", "Quit: Ctrl+C. Viewing pages never calls AI."))
+            # Flushed now: under nohup or a log file stdout is block-buffered, and the token-bearing URL would stay
+            # in the buffer until the server exits.
+            print(tr("종료: Ctrl+C. 페이지 조회는 AI를 호출하지 않습니다.", "Quit: Ctrl+C. Viewing pages never calls AI."),
+                  flush=True)
             try:
                 while True:
                     time.sleep(0.2)

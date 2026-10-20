@@ -83,9 +83,17 @@ class LocalViewer:
     def start(self) -> "LocalViewer":
         viewer = self
         class Handler(BaseHTTPRequestHandler):
-            server_version = "ProjectFlow"
+            server_version, sys_version = "ContextTrail", ""
             def log_message(self, *args):
                 pass  # Never put tokens or source data in HTTP access logs.
+
+            def send_error(self, code, message=None, explain=None):
+                # The stock error page (unsupported methods, bad requests) carries none of the page's headers.
+                self.close_connection = True
+                self.send_data(code, {"error": str(message or code)})
+
+            def do_HEAD(self):
+                self.send_error(405, "method not allowed")
 
             def send_data(self, code: int, data, content_type: str = "application/json; charset=utf-8"):
                 raw = data.encode("utf-8") if isinstance(data, str) else dumps(data).encode("utf-8")

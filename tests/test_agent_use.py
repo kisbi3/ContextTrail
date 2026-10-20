@@ -281,3 +281,31 @@ def test_an_analysed_event_names_the_tool_of_its_records_and_the_model_that_anal
     assert "  에이전트: claude" in show_text(result)
     assert "  분석: synthetic-fixture fixture-model" in show_text(result)
     assert find(graph, "", store.evidence_many)["events"][0]["authoring"] == [{"tool": "claude"}]
+
+
+def test_find_lists_open_items_still_open_newest_first_with_their_event():
+    graph = {"version": 3, "analysis_status": "complete", "analyzed_at": None, "evidence": {},
+             "events": [{"id": "ev_old", "kind": "outcome", "status": "observed_failure", "title": "old", "summary": "",
+                         "evidence_ids": [], "recorded_at": "2026-09-01T00:00:00Z"},
+                        {"id": "ev_new", "kind": "outcome", "status": "observed_failure", "title": "new", "summary": "",
+                         "evidence_ids": [], "recorded_at": "2026-10-01T00:00:00Z"}],
+             "edges": [],
+             "open_items": [{"text": "old question", "status": "open", "related_event_ids": ["ev_old"]},
+                            {"text": "settled", "status": "resolved", "related_event_ids": ["ev_new"]},
+                            {"text": "new question", "status": "open", "related_event_ids": ["ev_new"]}]}
+    result = find(graph, "", lambda ids: {})
+    assert [item.split(" (")[0] for item in result["open_items"]] == ["new question", "old question"]
+    assert "contexttrail:ev_new" in result["open_items"][0]
+    assert result["events"][0]["status"] == "observed_failure"
+
+
+def test_find_takes_a_lone_folder_as_where_to_look_and_explains_unquoted_words(tmp_path, monkeypatch, capsys):
+    from contexttrail.cli import main
+    project, elsewhere = tmp_path / "project", tmp_path / "elsewhere"
+    project.mkdir(); elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert main(["find", str(project)]) == 0
+    assert "'" + str(project) not in capsys.readouterr().out  # an overview of that folder, not a search for its path
+    assert not (elsewhere / ".contexttrail").exists()
+    assert main(["find", "story", "view"]) == 1
+    assert 'find "story view"' in capsys.readouterr().err
