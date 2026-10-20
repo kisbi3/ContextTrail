@@ -226,3 +226,22 @@ def test_a_check_on_a_byte_budget_does_not_read_a_huge_transcript_through(tmp_pa
     unbounded = check(scope, store, **homes)  # `status` reads it through
     assert unbounded["since_scan"]["parsed"] and unbounded["since_scan"]["records"] == 1
     assert freshness.cached_since_scan(store, unbounded["scanned_at"]) == {"records": 1, "sessions": 1}
+
+
+def test_records_lost_before_analysis_leave_the_count_and_are_named(tmp_path):
+    """A transcript that stops being read (moved, unreadable) takes its unanalysed records out of the pending count;
+    status says so, and the plan names the file, so the drop does not read as progress."""
+    from contexttrail.freshness import status_lines
+    folder, scope, store, engine, homes = laboratory(tmp_path)
+    path = homes["claude_home"] / "projects" / "p" / "s1.jsonl"
+    write(path, claude_rows(folder, "s1", ["Use SQLite.", "Done."]))
+    engine.preview_plan(engine.scan())  # stored, as a scan command or an analysis stores them
+    path.unlink()
+    snapshot = engine.scan()
+    engine.preview_plan(snapshot)
+    result = check(scope, store, **homes)
+    assert result["pending"]["records"] == 0 and result["unavailable_unprocessed"] == 2
+    assert any("더는 읽히지 않는 기록 2개" in line for line in status_lines(result, folder))
+    issues: list[str] = []
+    engine._plan_units(snapshot, issues)
+    assert f"records no longer read before any analysis: 2 from {path}" in issues

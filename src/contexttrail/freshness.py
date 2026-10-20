@@ -82,6 +82,10 @@ def stored(store: Store) -> tuple[dict[str, Any], dict[str, Any] | None, dict[st
                   "analyzed_at": graph.get("analyzed_at")},
         "scanned_at": index.get("scanned_at") if index else None,
         "pending": {"records": pending, "units": units},
+        # Records no analysis processed that the last scan no longer found (a moved, compressed or unreadable file):
+        # they leave the pending count, which must not read as progress.
+        "unavailable_unprocessed": sum(1 for row in sources.values() if not row["available"]
+                                       and row["processed_hash"] != row["content_hash"]),
         "failed_units": len(failed),
         "unaudited": unaudited(store, sources, stored_units),
         "since_scan": None, "took_ms": 0}
@@ -370,15 +374,28 @@ def status_lines(result: dict[str, Any], folder: Path) -> list[str]:
     lines = [tr(f"ContextTrail · 그래프 v{version} ({state}) · 분석 기준 {analyzed or '없음'} · AI 호출 없음",
                 f"ContextTrail · graph v{version} ({state}) · analyzed as of {analyzed or 'none'} · no AI calls")]
     scanned = result["scanned_at"]
-    if not scanned:
-        lines.append(tr("기록을 아직 scan하지 않았습니다: contexttrail scan . 또는 contexttrail analyze .",
-                        "Transcripts were never scanned: contexttrail scan . or contexttrail analyze ."))
-        return lines
     pending = result["pending"]
+    if not scanned:
+        if pending["records"]:
+            # A state an older version wrote has records but no index of the files: it was scanned, not indexed.
+            lines.append(tr(f"기록 파일 색인이 없습니다(이전 버전의 상태) · 저장된 미분석 기록 {pending['records']}개 · "
+                            "색인 만들기: contexttrail scan . (AI 호출 없음)",
+                            f"No index of the transcript files (a state from an older version) · {pending['records']} stored "
+                            "records not analyzed · to index them: contexttrail scan . (no AI calls)"))
+        else:
+            lines.append(tr("기록을 아직 scan하지 않았습니다: contexttrail scan . 또는 contexttrail analyze .",
+                            "Transcripts were never scanned: contexttrail scan . or contexttrail analyze ."))
+        return lines
     lines.append(tr(f"마지막 scan {_local(scanned)} ({ago(scanned)}) · 그때 기준 미분석 기록 {pending['records']}개"
                     + (f", 작업 단위 {pending['units']}개 대기" if pending["units"] else ""),
                     f"Last scan {_local(scanned)} ({ago(scanned)}) · {pending['records']} records not analyzed as of then"
                     + (f", {pending['units']} work units waiting" if pending["units"] else "")))
+    if result.get("unavailable_unprocessed"):
+        lost = result["unavailable_unprocessed"]
+        lines.append(tr(f"분석 전에 더는 읽히지 않는 기록 {lost}개: 미분석 수에서 빠졌습니다(파일이 옮겨졌거나 읽지 못함). "
+                        "scan의 limitations가 파일을 적습니다.",
+                        f"{lost} records not analyzed are no longer read: they left the count above (a file moved or "
+                        "could not be read). scan's limitations name the files."))
     since = result["since_scan"] or {}
     if since.get("parsed"):
         if since["records"]:

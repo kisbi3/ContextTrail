@@ -2173,6 +2173,12 @@ class Engine:
         missing = [i for i, row in source_rows.items() if not row["available"]]
         if missing:
             issues.append(f"{len(missing)} sources are missing from the current snapshot. Preserved evidence is kept; no fact is retracted.")
+            # The files whose records no analysis reached before they went missing, by count: the backlog that
+            # shrank without being analysed (the cause is not known here; the scan's own limitations may say it).
+            lost = Counter(str((source_rows[i]["metadata"].get("locator") or {}).get("path") or "unknown file")
+                           for i in missing if source_rows[i]["processed_hash"] != source_rows[i]["content_hash"])
+            for path, count in lost.most_common(3):
+                issues.append(f"records no longer read before any analysis: {count} from {path}")
         pending = {i for i, row in source_rows.items()
                    if i in pool and row["processed_hash"] != pool[i].content_hash}
         plans, scheduled, settled, regrouped = [], set(), {}, {}
