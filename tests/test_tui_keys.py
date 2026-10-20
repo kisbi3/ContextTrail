@@ -202,3 +202,16 @@ def test_mouse_picks_a_request_from_the_list(monkeypatch):
     assert "요청 2개" in screen.text()
     click(monkeypatch, panels, *at(screen, "문서도 고쳐 줘"))
     assert panels.current == "m2" and panels.turn() == 1
+
+
+def test_the_screen_takes_a_utf8_character_set_under_an_ascii_locale(monkeypatch):
+    import locale
+    from contexttrail import ui
+    saved = locale.setlocale(locale.LC_ALL)
+    try:
+        monkeypatch.setenv("LC_ALL", "C")
+        monkeypatch.setenv("LANG", "C")
+        ui.utf8_locale()
+        assert "UTF-8" in locale.nl_langinfo(locale.CODESET).upper().replace("UTF8", "UTF-8")
+    finally:
+        locale.setlocale(locale.LC_ALL, saved)

@@ -690,3 +690,33 @@ def test_the_automatic_analysis_takes_a_quiet_sessions_tail_before_the_backlog(p
     assert tail.source_id in sources and ahead  # the tail first, its events out of order
     sources, ahead = first_unit(Engine(scope, store, AnalysisConfig(**homes)))
     assert tail.source_id not in sources and not ahead  # a run the person starts keeps the oldest first
+
+
+def test_a_success_quoted_from_a_failing_run_is_refused(project):
+    _, scope, store = project
+    with pytest.raises(FlowError, match="shows the run failed"):
+        note(scope, store, kind="outcome", status="observed_success", title="Store tests pass", quotes=["1 failed, 12 passed"])
+    assert store.graph()["version"] == 0
+
+
+def test_a_check_that_ran_before_the_change_cannot_verify_it(project):
+    _, scope, store = project
+    # The change rests on the assistant's 10:05 message; the failing run is from 10:04.
+    change = note(scope, store, kind="action", status="reported_complete", title="Fix reported",
+                  quotes=["All concurrency tests pass now"])
+    with pytest.raises(FlowError, match="ran before that change"):
+        note(scope, store, kind="outcome", status="observed_failure", title="Two writers fail",
+             quotes=["test_two_writers - JSONDecodeError"], relations={"verifies": [change["ref"]]})
+    assert store.graph()["version"] == change["version"]
+
+
+def test_a_wrapper_that_wrote_notes_is_never_their_evidence(project, tmp_path):
+    folder, scope, store = project
+    path = tmp_path / "claude" / "projects" / "app" / f"{SESSION}.jsonl"
+    wrapper = row(folder, 7, "assistant", [{"type": "tool_use", "id": "t4", "name": "Bash", "input": {
+        "command": "n() { contexttrail note \"$@\"; }\nn --kind outcome --title Done --quote 'All concurrency tests pass now'"}}])
+    path.write_text(path.read_text() + dumps(wrapper) + "\n", encoding="utf-8")
+    result = note(scope, store, kind="outcome", status="reported_complete", title="Reported fixed",
+                  quotes=["All concurrency tests pass now"])
+    evidence = store.evidence(result["event"]["evidence_ids"][0])
+    assert evidence["source"]["role"] == "assistant"

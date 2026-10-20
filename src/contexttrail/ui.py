@@ -227,7 +227,7 @@ def utf8_locale() -> None:
         return
     for name in ("C.UTF-8", "en_US.UTF-8", "ko_KR.UTF-8"):
         try:
-            locale.setlocale(locale.LC_ALL, name)
+            locale.setlocale(locale.LC_CTYPE, name)  # the character set only: dates and messages stay the user's
             return
         except locale.Error:
             continue

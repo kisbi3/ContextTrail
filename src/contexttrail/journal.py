@@ -247,6 +247,15 @@ def quotable(records: list[SourceRecord]) -> list[SourceRecord]:
     return [r for r in records if not runs_note(r) and not (r.role == "tool_result" and r.tool_call_id in calls)]
 
 
+def writes_this_note(record: SourceRecord, quote: str) -> bool:
+    """A tool call that wrote notes with this quote as an argument: an agent's wrapper (`n() { contexttrail note "$@"; }`,
+    a script of note calls) that `runs_note` cannot see. Such a call holds every quote it passed, so it would be cited
+    as its own evidence; the edit, run or message the quote came from is the source."""
+    head = quote.strip()[:40]
+    return (record.role == "tool_call" and bool(head) and "--quote" in record.content and "--kind" in record.content
+            and (head in record.content or json.dumps(head)[1:-1] in record.content))
+
+
 def locate(records: list[SourceRecord], quote: str) -> dict[str, Any]:
     """The citation of a quote: the most recent record holding it, at the lines that hold it."""
     if len(quote.strip()) < SHORT_QUOTE_CHARS:
@@ -345,17 +354,49 @@ def prepare(scope: Scope, store: Store | None, session_id: str, *, kind: str, qu
     first = [record for record in sources if record.role in roles]
     citations = []
     for quote in quotes:
+        own = [record for record in sources if not writes_this_note(record, quote)]
+        preferred = [record for record in first if not writes_this_note(record, quote)]
         try:
-            citations.append(locate(first, quote) if first else locate(sources, quote))
+            citations.append(locate(preferred, quote) if preferred else locate(own, quote))
         except FlowError:
-            citations.append(locate(sources, quote))
+            citations.append(locate(own, quote))
     pool = {record.source_id: record for record in records}
     cited = [pool[c["source_id"]] for c in citations]
     if status in ("observed_success", "observed_failure") and not any(r.role == "tool_result" for r in cited):
         found = ", ".join(sorted({r.role.replace("_", " ") for r in cited}))
         raise FlowError(f"{status} needs a quote of a tool's output (its result), but the quotes were found in: {found}. "
                         "Quote a line the command printed, or use reported_complete/reported_failure. Nothing was stored.")
+    if status == "observed_success":
+        from .light import check_failed
+        failing = [r for r in cited if r.role == "tool_result" and check_failed(r.content, False)]
+        if failing:
+            # "12 passed" quoted from a run that printed "1 failed, 12 passed" would verify a change the run failed.
+            raise FlowError("observed_success, but the quoted output shows the run failed (a nonzero exit status or a "
+                            "failure count such as '1 failed'). Use observed_failure, or quote a run that passed. "
+                            "Nothing was stored.")
     return records, citations, status
+
+
+def _check_order(graph: dict, store: Store, changes: list[str], kind: str, cited: list) -> None:
+    """A check verifies a change only when it ran after it: refuse `--verifies` when every tool output the note
+    quotes is older than the change's last cited record. Unknown times decide nothing."""
+    if kind != "outcome" or not changes:
+        return
+    ran = [record.recorded_at for record in cited if record.role == "tool_result" and record.recorded_at]
+    if not ran:
+        return
+    events = {event["id"]: event for event in graph["events"]}
+    for change in changes:
+        event = events.get(change)
+        if event is None:
+            continue
+        items = store.evidence_many(event.get("evidence_ids", []))
+        times = [str(item.get("source", {}).get("recorded_at")) for item in items.values()
+                 if item.get("source", {}).get("recorded_at")] or ([event["recorded_at"]] if event.get("recorded_at") else [])
+        checked, changed = max(map(_seconds, ran)), max(map(_seconds, times), default=0.0)
+        if checked and changed and checked < changed:
+            raise FlowError(f"--verifies {change}: the quoted output ran before that change's last cited record, so it cannot have checked it. Quote a run after the change, or leave "
+                            "--verifies out. Nothing was stored.")
 
 
 def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str, summary: str = "",
@@ -387,6 +428,7 @@ def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str,
             graph = store.graph()
             relations = {name: [event_id_of(value, graph, aliases) for value in values]
                          for name, values in (relations or {}).items() if values}
+            _check_order(graph, store, relations.get("verifies", []), kind, cited)
             snapshot_id = Snapshot(records).id
             run_id = ident("note_", session_id, now(), quotes)
             unit_id = ident("unit_note_", session_id, run_id)
