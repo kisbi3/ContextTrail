@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .agent_commands import tool_dirs
 from .freshness import FIND_BUDGET_BYTES, check
 from .git_context import Scope
 from .i18n import tr
@@ -371,7 +372,7 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 
 def install_claude_hook(home: Path, python: Path | None = None, *, force: bool = False) -> Path:
     """`Stop` hook in ~/.claude/settings.json, `async` so the turn never waits; other settings are kept."""
-    path = home / ".claude" / "settings.json"
+    path = tool_dirs(home)["claude"] / "settings.json"
     document = _load_json(path, str(path))
     hooks = document.setdefault("hooks", {})
     if not isinstance(hooks, dict):
@@ -395,7 +396,7 @@ def install_codex_hook(home: Path, python: Path | None = None, *, force: bool = 
     Codex runs hooks synchronously (the command returns at once) and asks the person to trust a new
     hooks file in its own UI before running it.
     """
-    path = home / ".codex" / "hooks.json"
+    path = tool_dirs(home)["codex"] / "hooks.json"
     document = _load_json(path, str(path))
     hooks = document.setdefault("hooks", {})
     if not isinstance(hooks, dict):
@@ -467,7 +468,7 @@ export const ContextTrailAutoUpdate = async ({{ client, directory, $ }}) => {{
 
 
 def install_opencode_plugin(home: Path, python: Path | None = None, *, force: bool = False) -> Path:
-    path = home / ".config" / "opencode" / "plugins" / "contexttrail.ts"
+    path = tool_dirs(home)["opencode"] / "plugins" / "contexttrail.ts"
     content = opencode_plugin(python)
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise FlowError(tr(f"플러그인 대상이 일반 파일이 아닙니다: {path}", f"The plugin target is not a regular file: {path}"))

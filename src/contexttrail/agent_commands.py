@@ -128,6 +128,19 @@ _CODEX_EXPLICIT_ONLY = f"# {_MANAGED_MARKER}\npolicy:\n  allow_implicit_invocati
 OPENCODE_PERMISSION_HINT = '{"permission": {"skill": {"contexttrail-update": "ask"}}}'
 
 
+def tool_dirs(home: Path) -> dict[str, Path]:
+    """Where each tool reads its settings, skills and hooks: Claude Code `CLAUDE_CONFIG_DIR`, Codex `CODEX_HOME`,
+    opencode `$XDG_CONFIG_HOME/opencode`, the same variables ContextTrail reads their transcripts by, else the
+    default under `home`. The variables count only for the person's own home (tests and previews pass another)."""
+    real = home.expanduser().resolve() == Path.home().resolve()
+    def chosen(name: str, default: Path) -> Path:
+        value = os.environ.get(name) if real else None
+        return Path(value).expanduser().resolve() if value else default
+    xdg = chosen("XDG_CONFIG_HOME", home / ".config")
+    return {"claude": chosen("CLAUDE_CONFIG_DIR", home / ".claude"), "codex": chosen("CODEX_HOME", home / ".codex"),
+            "opencode": xdg / "opencode"}
+
+
 def install_agent_commands(home: Path, python: Path | None = None, *, force: bool = False) -> list[Path]:
     """Install the skills, Codex's legacy slash aliases and opencode's commands without touching agent settings."""
     home = home.expanduser().resolve()
@@ -135,18 +148,21 @@ def install_agent_commands(home: Path, python: Path | None = None, *, force: boo
     # interpreter, which may not have ContextTrail's dependencies installed.
     python = (python or Path(sys.executable)).expanduser().absolute()
     targets: dict[Path, str] = {}
+    dirs = tool_dirs(home)
     for role in ("update", "context"):
         name = f"contexttrail-{role}"
         targets[home / ".agents" / "skills" / name / "SKILL.md"] = _skill(role, python, "codex-skill")
-        targets[home / ".claude" / "skills" / name / "SKILL.md"] = _skill(role, python, "claude")
-        targets[home / ".codex" / "prompts" / f"{name}.md"] = _codex_prompt(role, python)
-        targets[home / ".config" / "opencode" / "commands" / f"{name}.md"] = _opencode_command(role, python)
+        targets[dirs["claude"] / "skills" / name / "SKILL.md"] = _skill(role, python, "claude")
+        targets[dirs["codex"] / "prompts" / f"{name}.md"] = _codex_prompt(role, python)
+        targets[dirs["opencode"] / "commands" / f"{name}.md"] = _opencode_command(role, python)
     targets[home / ".agents" / "skills" / "contexttrail-update" / "agents" / "openai.yaml"] = _CODEX_EXPLICIT_ONLY
     # The note skill is picked by the agent itself while it works, in Codex and Claude Code alike.
     targets[home / ".agents" / "skills" / "contexttrail-note" / "SKILL.md"] = _skill("note", python, "codex-skill")
-    targets[home / ".claude" / "skills" / "contexttrail-note" / "SKILL.md"] = _skill("note", python, "claude")
+    targets[dirs["claude"] / "skills" / "contexttrail-note" / "SKILL.md"] = _skill("note", python, "claude")
+    roots = [home, *dirs.values()]
     for path, content in targets.items():
-        if any(parent.is_symlink() for parent in path.parents if parent != home and home in parent.parents):
+        root = next((r for r in roots if r in path.parents), home)
+        if any(parent.is_symlink() for parent in path.parents if parent != root and root in parent.parents):
             raise FlowError(tr(f"에이전트 명령 경로에 symlink가 있습니다: {path}",
                                f"A symlink is on the agent command path: {path}"))
         if path.is_symlink() or (path.exists() and not path.is_file()):

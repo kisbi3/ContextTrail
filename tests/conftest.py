@@ -27,6 +27,9 @@ def no_real_opencode_data(monkeypatch, tmp_path_factory):
     """The default opencode data directory is empty in tests, so no test reads a real opencode database."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path_factory.mktemp("xdg-data")))
     monkeypatch.delenv("OPENCODE_DB", raising=False)
+    # The tools' config directories: an installer test that sets HOME must not reach the person's own.
+    for name in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)

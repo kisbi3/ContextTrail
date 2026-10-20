@@ -85,3 +85,20 @@ def test_the_plugin_bundle_starts_sessions_with_the_memory_hook_guarded_by_the_c
     assert "async" not in start and start["timeout"] == 10
     assert [group["hooks"][0]["command"].split("&& ")[1].split(" ||")[0] for group in hooks["Stop"]] == ["contexttrail auto-update", "contexttrail note --hook"]
     assert json.loads(plugin_files(__version__)[Path("plugins/contexttrail/hooks/hooks.json")]) == {"hooks": hooks}
+
+
+def test_commands_and_hooks_go_where_each_tool_reads_them(tmp_path, monkeypatch):
+    """A person who runs the tools with their own config directories gets the skills and hooks there."""
+    from contexttrail.agent_commands import install_agent_commands
+    from contexttrail.auto_update import install_hooks
+    home = tmp_path / "home"; home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    for name, folder in (("CLAUDE_CONFIG_DIR", "claude-cfg"), ("CODEX_HOME", "codex-home"), ("XDG_CONFIG_HOME", "xdg")):
+        monkeypatch.setenv(name, str(tmp_path / folder))
+    written = install_agent_commands(home) + install_hooks(home, claude=True, codex=True, opencode=True)
+    assert (tmp_path / "claude-cfg" / "skills" / "contexttrail-update" / "SKILL.md").is_file()
+    assert (tmp_path / "codex-home" / "prompts" / "contexttrail-update.md").is_file()
+    assert (tmp_path / "xdg" / "opencode" / "commands" / "contexttrail-update.md").is_file()
+    assert {tmp_path / "claude-cfg" / "settings.json", tmp_path / "codex-home" / "hooks.json",
+            tmp_path / "xdg" / "opencode" / "plugins" / "contexttrail.ts"} <= set(written)
+    assert not (home / ".claude").exists() and not (home / ".codex").exists()
