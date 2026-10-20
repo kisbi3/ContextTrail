@@ -185,6 +185,11 @@ class Store:
             return {row["id"]: {**dict(row), "metadata": json.loads(row["metadata"])}
                     for row in db.execute("SELECT * FROM source_records")}
 
+    def latest_version(self) -> int:
+        """The newest published graph version, without loading it."""
+        with self.connection() as db:
+            return int(db.execute("SELECT MAX(version) FROM graph_versions").fetchone()[0] or 0)
+
     def sources_by_id(self, ids: set[str] | list[str]) -> dict[str, dict]:
         """`sources()` for the named records only (a few rows instead of the whole table)."""
         wanted, found = list(ids), {}

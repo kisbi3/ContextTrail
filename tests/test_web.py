@@ -252,3 +252,12 @@ def test_the_freshness_phrase_is_counted_again_after_a_scan_elsewhere(viewer, mo
     obj.store.set_meta("source_index", {"scanned_at": "2026-10-21T00:00:00Z", "files": {}})
     obj.freshness(version)
     assert len(counted)==2  # a scan run in another process changes what the graph lags
+
+
+def test_the_page_learns_the_latest_version_and_an_event_reads_only_its_sources(viewer, monkeypatch):
+    obj,_,_=viewer
+    payload=json.loads(request(obj,'GET','/graph')[1])
+    assert payload['latest_version']==obj.store.graph()['version']
+    monkeypatch.setattr(obj.store,'sources',lambda: (_ for _ in ()).throw(AssertionError('whole table read')))
+    event=obj.store.graph()['events'][0]['id']
+    assert request(obj,'GET','/events/'+event)[0]==200

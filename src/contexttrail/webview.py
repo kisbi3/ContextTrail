@@ -152,7 +152,7 @@ class LocalViewer:
                             "freshness": "" if refreshing else viewer.freshness(graph["version"]), "refreshing": refreshing,
                             "refresh_result": viewer.refresh_result, "can_refresh": bool(ready.get("ok")),
                             "refresh_with": {key: ready.get(key) for key in ("runner", "model") if ready.get(key)},
-                            "refresh_blocked": ready.get("reason")})
+                            "refresh_blocked": ready.get("reason"), "latest_version": viewer.store.latest_version()})
                     if path == "/graph.svg":
                         # The story view (the page's default) or every step; any other value is every step.
                         story = parse_qs(urlsplit(self.path).query).get("view", [""])[0] == "story"
@@ -172,7 +172,8 @@ class LocalViewer:
                                       "relation_label": RELATION.get(e["relation"], e["relation"])} for e in relations]
                         evidence_ids = event["evidence_ids"] + [i for edge in relations for i in edge["evidence_ids"]]
                         evidence = viewer.store.evidence_many(evidence_ids)
-                        sources = viewer.store.sources()
+                        # Only the cited records (the whole table took 0.3-0.9 s a click, growing with history).
+                        sources = viewer.store.sources_by_id({item["source_id"] for item in evidence.values()})
                         for item in evidence.values():
                             source = sources.get(item["source_id"])
                             item["original_state"] = ("missing" if not source or not source["available"] else

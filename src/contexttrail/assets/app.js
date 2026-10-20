@@ -3,6 +3,8 @@ const params = new URLSearchParams(location.hash.slice(1));
 const token = params.get("token") || sessionStorage.getItem("contexttrail.token") || "";
 if (token) sessionStorage.setItem("contexttrail.token", token);
 let version = params.get("v"), selected = params.get("event"), generation = 0, loading = 0, shown = null, refreshWith = "";
+// A link opened at a version stays at it; otherwise a reload shows the latest graph (an analysis may have run since).
+const pinned = params.get("v") !== null;
 // The story view (requests, decisions, findings; the work a line in its box) or every step; the story by default.
 let view = params.get("view") || sessionStorage.getItem("contexttrail.view") || "story";
 const $ = (id) => document.getElementById(id);
@@ -23,6 +25,7 @@ const L = document.documentElement.lang === "ko" ? {
   badSVG:"지원하지 않는 SVG 요소입니다.",
   confirmRefresh:(runner)=>`이 프로젝트의 새 대화·코드 근거가 ${runner}의 클라우드 모델에 전송될 수 있습니다. 변경분 분석을 실행할까요?`,
   refreshFailed:"변경분 분석 실패: ",
+  newer:(v)=>`더 새 그래프 v${v}가 있습니다(주소의 v= 를 지우고 새로 고침)`,
   refreshing:"변경분 분석 중 · 이전 그림을 유지합니다.",
   viewStory:"핵심 보기 · 모든 단계로", viewAll:"모든 단계 · 핵심 보기로",
   viewHint:"핵심 보기는 요청·결정·결론만 상자로 그리고, 작업과 하위 에이전트는 상자 안 한 줄로 접습니다"
@@ -42,6 +45,7 @@ const L = document.documentElement.lang === "ko" ? {
   badSVG:"Unsupported SVG element.",
   confirmRefresh:(runner)=>`New conversation and code evidence of this project may be sent to the cloud model of ${runner}. Analyze the changes?`,
   refreshFailed:"Analysis failed: ",
+  newer:(v)=>`a newer graph v${v} exists (remove v= from the address and reload)`,
   refreshing:"Analyzing changes · the previous picture stays.",
   viewStory:"Story view · show every step", viewAll:"Every step · show the story",
   viewHint:"The story view draws requests, decisions and findings as boxes and folds the work and sub-agents into a line in their box"
@@ -79,7 +83,7 @@ async function select(id) {
     area.append(box);}
   // In the story view a folded step has no box of its own: the box it folded into is lit.
   for(const node of document.querySelectorAll("[data-event-id]"))node.classList.toggle("selected",node.dataset.eventId===id||(node.dataset.folds||"").split(" ").includes(id));
-  const fragment=new URLSearchParams();if(version)fragment.set("v",version);fragment.set("event",id);fragment.set("view",view);history.replaceState(null,"","#"+fragment);
+  const fragment=new URLSearchParams();if(pinned&&version)fragment.set("v",version);fragment.set("event",id);fragment.set("view",view);history.replaceState(null,"","#"+fragment);
 }
 // Resolves true when this load drew its picture, false when a later load overtook it (a second click).
 async function load() {
@@ -88,6 +92,7 @@ async function load() {
   if(thisLoad!==loading)return false;
   version=String(graph.version||"");$("version").textContent=L.graphVersion(graph.version,graph.analyzed_at);
   $("status").textContent=(graph.analysis_mode==="synthetic_mock"?L.synthetic:"")+L.lastCheck(payload.last_check.at,payload.last_check.status||graph.analysis_status)+(payload.freshness?" · "+payload.freshness:"");
+  if(pinned&&payload.latest_version>graph.version)$("status").textContent+=" · "+L.newer(payload.latest_version);
   $("refresh").disabled=!payload.can_refresh||payload.refreshing;
   $("refresh").title=payload.refresh_blocked||"";
   refreshWith=[payload.refresh_with.runner,payload.refresh_with.model].filter(Boolean).join(" · ");
