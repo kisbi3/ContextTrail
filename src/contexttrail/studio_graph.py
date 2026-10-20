@@ -184,7 +184,11 @@ def _context(state: StudioState) -> tuple[Engine, Store, Snapshot]:
                             opencode_home=directory / "fixture-opencode")
     engine = Engine(scope, store, config)
     engine.detailed_trace = True
-    return engine, store, engine.scan()
+    snapshot = engine.scan()
+    # Each node builds its engine again: the output language saved at planning is read back, so code titles and
+    # the story follow it as they do in a CLI run.
+    engine.resolve_language(snapshot)
+    return engine, store, snapshot
 
 
 def _runners(state: StudioState, engine: Engine) -> RunnerPool:

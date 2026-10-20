@@ -41,6 +41,8 @@ def test_studio_graph_runs_real_pipeline_with_synthetic_fixture():
     verified = {(events[edge["from_event_id"]]["status"], events[edge["to_event_id"]]["status"])
                 for edge in published["edges"] if edge["active"] and edge["relation"] == "verifies"}
     assert verified == {("applied", "observed_failure"), ("applied", "observed_success")}
+    # Every node rebuilds the engine; the output language saved at planning still names the code's work.
+    assert {e["title"] for e in published["events"] if e["kind"] == "action"} == {"수정: store.py"}
     report = next(e for e in published["events"] if e["status"] == "reported_complete")
     assert any(edge["relation"] == "answers" and edge["to_event_id"] == report["id"]
                for edge in published["edges"] if edge["active"])

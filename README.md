@@ -57,8 +57,8 @@ Out of that, code finds the work in the tool calls (two edits, two test runs, an
  │                ┌─ [03] change ───────────────────┐               ┌─ [04] result ───────────────────┐
  └─ [01] follows ▶│ Edit store.py                   ├────verifies──▶│ Check failed: pytest            │
                   │ ✗ applied                       │               │ tests/test_store.py -q          │
-                  │   · check failed: Check failed: │               │ ✗ observed failure              │
-                  │     pytest tests/test_store...  │               └─────────────────────────────────┘
+                  │   · check failed: pytest        │               │ ✗ observed failure              │
+                  │     tests/test_store.py -q      │               └─────────────────────────────────┘
                   └─────────────────────────────────┘
 
 ══ flow 2/2 · 4 events · 1 sessions · 09-22 19:06–19:11 ═══════════════════════════════════════════════
@@ -74,8 +74,8 @@ Out of that, code finds the work in the tool calls (two edits, two test runs, an
  │                ┌─ [06] change ───────────────────┐               ┌─ [07] result ───────────────────┐
  │                │ Edit store.py                   ├────verifies──▶│ Check passed: pytest            │
  │                │ ✓ applied                       │               │ tests/test_store.py -q          │
- │                │   · verified: Check passed:     │               │ ✓ observed success              │
- │                │     pytest tests/test_store...  │               └─────────────────────────────────┘
+ │                │   · verified: pytest            │               │ ✓ observed success              │
+ │                │     tests/test_store.py -q      │               └─────────────────────────────────┘
  │                └─────────────────────────────────┘
  │                   ┊
  │                   ▽
@@ -96,17 +96,17 @@ Three things in that picture are the point of the tool:
 Any event can be opened with its quotes, in the terminal or by an agent:
 
 ```text
-$ contexttrail show ev_d4806318
+$ contexttrail show ev_e09b4e64
 ContextTrail event · current graph v2 · saved result · no AI calls
-ev_d4806318  Edit store.py
-  status: applied · check failed: Check failed: pytest tests/test_store...
+ev_e09b4e64  Edit store.py
+  status: applied · check failed: pytest tests/test_store.py -q
   change · assistant · 2026-09-22 19:02
-  reference: contexttrail:ev_d4806318@v2
+  reference: contexttrail:ev_e09b4e64@v2
   agent: codex
 
 Linked events
-  → verifies  ev_90643010  Check failed: pytest tests/test_store.py -q [observed failure]
-  ← follows (dialog order, not causation)  ev_94746de6  Let's store it as a JSON file for now. [request · answered]
+  → verifies  ev_87253c86  Check failed: pytest tests/test_store.py -q [observed failure]
+  ← follows (dialog order, not causation)  ev_137754ef  Let's store it as a JSON file for now. [request · answered]
 
 --- source evidence 1 (Codex · tool call · 2026-09-22 19:02 · session demo-cod · lines 1–2) ---
 > Tool: exec

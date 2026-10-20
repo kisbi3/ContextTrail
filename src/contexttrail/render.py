@@ -92,6 +92,10 @@ def request_links(graph: dict) -> tuple[set[str], set[str]]:
     return answered, followed - answered
 
 
+# The heads code puts on a check's title (`light.code_title`, `light.skeleton`).
+CHECK_TITLE_HEADS = ("검사 실패: ", "검사 통과: ", "Check failed: ", "Check passed: ")
+
+
 def status_labels(graph: dict) -> dict[str, str]:
     """Each event's status plus what its relations add: checks of a change, an answer to a question."""
     checks, unlinked = verification_links(graph)
@@ -114,7 +118,9 @@ def status_labels(graph: dict) -> dict[str, str]:
             if len(results) == 1:
                 # A lone check is named, so a syntax check does not read like a full run.
                 verdict = tr("검증", "verified") if passed else tr("검증 실패", "check failed")
+                # The verdict says how the check went; the head code gave the check's title would say it again.
                 title = safe_text(results[0]["title"], multiline=False)
+                title = next((title[len(head):] for head in CHECK_TITLE_HEADS if title.startswith(head)), title)
                 labels[event["id"]] = f"{base} · {verdict}: {ellipsis(title, 40)}"
             else:
                 parts = (([tr(f"검증 통과 {passed}건", f"{passed} checks passed")] if passed else [])

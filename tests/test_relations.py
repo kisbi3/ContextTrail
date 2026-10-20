@@ -141,9 +141,11 @@ def test_labels_show_what_checked_a_change_and_whether_a_question_was_answered()
                         node("c3", "action", "reported_complete"), node("ok", "outcome", "observed_success"),
                         node("bad", "outcome", "observed_failure"), node("a", "outcome", "reported_complete"),
                         node("c4", "revision", "applied"), node("syntax", "outcome", "observed_success", "수정본 구문 검사 통과"),
-                        node("loose", "outcome", "observed_success")],
+                        node("loose", "outcome", "observed_success"),
+                        node("c5", "action", "applied"), node("coded", "outcome", "observed_failure", "검사 실패: pytest tests/test_x.py")],
              "edges": [link("q", "a", "answers"), link("c1", "ok", "verifies"), link("c1", "bad", "verifies"),
-                       link("c2", "ok", "verifies", active=False), link("c4", "syntax", "verifies")]}
+                       link("c2", "ok", "verifies", active=False), link("c4", "syntax", "verifies"),
+                       link("c5", "coded", "verifies")]}
     labels = status_labels(graph)
     assert labels["q"] == "요청 · 답변됨" and labels["q2"] == "요청 · 답변 없음"
     assert labels["c1"] == "변경 적용 · 검증 통과 1건 · 검증 실패 1건"
@@ -152,6 +154,8 @@ def test_labels_show_what_checked_a_change_and_whether_a_question_was_answered()
     assert labels["ok"] == "관측 성공" and labels["a"] == "완료 보고·미검증"
     # A single check is named so its strength is visible; a result nothing leads to is flagged.
     assert labels["c4"] == "변경 적용 · 검증: 수정본 구문 검사 통과"
+    # The verdict already says how a check went: the head code put on its title is not said twice.
+    assert labels["c5"] == "변경 적용 · 검증 실패: pytest tests/test_x.py"
     assert labels["loose"] == "관측 성공 · 무엇을 검사했는지 연결 없음"
     assert "|검증|" in mermaid(graph) and "|답변|" in mermaid(graph)
 
