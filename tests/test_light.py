@@ -609,3 +609,57 @@ def test_v2_a_codex_run_is_settled_by_its_poll_inside_a_call_that_does_more(labo
     # When the responses do not pair up with the call's commands, the run stays unknown rather than take a guess.
     found[-1] = tool("p-out", "tool_result", 'Output:\n{"chunk_id":"c","exit_code":0,"output":"ok"}', "c2")
     assert next(r for r in run_items(found) if r["sources"][0] == "r")["status"] == "unknown"
+
+
+def test_v2_reads_a_changed_unit_again_without_adding_its_events_twice(laboratory):
+    _, store, engine, records_, make = laboratory
+    import dataclasses
+    records_.extend(records(make))
+    engine.config = dataclasses.replace(engine.config, pipeline="v2")
+    engine.config.validate()
+    assert engine.analyze(FixtureRunner)["status"] == "complete"
+    before = store.graph()["events"]
+    # One record of the integrated unit changes: the unit is read again, and what it finds is what it found before.
+    records_[-1] = make("부호가 반대였습니다. 더하기로 바꿨고 테스트 3개가 통과합니다.", key="said", role="assistant")
+    result = engine.analyze(FixtureRunner)
+    assert result["status"] == "complete" and result["runner_calls"] == 1, result.get("limitations")
+    after = store.graph()["events"]
+    assert sorted(e["id"] for e in after) == sorted(e["id"] for e in before)
+    assert sum(e["kind"] == "question" for e in after) == 1  # the request is not made twice
+
+
+def test_v2_a_unit_with_nothing_that_passes_is_skipped_not_the_run(laboratory, monkeypatch):
+    from contexttrail.util import FlowError
+    from contexttrail.schema import EvidenceValidator
+    _, store, engine, records_, make = laboratory
+    import dataclasses
+    records_.extend(records(make))
+    engine.config = dataclasses.replace(engine.config, pipeline="v2")
+    engine.config.validate()
+
+    def refuse(*args, **kwargs):
+        raise FlowError("refused")
+    monkeypatch.setattr(EvidenceValidator, "check_extraction", refuse)
+    monkeypatch.setattr(EvidenceValidator, "salvage_extraction", refuse)
+    result = engine.analyze(FixtureRunner)
+    assert result["status"] == "failed"  # the only unit failed; nothing stopped the run with an exception
+    assert any("nothing of this unit passed the checks" in failure.get("message", "")
+               for failure in store.unit_failures().values())
+
+
+def test_v2_a_draft_that_fails_its_checks_fails_the_unit_with_no_integrate_call(laboratory, monkeypatch):
+    from contexttrail.schema import EvidenceValidator
+    from contexttrail.util import FlowError
+    _, store, engine, records_, make = laboratory
+    import dataclasses
+    records_.extend(records(make))
+    engine.config = dataclasses.replace(engine.config, pipeline="v2")
+    engine.config.validate()
+
+    def refuse(*args, **kwargs):
+        raise FlowError("refused")
+    monkeypatch.setattr(EvidenceValidator, "apply_delta", refuse)
+    runner = FixtureRunner()
+    result = engine.analyze(lambda: runner)
+    assert [task["stage"] for task in runner.tasks] == ["story"] and result["status"] == "failed"
+    assert any("draft failed its checks" in failure.get("message", "") for failure in store.unit_failures().values())

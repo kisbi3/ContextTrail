@@ -1039,6 +1039,32 @@ def match_noted_duplicates(output: dict, graph: dict, saved: dict[str, dict]) ->
     return added
 
 
+def match_existing_duplicates(output: dict, graph: dict, saved: dict[str, dict]) -> int:
+    """Candidates that repeat an event already in the graph: the same kind and exactly the same cited records (a
+    unit read again after one of its records changed, or a step a note recorded). Each becomes an
+    `existing_event_matches` entry when exactly one event fits, so the draft settles it as that event's duplicate
+    and its relations follow it there. Returns how many."""
+    def records(evidence: list[dict]) -> frozenset:
+        return frozenset(c["source_id"] for c in evidence)
+    existing: dict[tuple[str, frozenset], list[str]] = {}
+    for event in graph["events"]:
+        cited = records([saved[i] for i in event.get("evidence_ids", []) if i in saved])
+        if cited:
+            existing.setdefault((event["kind"], cited), []).append(event["id"])
+    matched = {item["candidate_id"] for item in output["existing_event_matches"]}
+    added = 0
+    for candidate in output["event_candidates"]:
+        same = existing.get((candidate["kind"], records(candidate["evidence"])), [])
+        if candidate["id"] in matched or not candidate["evidence"] or len(same) != 1:
+            continue
+        output["existing_event_matches"].append({
+            "candidate_id": candidate["id"], "existing_event_id": same[0],
+            "reason": "same kind and the same cited records as this event",
+            "evidence": copy.deepcopy(candidate["evidence"])})
+        added += 1
+    return added
+
+
 def audit_guard(delta: dict, graph: dict) -> None:
     """An audit only adds. It never changes what the notes or earlier analyses recorded."""
     problems = [f"{key} must be empty" for key in ("events_to_update", "edges_to_invalidate", "open_items_to_resolve")
@@ -2394,6 +2420,7 @@ class Engine:
 
     def _routing_signature(self) -> str:
         # the default mode adds nothing, so changing the default does not resend finished units
+        from . import light
         return digest([ROUTING_VERSION, "validation-failure-only-v3", CONTEXT_POLICY_VERSION, EXTRACT_INPUT_VERSION,
                        prompt("common"), prompt("extract"), EXTRACT_SCHEMA,
                        self.config.extract_model, self.config.escalation_model,
@@ -2402,7 +2429,8 @@ class Engine:
                        *(["audit-v1", prompt("audit")] if self.config.audit else []),
                        *(["light-v1", prompt("light")] if self._light() else []),
                        *(["unit-summary-v1", UNIT_SUMMARY_REQUEST] if self.config.unit_summary else []),
-                       *(["story-v1", prompt("story")] if self._story() else [])])
+                       *(["story-v1", prompt("story"), json.dumps(light.STORY_SCHEMA, sort_keys=True)]
+                         if self._story() else [])])
 
     def _story(self) -> bool:
         """Pipeline v2 applies to ordinary units; an audit reads noted sessions with the full extraction."""
@@ -2563,11 +2591,18 @@ class Engine:
                 text = learned.get("turn_summary")
                 summary[0] = " ".join(text.split()) if isinstance(text, str) and text.strip() else None
                 story_notes["unclaimed_blocks"] = learned["unclaimed_blocks"]
+                # A unit read again (one of its records changed) or recorded by a note already: code settles a
+                # candidate that repeats an event as that event's duplicate, so nothing is added twice.
+                match_existing_duplicates(result, graph, h.saved)
                 try:
                     validator.check_extraction(result, unit["id"], snapshot_id, graph)
                     return result, [], []
                 except FlowError:
-                    return validator.salvage_extraction(result, unit["id"], snapshot_id, graph)
+                    try:
+                        return validator.salvage_extraction(result, unit["id"], snapshot_id, graph)
+                    except FlowError as exc:
+                        # Nothing passed: the unit fails (and is skipped), the run goes on.
+                        raise TaskValidationError(f"story: nothing of this unit passed the checks: {exc}") from None
 
             if self._story():
                 output, waived, dropped = read_story()
@@ -2733,7 +2768,9 @@ class Engine:
                     delta, published = draft, True
                     validator.normalizations.append({"mode": "integrate_draft_published",
                                                      "items": len(draft["change_attributions"])})
-                except FlowError:
+                except FlowError as exc:
+                    if self._story():
+                        raise TaskValidationError(f"draft failed its checks: {exc}") from None
                     pass  # the integrator gets the draft to patch instead
             if published:
                 pass
