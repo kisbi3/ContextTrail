@@ -331,7 +331,10 @@ class FlowPanels:
         self.turn_of = {key: n for n, (_, keys) in enumerate(self.turns) for key in keys}
         ids = [event["id"] for event in graph["events"]]
         keep = keep if keep in ids else graph.get("homes", {}).get(keep)
-        self.current = keep if keep in ids else (ids[0] if ids else None)
+        # Opened afresh, the screen starts at the latest request (the list follows time): what happened lately is
+        # the first question. A selection the person made, or kept across a new graph, stays.
+        latest = next((key for key, _ in reversed(self.turns) if key in ids), None)
+        self.current = keep if keep in ids else (latest or (ids[0] if ids else None))
         self.history = [key for key in self.history if key in self.position]
         self.matches = [key for key in self.matches if key in self.position]
         # Until the first draw, arrow keys follow the text list's order (the story view's own order).
