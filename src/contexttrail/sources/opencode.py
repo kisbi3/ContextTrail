@@ -75,7 +75,9 @@ def opencode_databases(home: Path) -> list[Path]:
     """
     found: list[Path] = []
     named = os.environ.get("OPENCODE_DB")
-    if named and named != ":memory:":
+    # A data directory given for this project (`--opencode-home`) is that directory only: the variable names the
+    # database of the opencode the person runs, which is read only when its own data directory is.
+    if named and named != ":memory:" and home.expanduser() == opencode_data_dir():
         candidate = Path(named)
         candidate = candidate if candidate.is_absolute() else home / candidate
         if candidate.is_file() and not candidate.is_symlink():

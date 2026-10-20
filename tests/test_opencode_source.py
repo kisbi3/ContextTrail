@@ -355,8 +355,9 @@ def test_data_dir_and_database_discovery(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     assert opencode_data_dir() == tmp_path / ".local" / "share" / "opencode"
     assert opencode_data_dir(Path("~/custom")) == tmp_path / "custom"
-    home = tmp_path / "home"
-    home.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    home = tmp_path / "xdg" / "opencode"  # opencode's own data directory, where OPENCODE_DB applies
+    home.mkdir(parents=True)
     (home / "opencode.db").write_bytes(b"")
     (home / "opencode-dev.db").write_bytes(b"")
     (home / "other.db").write_bytes(b"")
@@ -366,7 +367,8 @@ def test_data_dir_and_database_discovery(tmp_path, monkeypatch):
     named.write_bytes(b"")
     monkeypatch.setenv("OPENCODE_DB", str(named))
     assert opencode_databases(home)[0] == named
-    assert opencode_databases(tmp_path / "missing") == [named]
+    # A data directory given for the project is that directory alone.
+    assert opencode_databases(tmp_path / "missing") == []
 
 
 def test_unreadable_or_foreign_database_is_a_limitation_not_a_crash(tmp_path):
@@ -393,6 +395,7 @@ def test_scan_counts_opencode_records_and_the_screen_names_the_tool(tmp_path, ca
     builder.done()
     from contexttrail.cli import main
     i18n.set_language("en")
+    (tmp_path / "none").mkdir()
     assert main(["scan", str(folder), "--opencode-home", str(tmp_path), "--codex-home", str(tmp_path / "none"),
                  "--claude-home", str(tmp_path / "none")]) == 0
     output = json.loads(capsys.readouterr().out)
@@ -414,3 +417,19 @@ def test_opencode_records_name_the_provider_model_and_variant_that_wrote_them(tm
     assert [r.role for r in records] == ["user", "tool_call", "tool_result", "tool_call", "tool_result", "metadata", "assistant", "user"]
     assert [r.authoring for r in records[:7]] == [named] * 7  # the person's chosen setting, then every part of the answer
     assert records[7].authoring == {}
+
+
+def test_a_given_data_directory_is_read_alone_and_a_mistyped_home_is_refused(tmp_path, monkeypatch):
+    from contexttrail.sources.local import collect_logs
+    from contexttrail.sources.opencode import opencode_databases
+    folder, scope = project(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    builder = Builder(tmp_path / "elsewhere" / "opencode.db")
+    conversation(builder, builder.session(folder), folder)
+    builder.done()
+    monkeypatch.setenv("OPENCODE_DB", str(tmp_path / "elsewhere" / "opencode.db"))
+    empty = tmp_path / "empty"; empty.mkdir()
+    assert opencode_databases(empty) == []  # the variable belongs to opencode's own data directory
+    assert not collect_logs(scope, codex_home=empty, claude_home=empty, opencode_home=empty).records
+    from contexttrail.cli import main
+    assert main(["scan", str(folder), "--codex-home", str(tmp_path / "typo")]) == 1  # refused, not read as empty

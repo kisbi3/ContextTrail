@@ -287,6 +287,7 @@ def test_scan_previews_the_recent_sessions_without_a_model(tmp_path, capsys):
         rows = [{"type": "user", "uuid": f"s{n}-u0", "sessionId": f"sess{n}", "cwd": str(folder),
                  "timestamp": f"2026-10-0{n + 1}T10:00:00Z", "message": {"content": [{"type": "text", "text": case(n)[0]}]}}]
         (claude / "projects" / "app" / f"sess{n}.jsonl").write_text("\n".join(dumps(r) for r in rows) + "\n", encoding="utf-8")
+    (tmp_path / "codex").mkdir(); (tmp_path / "oc").mkdir()
     common = ["--claude-home", str(claude), "--codex-home", str(tmp_path / "codex"), "--opencode-home", str(tmp_path / "oc")]
     assert main(["scan", str(folder), *common, "--recent", "2"]) == 0
     out = json.loads(capsys.readouterr().out)

@@ -352,6 +352,10 @@ def _options(args, store: Store, *, persist: bool) -> tuple[AnalysisConfig, dict
     for key in ("runner", "model", "codex_home", "claude_home", "opencode_home", "history_limit", "timeout", "record_chars", "unit_chars",
                 "extract_model", "extract_effort", "extract_workers", "output_language"):
         value = getattr(args, key, None)
+        if isinstance(value, Path) and not value.expanduser().is_dir():
+            # A mistyped directory would read no transcript of that tool, silently.
+            flag = "--" + key.replace("_", "-")
+            raise FlowError(tr(f"{flag}: 폴더가 없습니다: {value}", f"{flag}: no such directory: {value}"))
         if value is not None:
             options[key] = str(value.expanduser().resolve()) if isinstance(value, Path) else value
     for key in RETIRED_OPTIONS:

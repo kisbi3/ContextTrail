@@ -128,6 +128,8 @@ def test_find_header_and_status_command_report_the_lag(tmp_path, capsys):
     folder, scope, store, engine, homes = laboratory(tmp_path)
     path = homes["claude_home"] / "projects" / "p" / "s1.jsonl"
     write(path, claude_rows(folder, "s1", ["Use SQLite.", "Done."]))
+    for home in homes.values():
+        home.mkdir(parents=True, exist_ok=True)
     args = ["--codex-home", str(homes["codex_home"]), "--claude-home", str(homes["claude_home"]),
             "--opencode-home", str(homes["opencode_home"])]
     assert main(["scan", str(folder), *args]) == 0
