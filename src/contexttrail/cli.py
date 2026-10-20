@@ -34,7 +34,7 @@ from .render import event_detail, export_text, terminal_graph
 from .runners import CLIRunner
 from .runners.cli_runner import EFFORTS
 from .schema import STATUSES, folded_view
-from .store import Store
+from .store import ReadOnlyStore, Store
 from .ui import GraphApp, TerminalApp, legend, token_usage_label
 from .util import FlowError, dumps, safe_text, within
 from .webview import LocalViewer
@@ -430,6 +430,29 @@ def _brief(result: dict) -> None:
     print(tr("새 사건 보기: contexttrail find", "See the new events: contexttrail find"))
 
 
+def _reading_store(scope: Scope) -> Store | None:
+    """The saved state for a command that only reads it (find, show, status, the context preview): None when the
+    project has none, so nothing is created; else the state opened as usual; else, when it cannot be written (Codex's
+    sandbox keeps `.git` read-only, a read-only copy), opened read-only."""
+    if not (scope.state_dir / "state.sqlite").is_file():
+        return None
+    try:
+        return Store(scope.state_dir, scope.id)
+    except (OSError, sqlite3.OperationalError):
+        return ReadOnlyStore(scope.state_dir, scope.id).check_readable()
+
+
+def _no_state(scope: Scope, as_json: bool) -> int:
+    """What a read command says for a folder ContextTrail has never opened: nothing to read, and how to start."""
+    text = tr(f"이 폴더에는 ContextTrail 상태가 없습니다(아직 scan·분석 전): {safe_text(scope.folder)}\n"
+              "시작: contexttrail scan . (AI 호출 없음) 또는 contexttrail analyze .",
+              f"ContextTrail has no state for this folder (never scanned or analysed): {safe_text(scope.folder)}\n"
+              "Start with: contexttrail scan . (no AI calls) or contexttrail analyze .")
+    print(dumps({"state": "none", "scope": str(scope.folder), "events": [], "ai_calls": 0}, pretty=True)
+          if as_json else text)
+    return 0
+
+
 def _find(args) -> int:
     if args.folder is None:
         # `find .` or `find ~/proj`: a path alone is where to look, not words to look for. A plain word that happens
@@ -443,7 +466,9 @@ def _find(args) -> int:
         raise FlowError(tr(f"폴더가 없습니다: {args.folder}. 여러 단어를 찾으려면 따옴표로 묶으세요: find \"{args.query} {args.folder}\"",
                            f"No such folder: {args.folder}. To search for several words, quote them: find \"{args.query} {args.folder}\""))
     scope = Scope.resolve(args.folder)
-    store = Store(scope.state_dir, scope.id)
+    store = _reading_store(scope)
+    if store is None:
+        return _no_state(scope, args.json)
     _screen_language(None, store)
     result = find(store.graph(), args.query, store.evidence_many, limit=max(1, args.limit))
     # The header says what the graph does not hold yet; changed files are parsed up to a byte budget.
@@ -573,7 +598,9 @@ def _context(args) -> int:
             print(dumps(answer))
         return 0
     scope = Scope.resolve(args.folder)
-    store = Store(scope.state_dir, scope.id)
+    store = Store(scope.state_dir, scope.id) if args.enable or args.disable else _reading_store(scope)
+    if store is None:
+        return _no_state(scope, False)
     _screen_language(None, store)
     if args.enable or args.disable:
         (session_context.enable if args.enable else session_context.disable)(store)
@@ -598,7 +625,9 @@ def _context(args) -> int:
 
 def _status(args) -> int:
     scope = Scope.resolve(args.folder)
-    store = Store(scope.state_dir, scope.id)
+    store = _reading_store(scope)
+    if store is None:
+        return _no_state(scope, args.json)
     _screen_language(None, store)
     result = check(scope, store, budget_bytes=None, **saved_homes(store))
     result["summary"] = freshness_summary(result)
@@ -608,7 +637,10 @@ def _status(args) -> int:
 
 def _show(args) -> int:
     scope = Scope.resolve(args.folder)
-    store = Store(scope.state_dir, scope.id)
+    store = _reading_store(scope)
+    if store is None:
+        raise FlowError(tr(f"이 폴더에는 ContextTrail 상태가 없습니다: {safe_text(scope.folder)}",
+                           f"ContextTrail has no state for this folder: {safe_text(scope.folder)}"))
     _screen_language(None, store)
     graph = store.graph()
     result = show(args.ref, graph, store.evidence, store.graph, quote_lines=max(1, args.quote_lines))

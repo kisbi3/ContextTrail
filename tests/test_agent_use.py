@@ -317,3 +317,29 @@ def test_find_searches_a_word_that_names_a_subfolder(tmp_path, monkeypatch, caps
     monkeypatch.chdir(tmp_path)
     assert main(["find", "docs"]) == 0
     assert not (tmp_path / "docs" / ".contexttrail").exists()  # this folder's graph was asked, not the subfolder's
+
+
+def test_read_commands_create_no_state_and_read_a_state_they_cannot_write(tmp_path, monkeypatch, capsys):
+    import json
+    import os
+    from contexttrail.cli import main
+    from contexttrail.git_context import Scope
+    folder = tmp_path / "project"; folder.mkdir()
+    for command in (["find", "", str(folder)], ["status", str(folder)], ["context", str(folder)]):
+        assert main(command) == 0
+        assert "scan" in capsys.readouterr().out
+    assert main(["status", str(folder), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "none"
+    scope = Scope.resolve(folder)
+    assert not scope.state_dir.exists()
+    Store(scope.state_dir, scope.id).set_meta("note", 1)
+    # A state that cannot be written (Codex's sandbox keeps .git read-only; a read-only copy) is still read.
+    os.chmod(scope.state_dir / "state.sqlite", 0o400)
+    os.chmod(scope.state_dir, 0o500)
+    try:
+        assert main(["find", "", str(folder)]) == 0
+        assert "ContextTrail" in capsys.readouterr().out
+        assert main(["status", str(folder), "--json"]) == 0
+    finally:
+        os.chmod(scope.state_dir, 0o700)
+        os.chmod(scope.state_dir / "state.sqlite", 0o600)

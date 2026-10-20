@@ -579,6 +579,17 @@ class ReadOnlyStore(Store):
         if self.path.is_symlink() or not self.path.is_file():
             raise FlowError(tr("저장된 상태가 없습니다.", "There is no saved state."))
 
+    def check_readable(self) -> "ReadOnlyStore":
+        """Refuse what `Store()` would refuse, without its writes: a schema it cannot read, or another scope's state."""
+        with self.connection() as db:
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            row = db.execute("SELECT value FROM project_meta WHERE key='scope_id'").fetchone()
+        if version not in (1, GRAPH_SCHEMA):
+            raise FlowError(tr(f"지원하지 않는 DB schema: {version}", f"Unsupported DB schema: {version}"))
+        if row and self.scope_id and json.loads(row[0]) != self.scope_id:
+            raise FlowError(tr("저장된 프로젝트 scope와 요청 scope가 일치하지 않습니다.", "The saved project scope does not match the requested scope."))
+        return self
+
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
         side_files = [self.path.with_name(self.path.name + suffix) for suffix in ("-wal", "-shm")]
