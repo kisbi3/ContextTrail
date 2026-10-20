@@ -424,7 +424,9 @@ Open the **full URL including the token** printed in the server terminal in your
 
 Select a graph node to inspect event/relationship/evidence levels, preserved source excerpts, and diff identification at the time of the event. F5, page load, and node selection do not call AI. Analysis must be explicitly requested via the **"Analyze Changes" button and confirmation dialog**. The token becomes invalid when the server stops.
 
-No external CDNs or web fonts are used. The browser graph is a custom SVG layout generated from a safe internal Mermaid subset. **This is not a full Mermaid engine bundle.** Layout and actual browser rendering for complex graphs are pending further validation.
+The page opens on the **story view**, as the terminal does: one column of boxes for the requests, decisions, goals, changes of course, findings and failures nothing came of, each with its title and a line per sub-agent handed work there (what it last said), its status the border's colour. The button above the graph switches to every step and back; the selected-event panel always shows the whole record.
+
+No external CDNs or web fonts are used. The browser graph is a custom SVG layout generated from a safe internal Mermaid subset (the story view is its own one-column layout, under the same element whitelist). **This is not a full Mermaid engine bundle.** Layout and actual browser rendering for complex graphs are pending further validation.
 
 ---
 
