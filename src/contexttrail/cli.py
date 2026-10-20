@@ -30,7 +30,7 @@ from .freshness import summary as freshness_summary
 from .git_context import Scope
 from . import i18n
 from .i18n import tr
-from .render import event_detail, export_text, terminal_graph
+from .render import detail_context, event_detail, export_text, terminal_graph
 from .runners import CLIRunner
 from .runners.cli_runner import DEFAULT_MODELS, EFFORTS
 from .schema import STATUSES, folded_view
@@ -318,9 +318,10 @@ def _graph(args) -> int:
     if events:
         print(tr("\n사건 상세", "\nEvent details"))
         rule = "─" * 60
+        context = detail_context(graph)
         for event in events:
             print(rule)
-            for text, _ in event_detail(graph, event["id"], lookup, quote_lines=6):
+            for text, _ in event_detail(graph, event["id"], lookup, quote_lines=6, context=context):
                 print(text)
         print(rule)
     return 0

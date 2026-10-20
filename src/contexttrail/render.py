@@ -266,20 +266,35 @@ def linked_events(graph: dict, event_id: str) -> list[str]:
     return list(dict.fromkeys(key for key in others if key in events))
 
 
+def detail_context(graph: dict) -> dict:
+    """What `event_detail` reads of the whole graph, computed once for a caller that shows many events (the plain
+    `graph` output showed 4,784 in 136 s computing it per event)."""
+    edges: dict[str, list[dict]] = {}
+    for edge in graph["edges"]:
+        if edge["active"]:
+            for key in {edge["from_event_id"], edge["to_event_id"]}:
+                edges.setdefault(key, []).append(edge)
+    return {"events": {event["id"]: event for event in graph["events"]},
+            "numbers": {item["id"]: f"[{n:02d}]" for n, item in enumerate(graph["events"], 1)},
+            "labels": status_labels(graph), "tones": status_tones(graph), "edges": edges}
+
+
 def event_detail(graph: dict, event_id: str, evidence: Callable[[str], dict | None], *,
-                 ascii_only: bool = False, quote_lines: int = 8, keys: bool = False) -> list[tuple[str, str]]:
+                 ascii_only: bool = False, quote_lines: int = 8, keys: bool = False,
+                 context: dict | None = None) -> list[tuple[str, str]]:
     """What a terminal shows for one event, as (text, style) lines.
 
     Styles: title, heading, ok, warn, fail, plain, dim. Text is not wrapped. With keys, the
     first nine linked events are numbered 1–9 (`linked_events` order) for a screen to jump to.
+    `context` is `detail_context(graph)` when the caller shows many events.
     """
-    events = {event["id"]: event for event in graph["events"]}
+    context = context or detail_context(graph)
+    events = context["events"]
     event = events.get(event_id)
     if not event:
         return [(tr("사건을 선택하면 설명과 원문 근거가 표시됩니다.",
                     "Select an event to see its description and source evidence."), "dim")]
-    numbers = {item["id"]: f"[{n:02d}]" for n, item in enumerate(graph["events"], 1)}
-    labels, tones = status_labels(graph), status_tones(graph)
+    numbers, labels, tones = context["numbers"], context["labels"], context["tones"]
     marks = ASCII_MARK if ascii_only else MARK
     clean = lambda value: safe_text(value, multiline=False)
     lines: list[tuple[str, str]] = [
@@ -297,8 +312,7 @@ def event_detail(graph: dict, event_id: str, evidence: Callable[[str], dict | No
         lines.append((tr("호출한 쪽이 받은 보고: ", "report as its caller received it: ") + clean(report["title"]), "dim"))
     lines += [("", ""), (tr("무슨 일이 있었나", "What happened"), "heading")]
     lines += [("  " + clean(part), "") for part in safe_text(event["summary"]).splitlines() if part.strip()]
-    active = [edge for edge in graph["edges"] if edge["active"] and
-              event_id in (edge["from_event_id"], edge["to_event_id"])]
+    active = context["edges"].get(event_id, [])
     def other(edge: dict) -> dict | None:
         return events.get(edge["to_event_id"] if edge["from_event_id"] == event_id else edge["from_event_id"])
     key_of = {key: f"{n} " for n, key in enumerate(linked_events(graph, event_id)[:9], 1)} if keys else {}
