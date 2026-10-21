@@ -303,7 +303,24 @@ def test_every_step_is_the_terminal_flow_drawn_under_the_pages_whitelist(story_v
     assert all(node.attrib.get('tabindex')=='0' and node[0].tag.endswith('rect') for node in boxes)
     script=request(obj,'GET','/app.js',auth=False)[1].decode()
     assert '"/graph.svg?view=all"' in script
-    assert request(obj,'GET','/graph.svg?view=all')[1]==data  # drawn once per version and view
+    assert request(obj,'GET','/graph.svg?view=all')[1]==data
+
+
+def test_a_drawing_is_made_once_per_version_view_and_language(story_viewer, monkeypatch):
+    from contexttrail import i18n, webview
+    obj=story_viewer
+    calls=[]
+    for name in ('flow_svg','story_svg'):
+        def counted(*args, _name=name, _draw=getattr(webview,name), **kwargs):
+            calls.append(_name);return _draw(*args,**kwargs)
+        monkeypatch.setattr(webview,name,counted)
+    first=request(obj,'GET','/graph.svg?view=all')[1]
+    assert request(obj,'GET','/graph.svg?view=all')[1]==first and calls==['flow_svg']
+    request(obj,'GET','/graph.svg?view=story');request(obj,'GET','/graph.svg?view=story')
+    assert calls==['flow_svg','story_svg']
+    i18n.set_language('en')
+    request(obj,'GET','/graph.svg?view=all');request(obj,'GET','/graph.svg?view=all')
+    assert calls==['flow_svg','story_svg','flow_svg']
 
 
 JUMP_STUBS = """
