@@ -4,6 +4,9 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 
 ## Unreleased
 
+### Fixed
+- **`serve` and the TUI's `B` no longer wait on DNS.** Python's HTTP server looks up the name of the address it binds (`socket.getfqdn("127.0.0.1")`), which nothing reads; on macOS that lookup can take longer than 30 s (every macOS CI job since the serve test was added), so no link was printed. `webview.LoopbackServer` binds without it.
+
 ## 0.1.0a9 – 2026-10-21
 
 **Upgrading from 0.1.0a8.** Codex CLI 0.163+ compresses a session about a week old (`.jsonl.zst`); 0.1.0a8 skipped those files without a word (here 563 of 639 Codex transcripts), so its graphs miss most Codex work. This version reads them with the same record IDs, so nothing already analysed is sent again; the next scan finds the rest as pending. A unit is read with one model call now (pipeline v2), at about a tenth of the input. Credential-shaped values are masked as transcripts are read, so a unit holding one is analysed once more. Settings are saved only by `analyze`. The first scan after upgrading re-reads every transcript once (the scan cache starts empty). To bring a graph made by an earlier version up to today's rules without a model call (agent names, steps, requests that were not the person's), run `contexttrail refresh`. Programs that drive ContextTrail: see `docs/HOST.md` (usage errors now exit 64, a busy project 75, a refusal 77).

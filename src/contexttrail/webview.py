@@ -4,6 +4,7 @@ import hmac
 import json
 import re
 import secrets
+import socketserver
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -171,6 +172,14 @@ def event_page(graph: dict, event_id: str, store: Store) -> dict:
              "analysis_label": analysis_label(event), "reference": reference(graph, event_id)}
     return {"version": graph["version"], "event": shown, "evidence": ordered, "relations": relations,
             "open_items": open_items}
+
+
+class LoopbackServer(ThreadingHTTPServer):
+    """The stock server_bind asks DNS for the bound address's name (`socket.getfqdn`), which nothing here reads; on
+    macOS that reverse lookup of 127.0.0.1 can take longer than 30 s, so `serve` printed no link and `B` hung."""
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class LocalViewer:
@@ -350,9 +359,9 @@ class LocalViewer:
                     viewer.refresh_thread.start()
                 return self.send_data(202, {"status": "started"})
         try:
-            self.server = ThreadingHTTPServer(("127.0.0.1", self.requested_port), Handler)
+            self.server = LoopbackServer(("127.0.0.1", self.requested_port), Handler)
         except OSError:
-            self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            self.server = LoopbackServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
         self.thread = threading.Thread(target=self.server.serve_forever, name="contexttrail-viewer", daemon=True)
         self.thread.start()

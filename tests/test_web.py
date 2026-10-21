@@ -220,8 +220,8 @@ def test_serve_prints_its_link_at_once_and_stops_on_sigterm(tmp_path):
                     break
                 output += chunk
         lines = output.decode("utf-8", "replace").splitlines()
-        # Fails only on macOS CI so far (still running, nothing printed): a server that never printed its link
-        # is aborted, so faulthandler writes where it waits to stderr.
+        # A server that never printed its link is aborted, so faulthandler writes where it waited to stderr (on macOS
+        # CI it was the stock server's reverse DNS lookup, see the next test).
         if not any("Access URL" in line for line in lines) and process.poll() is None:
             process.send_signal(signal.SIGABRT)
             process.wait(timeout=10)
@@ -234,6 +234,22 @@ def test_serve_prints_its_link_at_once_and_stops_on_sigterm(tmp_path):
             process.kill()
         errors.close()
 
+
+
+def test_the_viewer_starts_without_asking_dns_for_the_loopback_name(laboratory, monkeypatch):
+    """http.server's server_bind looks the bound address up (`socket.getfqdn`), which took over 30 s on macOS CI."""
+    import socket
+    _, store, *_ = laboratory
+    def no_lookup(*args):
+        raise AssertionError("getfqdn called")
+    monkeypatch.setattr(socket, "getfqdn", no_lookup)
+    obj = LocalViewer(store, port=0).start()
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", obj.port, timeout=5)
+        connection.request("GET", "/")
+        assert connection.getresponse().status in (200, 401, 403)
+    finally:
+        obj.close()
 
 def test_the_page_starts_no_analysis_without_a_runner_and_its_consent(viewer):
     """The page asks no plan, so the server checks what a terminal would have asked: a runner and consent to it."""
