@@ -1111,7 +1111,7 @@ def audit_guard(delta: dict, graph: dict) -> None:
 
 
 def _one_line(text: str, limit: int = 240) -> str:
-    # A request titled by its words, not by the image note Claude Code puts before an attached image.
+    # A request titled by its words, not by the note Claude Code writes after the agent reads an image file.
     text = " ".join(IMAGE_NOTE.sub("", text).split()) or " ".join(text.split())
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
@@ -1138,16 +1138,7 @@ def link_request_turns(graph: dict, base: dict, pool: dict[str, SourceRecord], u
     def sources(event: dict) -> list[str]:
         return [known[i]["source_id"] for i in event["evidence_ids"] if i in known]
 
-    nodes: dict[str, tuple[dict, str]] = {}  # prompt source → (user event, the citing evidence ID)
-    for event in graph["events"]:
-        if event.get("actor") != "user":
-            continue
-        for evidence_id in event["evidence_ids"]:
-            source_id = known.get(evidence_id, {}).get("source_id")
-            if source_id in pool and is_user_prompt(pool[source_id]):
-                current = nodes.get(source_id)
-                if current is None or (event["kind"] == "question" and current[0]["kind"] != "question"):
-                    nodes[source_id] = (event, evidence_id)
+    nodes = prompt_nodes(graph["events"], pool, known)
     requests_added = 0
     assigned = set(unit_sources)
     for record in prompts:
@@ -1177,16 +1168,13 @@ def link_request_turns(graph: dict, base: dict, pool: dict[str, SourceRecord], u
         replies = question_reply(record) if record.source_id in assigned else None
         if not replies or record.source_id in cited_by_user:
             continue
-        offered = offered_options(record, ordered)
-        chosen = [reply for reply in replies if reply["answer"].strip() in offered.get(reply["question"].strip(), ())]
+        chosen = chosen_options(replies, offered_options(record, ordered))
         if not chosen:
             continue
         item = record_evidence(record)
         added[item["id"]] = known[item["id"]] = item
-        event = {"id": ident("ev_", "user_choice", record.source_id), "kind": "decision",
-                 "title": "; ".join(reply["answer"].strip() for reply in chosen)[:240],
-                 "summary": "\n".join(f"{reply['question'].strip()} → {reply['answer'].strip()}" for reply in chosen)[:4000],
-                 "actor": "user", "status": "adopted", "basis": "explicit_statement",
+        event = {"id": ident("ev_", "user_choice", record.source_id), **choice_fields(chosen),
+                 "actor": "user", "basis": "explicit_statement",
                  "session_ids": [record.session_id] if record.session_id else [],
                  "worktree_ids": [record.worktree_id] if record.worktree_id else [],
                  "recorded_at": record.recorded_at, "occurred_at": None, "evidence_ids": [item["id"]],
@@ -1195,11 +1183,7 @@ def link_request_turns(graph: dict, base: dict, pool: dict[str, SourceRecord], u
                       if record.recorded_at and (other.get("recorded_at") or "") > record.recorded_at), None)
         graph["events"].insert(len(graph["events"]) if later is None else later, event)
         requests_added += 1
-    # A message sent through the tool's queue ends the turn before it; its own turn has no request to hang work on.
-    by_session: dict[str | None, list[SourceRecord]] = {}
-    for record in pool.values():
-        if is_user_prompt(record) or is_queued_message(record):
-            by_session.setdefault(record.session_id, []).append(record)
+    by_session = turn_messages(pool)
     reached = {edge["to_event_id"] for edge in graph["edges"] if edge["active"]}
     old = {event["id"] for event in base["events"]}
     links = 0
@@ -1211,30 +1195,77 @@ def link_request_turns(graph: dict, base: dict, pool: dict[str, SourceRecord], u
             continue
         if not cited:
             continue
-        first = min(cited, key=position.get)
-        before = [r for r in by_session.get(pool[first].session_id, []) if position[r.source_id] <= position[first]]
-        rationale = "work done after this user message in the same session (dialog structure, not a causal claim)"
-        spawned_by = (pool[first].lineage or {}).get("parent_session_id")
-        stamp = _record_timestamp(pool[first].recorded_at)
-        if not before and spawned_by and stamp is not None:
-            # A sub-agent has no messages of its own from the person: its work belongs to the turn
-            # of its parent session in which it ran, i.e. the parent's last message before it.
-            before = [r for r in by_session.get(spawned_by, [])
-                      if (_record_timestamp(r.recorded_at) or float("inf")) <= stamp]
-            rationale = ("work of a sub-agent the parent session spawned after this user message "
-                         "(dialog structure, not a causal claim)")
-        if not before or before[-1].source_id not in nodes:
-            continue
-        node, evidence_id = nodes[before[-1].source_id]
-        if node["id"] == event["id"]:
-            continue
-        graph["edges"].append({"id": ident("edge_", "turn", node["id"], event["id"]),
-                               "from_event_id": node["id"], "to_event_id": event["id"],
-                               "relation": "follows", "basis": "structural", "evidence_ids": [evidence_id],
-                               "rationale": rationale, "active": True, "origin": "dialog_turn"})
-        links += 1
+        edge = turn_link(event, cited, pool, position, by_session, nodes)
+        if edge is not None:
+            graph["edges"].append(edge)
+            links += 1
     graph["request_turn_audit"] = {"requests_added": requests_added, "turn_links": links}
     return graph, added
+
+
+def prompt_nodes(events: list[dict], pool: dict[str, SourceRecord], known: dict[str, dict]) -> dict[str, tuple[dict, str]]:
+    """The person's messages that have an event: prompt source ID → (the user event, the evidence ID citing it); a
+    request is preferred over another event of the person's citing the same message."""
+    nodes: dict[str, tuple[dict, str]] = {}
+    for event in events:
+        if event.get("actor") != "user":
+            continue
+        for evidence_id in event["evidence_ids"]:
+            source_id = known.get(evidence_id, {}).get("source_id")
+            if source_id in pool and is_user_prompt(pool[source_id]):
+                current = nodes.get(source_id)
+                if current is None or (event["kind"] == "question" and current[0]["kind"] != "question"):
+                    nodes[source_id] = (event, evidence_id)
+    return nodes
+
+
+def turn_messages(pool: dict[str, SourceRecord]) -> dict[str | None, list[SourceRecord]]:
+    """The messages that start a turn, per session, in the pool's order. A message sent through the tool's queue ends
+    the turn before it; its own turn has no request to hang work on."""
+    by_session: dict[str | None, list[SourceRecord]] = {}
+    for record in pool.values():
+        if is_user_prompt(record) or is_queued_message(record):
+            by_session.setdefault(record.session_id, []).append(record)
+    return by_session
+
+
+def turn_link(event: dict, cited: list[str], pool: dict[str, SourceRecord], position: dict[str, int],
+              by_session: dict[str | None, list[SourceRecord]], nodes: dict[str, tuple[dict, str]]) -> dict | None:
+    """The dialog-turn link that hangs `event` (citing the pool records `cited`) from the person's message of its
+    turn: the session's last turn-starting message at or before its first record, or for a sub-agent with none of its
+    own, its parent session's last one before it. None when that message has no event (or is the event itself)."""
+    first = min(cited, key=position.get)
+    before = [r for r in by_session.get(pool[first].session_id, []) if position[r.source_id] <= position[first]]
+    rationale = "work done after this user message in the same session (dialog structure, not a causal claim)"
+    spawned_by = (pool[first].lineage or {}).get("parent_session_id")
+    stamp = _record_timestamp(pool[first].recorded_at)
+    if not before and spawned_by and stamp is not None:
+        # A sub-agent has no messages of its own from the person: its work belongs to the turn
+        # of its parent session in which it ran, i.e. the parent's last message before it.
+        before = [r for r in by_session.get(spawned_by, [])
+                  if (_record_timestamp(r.recorded_at) or float("inf")) <= stamp]
+        rationale = ("work of a sub-agent the parent session spawned after this user message "
+                     "(dialog structure, not a causal claim)")
+    if not before or before[-1].source_id not in nodes:
+        return None
+    node, evidence_id = nodes[before[-1].source_id]
+    if node["id"] == event["id"]:
+        return None
+    return {"id": ident("edge_", "turn", node["id"], event["id"]), "from_event_id": node["id"],
+            "to_event_id": event["id"], "relation": "follows", "basis": "structural", "evidence_ids": [evidence_id],
+            "rationale": rationale, "active": True, "origin": "dialog_turn"}
+
+
+def chosen_options(replies: list[dict], offered: dict[str, tuple[str, ...]]) -> list[dict]:
+    """The person's answers that are one of the options the agent offered for that question (`offered_options`)."""
+    return [reply for reply in replies if reply["answer"].strip() in offered.get(reply["question"].strip(), ())]
+
+
+def choice_fields(chosen: list[dict]) -> dict:
+    """What makes the person's choice among the agent's options their decision: kind, status, title and summary."""
+    return {"kind": "decision", "status": "adopted",
+            "title": "; ".join(reply["answer"].strip() for reply in chosen)[:240],
+            "summary": "\n".join(f"{reply['question'].strip()} → {reply['answer'].strip()}" for reply in chosen)[:4000]}
 
 
 def offered_options(reply: SourceRecord, ordered: list[SourceRecord]) -> dict[str, tuple[str, ...]]:

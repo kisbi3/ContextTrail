@@ -105,8 +105,9 @@ HARNESS_TEXT = ("<task-notification>", "<command-name>", "<command-message>", "<
 HOST_COMMAND = re.compile(r"\A/(?:compact|clear|new|model|effort|status|cost|usage|fast|config|permissions|mcp|help|"
                           r"resume|exit|quit)(?:\s+\S+)?\s*\Z")
 
-# The note Claude Code puts before an image the person attached ("[Image: original 2520x540, displayed at …]");
-# the person's own words, if any, follow it.
+# The note Claude Code writes as a user-role row of its own (`isMeta`) after the agent reads an image file ("[Image:
+# original 2520x540, displayed at …]"): no image the person attached and no words of theirs. It is set aside before
+# the check; words after it, if any, are kept.
 IMAGE_NOTE = re.compile(r"\A(?:\s*\[Image: original [^\]\n]*\])+\s*")
 
 

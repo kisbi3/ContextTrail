@@ -122,7 +122,7 @@ def status_labels(graph: dict) -> dict[str, str]:
         status = event["status"]
         if retired(event):
             # Set aside by `refresh`: under today's rules its message is no request of the person's (harness text, a
-            # control command, a sub-agent's brief, an answer to the agent's own question).
+            # control command, a sub-agent's brief, Claude Code's note after the agent reads an image file).
             labels[event["id"]] = tr("요청 아님 · 지금 규칙으로는 사람의 요청이 아님",
                                      "not a request · not the person's request under the current rules")
         elif event.get("step") == "delegate":
