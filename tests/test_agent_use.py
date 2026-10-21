@@ -193,6 +193,18 @@ def test_find_searches_titles_and_quotes_and_lists_the_newest_without_words(anal
     assert "AI 호출 없음" in find_text(overview)[0]
 
 
+def test_a_request_row_names_its_kind_once_and_a_step_with_no_summary_has_no_empty_heading(analysed):
+    graph = copy.deepcopy(analysed.graph())
+    request = next(e for e in graph["events"] if e["kind"] == "question")
+    rows = find_text(find(graph, "", analysed.evidence_many, limit=50))
+    line = next(row for row in rows if request["id"][:11] in row)
+    assert "요청 · 요청" not in line and "요청 · " in line
+    event = next(e for e in graph["events"] if e["evidence_ids"])
+    event["summary"] = ""
+    text = show_text(show(event["id"], graph, analysed.evidence, analysed.graph))
+    assert "무슨 일이 있었나" not in text
+
+
 def test_short_ids_stay_unique():
     graph = {"version": 3, "events": [{"id": "ev_aaaaaaaa1111"}, {"id": "ev_aaaaaaaa2222"}, {"id": "ev_bbbbbbbb0000"}]}
     assert short_id(graph, "ev_aaaaaaaa1111") == "ev_aaaaaaaa1"

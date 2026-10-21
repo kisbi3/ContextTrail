@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "contexttrail"
 version = "0.1.0a10"
-description = "Evidence-linked project history from local Codex and Claude Code transcripts"
+description = "Evidence-linked project history from local Codex, Claude Code and opencode transcripts"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
@@ -14,7 +14,15 @@ requires-python = ">=3.11"
 dependencies = ["jsonschema>=4.23,<5", "wcwidth>=0.2.13,<1", "langgraph>=1,<2",
                 # Codex compresses older transcripts (.jsonl.zst); Python 3.14 reads zstd itself.
                 "zstandard>=0.22,<1; python_version < '3.14'"]
-classifiers = ["Development Status :: 3 - Alpha", "Operating System :: POSIX :: Linux", "Operating System :: MacOS :: MacOS X", "Programming Language :: Python :: 3"]
+classifiers = ["Development Status :: 3 - Alpha", "Operating System :: POSIX :: Linux", "Operating System :: MacOS :: MacOS X",
+               "Programming Language :: Python :: 3", "Programming Language :: Python :: 3.11",
+               "Programming Language :: Python :: 3.12", "Programming Language :: Python :: 3.13"]
+
+[project.urls]
+Homepage = "https://github.com/kisbi3/ContextTrail"
+Documentation = "https://github.com/kisbi3/ContextTrail/blob/main/docs/USAGE.md"
+Changelog = "https://github.com/kisbi3/ContextTrail/blob/main/CHANGELOG.md"
+Issues = "https://github.com/kisbi3/ContextTrail/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]

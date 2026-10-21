@@ -68,4 +68,4 @@ There is no linter/formatter configured. Tests use synthetic transcripts in temp
 
 ## Docs
 
-`docs/PRD.md` and `docs/SPEC.md` are the baseline design (v0.1). `docs/guides/` covers tiered analysis, LLM ops, and Studio; `docs/reports/IMPLEMENTATION_STATUS.md` tracks what is and isn't verified. Private development notes and real-workspace audit artifacts are excluded from the public repository. `AGENTS.md` holds the shared repository guidelines (style, test naming `tests/test_*.py::test_<behavior>`, commit/PR expectations).
+`docs/USAGE.md` (English) is the user reference the README links to: every option, key, hook and the developer tools; the README itself stays short. `docs/PRD.md` and `docs/SPEC.md` are the baseline design (v0.1). `docs/guides/` covers tiered analysis, LLM ops, and Studio; `docs/reports/IMPLEMENTATION_STATUS.md` tracks what is and isn't verified. Private development notes and real-workspace audit artifacts are excluded from the public repository. `AGENTS.md` holds the shared repository guidelines (style, test naming `tests/test_*.py::test_<behavior>`, commit/PR expectations).

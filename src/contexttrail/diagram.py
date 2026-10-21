@@ -25,7 +25,7 @@ from typing import Any
 
 from wcwidth import wcswidth, wcwidth
 
-from .i18n import tr
+from .i18n import count, tr
 from .render import (ASCII_MARK, MARK, RELATION, _when, delegate_label, kind_label, status_labels, status_tones,
                      terminal_graph)
 from .schema import STORY_VIEW, event_times
@@ -626,8 +626,8 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
         if last[:5] == first[:5]:
             last = last[6:]
         parts = [tr(f"흐름 {n}/{len(groups)}", f"flow {n}/{len(groups)}"),
-                 tr(f"사건 {len(group)}개", f"{len(group)} events")]
-        parts += [tr(f"세션 {len(sessions)}개", f"{len(sessions)} sessions")] if sessions else []
+                 tr(f"사건 {len(group)}개", count(len(group), "events"))]
+        parts += [tr(f"세션 {len(sessions)}개", count(len(sessions), "sessions"))] if sessions else []
         parts += [first + ("–" + last if last and last != first[6:] else "")] if first else []
         text = f"{g['flow'] * 2} {' · '.join(parts)} "
         diagram.put(y, 0, text + g["flow"] * max(0, width - 1 - wcswidth(text)), "heading")
@@ -810,7 +810,7 @@ SVG_TONE = {"ok": "#3f8f5a", "warn": "#b8862b", "fail": "#c0453d", "plain": "#ce
 def folded_work_line(work: dict, g: dict, marks: dict) -> str:
     """The story view's line for a box's own folded steps (`schema.story_view`, `folded_work`): how many, the latest
     result, and the failed and passed checks with their marks."""
-    text = f"{g['sub_mark']} " + tr(f"작업 {work['count']}건: ", f"{work['count']} steps: ") + safe_text(work["last"], multiline=False)
+    text = f"{g['sub_mark']} " + tr(f"작업 {work['count']}건: ", count(work["count"], "steps") + ": ") + safe_text(work["last"], multiline=False)
     if work.get("failed"):
         text += f" · {marks['fail']} {work['failed']}"
     if work.get("passed"):

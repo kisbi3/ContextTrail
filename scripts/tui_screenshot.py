@@ -2,9 +2,12 @@
 
 No terminal, no model call: it loads the store, draws `GraphApp` as the TUI would, and QuickLook or
 any SVG renderer turns the file into a PNG (`qlmanage -t -s 2000 -o <dir> out.svg`). Used for the
-README screenshot; the demo project is the usual input.
+README screenshot; the demo project is the usual input (`contexttrail demo` with CONTEXTTRAIL_LANGUAGE=en). The
+README's is `<demo>/sample-project tui.svg 62 106 --whole --select 3 --title sample-project`, then
+`sips --cropToHeightWidth 2000 1690`. Keys: `--whole` the whole flow, `--all` every step, `--flag` the next event
+that needs a look, `--select N` the Nth event down with its detail open.
 
-Usage: PYTHONPATH=src python scripts/tui_screenshot.py <project folder> <out.svg> [rows cols] [--whole] [--flag] [--select N] [--title T]
+Usage: PYTHONPATH=src python scripts/tui_screenshot.py <project folder> <out.svg> [rows cols] [--whole] [--all] [--flag] [--select N] [--title T]
 """
 import curses
 import html
@@ -20,6 +23,32 @@ from contexttrail.ui import GraphApp
 
 FG = {"": "#d6dde6", "bold": "#ffffff", "dim": "#7f8a96"}
 BG = "#10151b"
+# The TUI's colour pairs (`ui._styles`), drawn here as bits of their own above curses' attributes.
+COLORS = {"frame": "#56c2d6", "ok": "#5fbf7f", "warn": "#e0b04a", "fail": "#e06c62", "sub": "#c584e0",
+          "llm": "#6f9be8"}
+BITS = {name: 1 << (40 + n) for n, name in enumerate(COLORS)}
+
+
+def colour_styles():
+    """`ui._styles(True)` with the fake colour bits in place of curses' colour pairs."""
+    styles = {"": 0, "plain": 0, "title": curses.A_BOLD, "heading": curses.A_BOLD | BITS["frame"],
+              "dim": curses.A_DIM, "ok": 0, "warn": curses.A_BOLD, "fail": curses.A_BOLD, "frame": 0, "sub": 0,
+              "llm": 0}
+    for name, bit in BITS.items():
+        styles[name] |= bit
+    return styles
+
+
+# The selected box's heavy border (`ui.HEAVY`) comes from a fallback font whose glyphs sit off Menlo's cells; drawn
+# as the light glyphs in bold, the box keeps its column.
+LIGHT = str.maketrans("┏┓┗┛━┃┣┫┳┻╋", "┌┐└┘─│├┤┬┴┼")
+
+
+def ink(attr):
+    for name, bit in BITS.items():
+        if attr & bit:
+            return COLORS[name]
+    return FG["bold"] if attr & curses.A_BOLD else FG["dim"] if attr & curses.A_DIM else FG[""]
 
 
 class Screen:
@@ -71,6 +100,11 @@ def main():
     scope = Scope.resolve(folder)
     store = Store(scope.state_dir, scope.id)
     app = GraphApp(store.graph(), store.evidence, title=title)
+    app.panels.styles = colour_styles()
+    screen = Screen(rows, cols)
+    app.draw(screen)  # the first draw opens on the latest request; keys below act on what it shows
+    if "--all" in args:
+        app.panels.handle("v")  # every step instead of the story view
     if "--whole" in args:
         app.panels.handle("A")  # the whole flow, not one request's turn
     if "--flag" in args:
@@ -80,7 +114,6 @@ def main():
         for _ in range(select):
             app.panels.handle("j")  # move the selection down
         app.panels.handle("\t")  # open the detail pane
-    screen = Screen(rows, cols)
     app.draw(screen)
     cw, lh, pad = 8.4, 17.5, 24  # Menlo 14px advance, line height, padding
     width = int(cols * cw + pad * 2)
@@ -97,11 +130,19 @@ def main():
         x = x0
         for text, attr in runs(row):
             width_cells = sum(max(1, wcwidth(c)) if c else 0 for c in text)
-            if text.strip():
-                style = "bold" if attr & curses.A_BOLD else "dim" if attr & curses.A_DIM else ""
-                weight = ' font-weight="bold"' if style == "bold" else ""
-                svg.append(f'<text x="{x:.1f}" y="{y}" fill="{FG[style]}"{weight} xml:space="preserve">'
-                           f'{html.escape(text).replace(" ", " ")}</text>')
+            fill = ink(attr)
+            if attr & curses.A_REVERSE:  # the selected line: its colour as the background
+                svg.append(f'<rect x="{x:.1f}" y="{y - lh + 5}" width="{width_cells * cw:.1f}" height="{lh}" '
+                           f'fill="{fill}"/>')
+                fill = BG
+            weight = ' font-weight="bold"' if attr & curses.A_BOLD else ""
+            # Each glyph at its own cell: a box-drawing glyph from a fallback font is wider than Menlo's advance,
+            # and a run of them pushed every border after it off its column.
+            at = x
+            for char in text.translate(LIGHT):
+                if char.strip():
+                    svg.append(f'<text x="{at:.1f}" y="{y}" fill="{fill}"{weight}>{html.escape(char)}</text>')
+                at += (max(1, wcwidth(char)) if char else 0) * cw
             x += width_cells * cw
     svg.append("</g></svg>")
     out.write_text("\n".join(svg), encoding="utf-8")

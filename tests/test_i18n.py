@@ -21,3 +21,8 @@ def test_tr_and_labels_follow_the_language_set_at_call_time():
     assert tr("가", "a") == "a" and labels["a"] == "a" and i18n.language() == "en"
     i18n.set_language("Korean")
     assert tr("가", "a") == "가" and labels["a"] == "가" and dict(labels) == {"a": "가"}
+
+
+def test_an_english_count_names_one_thing_in_the_singular():
+    assert i18n.count(1, "steps") == "1 step" and i18n.count(2, "steps") == "2 steps"
+    assert i18n.count(0, "sessions") == "0 sessions" and i18n.count(1, "events") == "1 event"

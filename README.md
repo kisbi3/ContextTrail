@@ -1,14 +1,17 @@
 # ContextTrail
 
 [![test](https://github.com/kisbi3/ContextTrail/actions/workflows/test.yml/badge.svg)](https://github.com/kisbi3/ContextTrail/actions/workflows/test.yml)
+[![PyPI](https://img.shields.io/pypi/v/contexttrail)](https://pypi.org/project/contexttrail/)
+[![Python 3.11–3.13](https://img.shields.io/badge/python-3.11%E2%80%933.13-blue)](https://github.com/kisbi3/ContextTrail/blob/main/.github/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/kisbi3/ContextTrail/blob/main/LICENSE)
 
-**Turns the Codex, Claude Code and opencode sessions already on your machine into an evidence-linked history of a project: what was tried, what failed, what was decided, and what was actually verified.**
+**Turns the Codex, Claude Code and opencode sessions already on your machine into an evidence-linked history of a project: what was asked, what was tried, what failed, what was decided, and what was actually verified.**
 
-ContextTrail reads the transcripts the three tools keep locally (Codex and Claude Code JSONL files, the opencode SQLite database), plus the project's Git history, and asks the Codex or Claude CLI you already have installed (sandboxed, read-only) to reconstruct the flow. Every event and every arrow carries a quote from the source, and the code checks each quote against the record before anything is stored. You get a terminal view, a local browser view, `find`/`show`/`status` commands, and two agent skills so Codex, Claude Code and opencode can answer "why did we drop X?" from the saved graph instead of from memory, and can tell when that graph is behind the transcripts.
+ContextTrail reads the transcripts the three tools keep locally (Codex and Claude Code JSONL files, the opencode SQLite database), plus the project's Git history, and asks the Codex or Claude CLI you already have installed (sandboxed, read-only) to reconstruct the flow. Every event and every arrow carries a quote from the source, and code checks each quote against the record before anything is stored. You get a terminal view, a local browser view, `find`/`show`/`status` commands, and agent skills so Codex, Claude Code and opencode can answer "why did we drop X?" from the saved graph instead of from memory.
 
-Development alpha `0.1.0a10`. Linux and macOS, Python 3.11+. [What has been measured](#6-what-has-been-measured) is further down; nothing on this page is an estimate presented as a result.
+Development alpha `0.1.0a10`. Linux and macOS, Python 3.11+. [What has been measured](#what-has-been-measured) is further down; nothing on this page is an estimate presented as a result.
 
-![The terminal view on the synthetic demo: the event flow on top, the selected event with its links and quoted evidence below](docs/images/tui-demo-en.png)
+![The terminal story view of the synthetic demo: two requests, a proposal, a failed check and an unverified report as coloured boxes, with the selected report's status, links and quoted evidence below](https://raw.githubusercontent.com/kisbi3/ContextTrail/main/docs/images/tui-story-en.png)
 
 ## Try it in a minute, without an AI account
 
@@ -17,7 +20,7 @@ pipx install contexttrail                               # or: pip install contex
 contexttrail demo --path /tmp/contexttrail-demo        # synthetic logs + a deterministic mock runner
 ```
 
-The demo writes a small Codex log and a small Claude Code log for one folder, runs the whole pipeline with a mock in place of the model, and opens the result. It shows what the tool builds and how it reads; it says nothing about real model accuracy.
+Give it a new or empty directory. The demo writes a small Codex log and a small Claude Code log for one folder, runs the whole pipeline with a mock in place of the model, and opens the result; `contexttrail view /tmp/contexttrail-demo/sample-project` reopens it later. It shows what the tool builds and how it reads; it says nothing about real model accuracy. The mock can be chosen only for the demo and evaluation fixtures, never to analyse a real project.
 
 ## What goes in, what comes out
 
@@ -34,79 +37,32 @@ The demo's input is twelve records in two logs, the kind of thing the CLIs write
 | Claude Code session | tool call → result | `pytest tests/test_store.py -q` → SQLite concurrent write test: 4 passed |
 | Claude Code session | assistant | Switched to SQLite and the tests pass too. |
 
-Out of that, code finds the work in the tool calls (two edits, two test runs, and that each run tested the file just edited), one model call per stretch of work writes the story over it (the alternative proposed, the report, which reply answered which request), and code checks every claim against the records before it publishes eight events and their relations. The terminal shows them as a flow:
+Out of that, code finds the work in the tool calls (two edits, two test runs, and that each run tested the file just edited), one model call per stretch of work writes the story over it (the alternative proposed, the report, which reply answered which request), and code checks every claim against the records before it publishes eight events and their relations.
 
-```text
-══ flow 1/2 · 4 events · 1 sessions · 09-22 19:00–19:05 ═══════════════════════════════════════════════
+The screen opens on the **story view** above: one box per request, proposal, decision, finding or failure, with the work folded into a line of its box (`↳ 1 step: Edit store.py`). `v` (or the button on the browser page, shown here) shows **every step**, the same graph with each edit and check as its own box:
 
-                       stretch · Synthetic stretch: the storage chosen and changed
-                  ┌─ [01] request ──────────────────┐
-                  │ Let's store it as a JSON file   │
-                  │ for now.                        │
-                  │ ✓ request · answered            │
-                  └─────────────────────────────────┘
-                     │ answers
-                     ▼
-                  ┌─ [02] proposal ─────────────────┐
-                  │ SQLite proposed as an           │
-                  │ alternative                     │
-                  │ · proposed                      │
-                  └─────────────────────────────────┘
-                     ┊
-                     ▽
-                  ┌─ [03] change ───────────────────┐               ┌─ [04] result ───────────────────┐
-                  │ Edit store.py                   ├────verifies──▶│ Check failed: pytest            │
-                  │ ✗ applied                       │               │ tests/test_store.py -q          │
-                  │   · check failed: pytest        │               │ ✗ observed failure              │
-                  │     tests/test_store.py -q      │               └─────────────────────────────────┘
-                  └─────────────────────────────────┘
-
-══ flow 2/2 · 4 events · 1 sessions · 09-22 19:06–19:11 ═══════════════════════════════════════════════
-
-                       stretch · Synthetic stretch: the storage chosen and changed
-                  ┌─ [05] request ──────────────────┐
- ┌────────────────┤ Concurrent writes break it, so  │
- │                │ let's switch to SQLite.         │
- │                │ ✓ request · answered            │
- │                └─────────────────────────────────┘
- │                   ┊
- │                   ▽
- │                ┌─ [06] change ───────────────────┐               ┌─ [07] result ───────────────────┐
- │                │ Edit store.py                   ├────verifies──▶│ Check passed: pytest            │
- │                │ ✓ applied                       │               │ tests/test_store.py -q          │
- │                │   · verified: pytest            │               │ ✓ observed success              │
- │                │     tests/test_store.py -q      │               └─────────────────────────────────┘
- │                └─────────────────────────────────┘
- │                   ┊
- │                   ▽
- │                ┌─ [08] result ───────────────────┐
- └─ [05] answers ▶│ SQLite change reported done     │
-                  │ Switched to SQLite and the      │
-                  │ tests pass too.                 │
-                  │ ! reported done·unverified      │
-                  └─────────────────────────────────┘
-```
+![The browser's every-step view of the demo: each change with an arrow labelled verifies to the test run that checked it, the first failed and the second passed, and the final report marked reported done, unverified](https://raw.githubusercontent.com/kisbi3/ContextTrail/main/docs/images/web-every-step-en.png)
 
 Three things in that picture are the point of the tool:
 
 - **A change never gets a success badge of its own.** Event 03 is `applied`, and it is marked ✗ only because the run that *verifies* it failed; event 06 is ✓ because the run after it passed. Verification is an arrow to a result, never a word in a summary.
 - **Words are not results.** Event 08, "Switched to SQLite and the tests pass too", is `reported done·unverified` (!): it is what the assistant said, linked as the answer to request 05. The run result is event 07.
-- **Every arrow has a basis.** Code draws `verifies` when the test run names the edited file's tests, and keeps one the model claims only when the records agree (a run after the edit, with a known result, that the assistant reported after it); an `answers` is kept only when it cites the assistant's reply after the request. Dialog order (`follows`) is order, never a cause.
+- **Every arrow has a basis.** Code draws `verifies` when the test run names the edited file's tests, and keeps one the model claims only when the records agree (a run after the edit, with a known result, that the assistant reported after it); an `answers` is kept only when it cites the assistant's reply after the request. Dialog order is order, never a cause.
 
 Any event can be opened with its quotes, in the terminal or by an agent:
 
 ```text
-$ contexttrail show ev_e09b4e64
+$ contexttrail show ev_e00061cf
 ContextTrail event · current graph v2 · saved result · no AI calls
-ev_e09b4e64  Edit store.py
+ev_e00061cf  Edit store.py
   status: applied · check failed: pytest tests/test_store.py -q
   change · assistant · 2026-09-22 19:02
-  reference: contexttrail:ev_e09b4e64@v2
+  reference: contexttrail:ev_e00061cf@v2
   agent: codex
 
 Linked events
-  → verifies  ev_87253c86  Check failed: pytest tests/test_store.py -q [observed failure]
-  ← follows (dialog order, not causation)  ev_137754ef  Let's store it as a JSON file for now. [request · answered]
+  → verifies  ev_f058c8cb  Check failed: pytest tests/test_store.py -q [observed failure]
+  ← follows (dialog order, not causation)  ev_9c1a305d  Let's store it as a JSON file for now. [request · answered]
 
 --- source evidence 1 (Codex · tool call · 2026-09-22 19:02 · session demo-cod · lines 1–2) ---
 > Tool: exec
@@ -117,82 +73,28 @@ Linked events
 > +json.dump(data, file)
 > *** End Patch"));
 --- end ---
-```
-
-The `contexttrail:ev_…@v2` reference can be pasted into a Codex or Claude Code chat, and the installed `contexttrail-context` skill reads that event with its evidence.
-
-## The same thing on a real project
-
-On a real project the records are thousands of lines of conversation, tool calls, diffs and test output, and the model does the reading; the checks are the same. The same graph takes records from every tool: on 2026-10-06 one opencode session of this repository (an explore sub-agent surveying the source, 4 work units) was analyzed with the Claude runner in 11 calls and 2.5 minutes with one repair round, and `find` run from this Claude Code session then listed those four opencode events (quoted from the opencode database, labelled `opencode · tool result · session ses_f1a2`) next to the Codex ones, with the first line saying how many records were still unanalyzed. This is the tail of what Claude Sonnet reconstructed from three work units of this repository's own Codex logs (the afternoon macOS sandbox support was added), in 8 calls, about 1.5 minutes and no repair round:
-
-```text
- ┌─ [19] change ─────────────────┐               ┌─ [20] result ─────────────────┐
- │ cli_runner.py gets macOS      ├────verifies──▶│ test_runner: 1 failed, 11     │
- │ Seatbelt sandbox              │               │ passed; codex doctor fails    │
- │ ✗ applied                     │               │ ✗ observed failure            │
- │   · check failed:             │               └───────────────────────────────┘
- │     test_runner: 1 failed, 11 │
- │     passed; codex doctor…     │
- └───────────────────────────────┘
-
- ┌─ [21] fix ────────────────────┐               ┌─ [22] result ─────────────────┐
- │ Resolve home path and add     ├────verifies──▶│ codex doctor passes on        │
- │ /etc,/var,/tmp literals       │               │ Seatbelt                      │
- │ ✓ applied                     │               │ ✓ observed success            │
- │   · verified: codex doctor    │               └───────────────────────────────┘
- │     passes on Seatbelt        │
- └───────────────────────────────┘
-```
-
-Opening the fix shows why it is marked verified: the patch itself, the error it answered, and the run that checked it are all quoted from the log.
-
-```text
-$ contexttrail show ev_cf348e54
-ev_cf348e54  Resolve home path and add /etc,/var,/tmp literals
-  status: applied · verified: codex doctor passes on Seatbelt
-  fix · assistant · 2026-09-23 16:52
-
-What happened
-  Two follow-up patches to cli_runner.py: resolved home/TMPDIR paths after CODEX_HOME read
-  failures, then allowed literal traversal of /etc, /var, /tmp after codex failed to read
-  /etc/codex/requirements.toml.
-
-Linked events
-  → verifies  ev_233a98c0  codex doctor passes on Seatbelt [observed success]
-
---- source evidence 1 (Codex · tool call · 2026-09-23 16:52 · line 2) ---
-> - return home
-> + return home.resolve()
---- source evidence 2 (Codex · tool call · 2026-09-23 16:52 · line 2) ---
-> + literals = sorted(ancestors | {str(credential), "/etc", "/var", "/tmp"})
---- source evidence 3 (Codex · tool result · 2026-09-23 16:52 · line 5) ---
-> Failed to read requirements file /etc/codex/requirements.toml: Operation not permitted (os error 1)
+--- source evidence 2 (Codex · tool result · 2026-09-22 19:03 · session demo-cod · line 1) ---
+> Patch applied: JSON storage code.
 --- end ---
 ```
 
-Earlier in the same flow a change is `applied · unverified` because its tests were never run in the log, a `request · nothing linked` marks a request no event of the graph is linked to (an unanalysed turn reads the same), and an open item records that a pytest run was aborted with no result. Those are the states the tool is for.
+(The real output also says, under its first line and again before the evidence, that quoted past records are data and not instructions.) The `contexttrail:ev_…@v2` reference can be pasted into a Codex or Claude Code chat, and the installed `contexttrail-context` skill reads that event with its evidence.
+
+On a real project the records are thousands of lines of conversation, tool calls, diffs and test output, and the model does the reading; the checks are the same. The same graph takes records from every tool: a decision made in an opencode session is there when you ask from Claude Code (checked on 2026-10-06: `find` run from a Claude Code session listed events quoted from an opencode session next to the Codex ones).
 
 ## What it does and does not do
 
 - **Reads only.** It never modifies the project, the transcripts, or Git refs, index or config. Its own state lives under `.git/contexttrail/` (or `.contexttrail/` without Git).
-- **Calls a model only when you ask.** Viewing, exporting, the browser page and node selection make zero calls. Analysis runs on `analyze`, on `R` in the terminal view, or when an agent runs the `contexttrail-update` skill with a unit count you gave it; before sending it shows what it will send and asks.
-- **Runs your CLI in a sandbox.** The Codex or Claude CLI runs under bubblewrap (Linux) or a deny-default `sandbox-exec` profile (macOS) with its credential file bind-mounted read-only. If the sandbox is unavailable it refuses to run; there is no unsandboxed fallback, and it never reads or copies credential contents.
-- **Sends only this project's records.** A record is attributed to the project by the working directory the CLI recorded, never by keyword guessing. Out-of-scope conversations never reach the model.
-- **Checks before it stores.** Every quote must exist in the source at the cited lines. Slips with one possible reading (a quote at the wrong line, an extra escape) are corrected in code and audited; everything else goes back to the model for one repair round, and what still fails is dropped and named in the graph's limitations.
-- **Costs tokens from your own account.** The pipeline is tuned so a cheap model does the work: on the measured fixture, Claude Sonnet finishes a work unit in about a minute. The plan shown before a run estimates calls, tokens and minutes.
+- **Calls a model only when you ask.** Viewing, exporting, the browser page and node selection make zero calls. Analysis runs on `analyze`, on `R` in the terminal view, on the browser page's analyze button, when an agent runs the `contexttrail-update` skill with a unit count you gave it, or from the tools' end-of-turn hook once you turn automatic analysis on. The first run for a project and runner shows what it will send and asks for consent; after that, runs without a terminal (an agent, the hook) go ahead with the saved consent and the count you set.
+- **Runs your CLI in a sandbox.** The Codex or Claude CLI runs under bubblewrap (Linux, its credential file bind-mounted read-only) or a deny-default `sandbox-exec` profile (macOS, a temporary HOME whose credential file is a link the profile lets it read but not write). It needs file-based auth (`auth.json`, `.credentials.json`); a keyring-only login is refused. If the sandbox is unavailable it refuses to run; there is no unsandboxed fallback, and it never reads or copies credential contents.
+- **Sends only this project's records.** A record is attributed to the project by the working directory the CLI recorded, never by keyword guessing. Out-of-scope conversations never reach the model. Values in known credential formats are masked as `[secret hidden]` when transcripts are read (not a guarantee: [SECURITY](https://github.com/kisbi3/ContextTrail/blob/main/docs/SECURITY.md)).
+- **Checks before it stores.** Every quote must exist in the source at the cited lines. Slips with one possible reading are corrected in code and audited; everything else goes back to the model for one repair round, and what still fails is dropped and named in the graph's limitations.
+- **Costs tokens from your own account.** One model call per work unit (two when its answer needs a repair, at most three), on a light model by default (Codex `gpt-luna`, Claude `haiku`). The plan shown before a run estimates calls, tokens and minutes for 5, 15 and 30 units, and you choose how many.
 - **Is incremental.** Finished work units are never re-sent. Re-running with no new records makes zero calls.
 
-Version: `0.1.0a10` · Linux / SSH primary, macOS measured · names are provisional.
+## Install
 
-**Languages:** the terminal, TUI, browser view and CLI help are in English or Korean, chosen from `--language`, `CONTEXTTRAIL_LANGUAGE`, the project's saved output language, or the locale. Event titles and summaries are written in the language of your own messages (`--language` overrides). Everything the model reads is English. A Korean README is not written yet.
-
-**More:** [model tiering, project filters, and test usage](docs/guides/TIERED_ANALYSIS.md). Before opening the UI on a real project, run `contexttrail scan .` to review input selection.
-
----
-
-## 1. Getting Started
-
-Requires Python 3.11+, Git, and a UTF-8 terminal. Python's `curses` module is needed. From PyPI:
+Requires Python 3.11+, Git, and a UTF-8 terminal with Python's `curses` module.
 
 ```bash
 pipx install contexttrail          # or: pip install contexttrail
@@ -200,424 +102,101 @@ contexttrail install-commands      # adds the Codex, Claude Code and opencode co
 ct --version                       # ct is the short alias of contexttrail
 ```
 
-Or from a clone, which does both steps and links `contexttrail` and `ct` into `~/.local/bin`:
+Or from a clone, which does both steps into `~/.local/share/contexttrail/venv` and links `contexttrail` and `ct` into `~/.local/bin`:
 
 ```bash
 git clone https://github.com/kisbi3/ContextTrail.git && cd ContextTrail
 ./install.sh
 ```
 
-`install.sh` installs into `~/.local/share/contexttrail/venv`. Existing user command files are preserved; files created by ContextTrail are updated on reinstall. If `~/.local/bin` is not in `PATH`, follow the instructions printed during installation.
+The repository is also a Claude Code plugin marketplace with the skills and hooks (the CLI above is still needed): `/plugin marketplace add kisbi3/ContextTrail`, then `/plugin install contexttrail@contexttrail`. From the plugin, the commands are `/contexttrail:context` and `/contexttrail:update`. Use either the plugin or `install-commands`, not both.
 
-After installation, running `contexttrail` with no arguments in a project directory opens its saved flow view — equivalent to `contexttrail view .`. AI is called only when you press `R` in the TUI. To open a different directory, pass it as the first argument: `contexttrail /path/to/project`.
+## Use it on a project
 
 ```bash
 cd /path/to/project
-contexttrail
+contexttrail                                    # open the saved flow (same as: contexttrail view .); never calls AI
+contexttrail doctor --runner claude             # CLI, sandbox and flags; no model call
+contexttrail scan                               # what would be read and sent: records, worktrees, homes, plan; no model call
+contexttrail analyze --runner claude --units 5  # or --runner codex; shows the plan and asks before sending
 ```
 
-In a non-Git directory, state is stored in `.contexttrail/`. In a Git repository, it goes under `.git/contexttrail/`.
+`contexttrail /path/to/project` opens another folder, and `python -m contexttrail` works as well. **Log in to the Codex or Claude Code CLI yourself first**; ContextTrail only runs it. Analysis goes oldest first, a few work units at a time, and the graph is usable after any run: the rest waits for the next one. For a big project, `--recent N` or `--since 7d` analyzes the latest sessions first; `--session current` the conversation you are in. `contexttrail refresh` brings a graph made by an older version up to today's rules with no model call.
 
-Code was tested on Python 3.13.5. Python 3.11 and 3.12 compatibility is pending verification. The command is `contexttrail`, with `ct` as a short alias; `python -m contexttrail` also works.
-
-### Running the demo without AI or credentials
-
-```bash
-contexttrail demo --path /tmp/contexttrail-demo
-```
-
-Specify a new or empty directory. This generates synthetic Codex/Claude logs and a demo project **without calling any external model** — it uses a test-only Mock Runner that handles a fixed set of cases. This Mock cannot be selected as the analyzer for a real project.
-
-Example flow:
-
-```text
-[01] Adopt JSON storage / adopted
-├── follow → [02] Propose SQLite alternative / proposed
-│   └── follow → [05] Decide to switch to SQLite / adopted
-│       └── follow → [06] Report SQLite migration done / report·unverified
-└── follow → [03] Implement JSON storage / report·unverified
-    └── follow → [04] Concurrent-write test fails / observed failure
-        └── motivates → ↗ [05] (merges/returns)
-```
-
-Viewing saved results and re-running without changes:
-
-```bash
-contexttrail view /tmp/contexttrail-demo/sample-project
-contexttrail analyze /tmp/contexttrail-demo/sample-project --no-tui
-# noop if no new records — 0 runner calls
-```
-
----
-
-## 2. Applying to a Real Project
-
-### Setting Up a Runner and Diagnosing
-
-**Install and log in to the Codex or Claude Code CLI yourself** before use. ContextTrail does not handle token issuance, copying, or login. On Linux, real AI execution requires `bubblewrap` (`bwrap`) and available user namespaces. On macOS, `sandbox-exec` and file-based CLI credentials are required. If isolation tools or required CLI options are missing, execution is blocked. The macOS path uses a deny-default Seatbelt profile with a temporary HOME; it has passed Codex `doctor --smoke` and a small live-segment analysis. Blocking of malicious tools and config is not yet validated.
-
-```bash
-contexttrail doctor --runner codex
-contexttrail doctor --runner claude
-```
-
-The default `doctor` run checks CLI version, help output, and isolation feasibility — no model calls. **The presence of a credential file does not guarantee successful authentication.** The following commands make explicit real-account calls, sending a small synthetic input (not your project data):
-
-```bash
-contexttrail doctor --runner codex --smoke --yes
-contexttrail doctor --runner claude --smoke --yes
-```
-
-This smoke test is a simple structured JSON round-trip. **It does not substitute for full integration validation of mixed-log analysis or permission blocking.** Per-CLI flags and unvalidated items are in [Implementation Status](docs/reports/IMPLEMENTATION_STATUS.md); isolation constraints are in [Security](docs/SECURITY.md).
-
-Current alpha authentication constraints:
-
-- Only file-based credentials are supported: Codex's `auth.json` and Claude's `.credentials.json` are bind-mounted read-only into the CLI's isolated environment. The program does not read or copy their contents.
-- Keyring-only auth, per-org user settings, custom API providers, proxies, and certificate inheritance are not supported.
-- If credential renewal requires a write, the run may fail. Log in or refresh via the original CLI, then retry. Permissions are not escalated to work around failures.
-
-### Confirming Input Scope → Analyzing
-
-```bash
-# Check relevant record count, linked worktrees, and limitations — no AI calls
-contexttrail scan /path/to/project
-
-# Read logs from both sources and analyze with one chosen runner
-contexttrail analyze /path/to/project --runner codex
-# or
-contexttrail analyze /path/to/project --runner claude
-```
-
-Replace `/path/to/project` with the actual path on your server. The first analysis prompts for transmission consent. **Conversation turns, tool outputs, and code fragments may be sent to the model service of the chosen CLI.** Values in known credential formats (`sk-…`, `ghp_…`, `AKIA…`, private key blocks, `NAME_KEY=value` and the like) are masked as `[secret hidden]` when transcripts are read, so they are not stored, sent, or exported; this is not a guarantee — formats it does not know pass as written, so verify your project's transmission policy before proceeding with sensitive material.
-
-The chosen runner, settings, and consent are stored in the per-scope local DB. Analysis proceeds oldest-first through **work units**. Each run first shows a summary such as "1,480 units pending · 15 this run (≤30 AI calls) · ~2.39M input tokens · ~120 min (estimated)" along with token/time projections for 5, 15, and 30 units, then prompts for the number of units to process (Enter = shown count, `n` = cancel, `--yes` = no prompt). Use `--units N` to specify in advance. Once units are set, the per-unit AI call cap is 6; `--max-calls` overrides that. Both values apply only to the current run and are not saved. Estimates are calibrated from actual input tokens and timing if ≥3 units with usage records exist. Use `contexttrail scan` to preview the plan without sending anything (`plan_text`, `plan_choices`).
-
-**Output language.** Event titles and summaries are written in one language per project, determined by the dominant language of user messages during the first analysis run. Script-distinct languages (Korean, Japanese, etc.) are identified directly; for Latin-script languages (English, Spanish, etc.) the system locale is used as a tiebreaker. Source text in other languages is still summarized in the chosen language. Code names, filenames, commands, and quotations remain verbatim. Use `--language Korean` to change; `--language auto` re-detects. Already-analyzed events are not re-translated unless re-analyzed.
-
-**One call per unit.** Code finds the work in the tool calls (edits, the checks after them and their results, commits, other runs); the model reads only what the person and the assistant wrote, cut into numbered blocks, plus an outline of that work, and writes the story over it: what was asked and where it was answered, goals, decisions and their stated reasons, findings, changes of course, and which later run tried each edit. It cites block IDs, so code puts the exact source lines in the graph, and code keeps a claimed check or answer only when the records agree. A unit takes one call, two when its answer needs a repair; extraction of several units can run side by side with `--workers`. On ten units of a real research project this read about a tenth of the input of the earlier extract-and-integrate pipeline, linked more requests to their answers and as many changes to their checks ([measurements](docs/plans/PIPELINE_V2.md) §8).
-
-`--session <session-id>` prioritizes that session and its sub-agents over older records. `--session current` refers to the Codex/Claude Code conversation that invoked this command. Events added this way are marked "out-of-order analysis" — relationships to earlier unanalyzed records may be missing. Use `contexttrail analyze /path/to/project` for subsequent runs.
-
-**Recent sessions first (large projects).** The default order stays oldest first, because relations point from earlier events to later ones. For a first analysis of a big project, `--recent N` (the N most recent sessions) and `--since WHEN` (sessions that ended after an age such as `7d`, `36h`, `2w`, or a date such as `2026-10-01`) analyze only those sessions and their sub-agents, oldest first within them, and mark what they add as out-of-order analysis while older records still wait. A session is as recent as the latest record of it and its sub-agents; sessions with notes are left out and not counted. The consent screen names the sessions it will send first; `contexttrail scan --recent 5` previews that with no model call. The other sessions are filled in by a later ordinary run (the project stays `partial` until then). `--units` and `--max-calls` work as usual; the options cannot be combined with `--session`, `--audit` or the automatic hook. Design: `docs/plans/RECENT_SESSIONS_FIRST.md`. Runner does not switch silently; completed segments are not re-analyzed just because settings changed.
-
-**Bringing an older graph up to today's rules.** Some of what the graph holds is worked out by code from the records, and a graph published by an earlier version keeps what that version worked out. `contexttrail refresh /path/to/project` scans (no model call, no consent needed) and reads it again: who wrote each event (a Codex sub-agent first stored under its random nickname, such as `Dirac`, is named by its task, such as `plots`), what step it is (a check, a documentation edit, a delegation), which sub-agent work belongs to which delegation, and which requests were not the person's under the current rules (harness text, the Codex app's plugin list, `/compact`, the `[Image: original …]` note Claude Code writes after the agent reads an image file, a queued message, a sub-agent's brief): those are set aside as withdrawn, keep their relations and are no longer drawn or counted as requests, and the work that hung only from them is hung where a fresh analysis would hang it. An answer to the agent's own question is kept: when it picks one of the options the agent offered it becomes the person's decision. Titles, summaries, check results and the relations a model wrote are left as they are (a choice made a decision is titled by the option picked, as a fresh analysis titles it). It publishes one new graph version, or nothing when nothing changed, and is refused while an analysis runs (`--json` for the counts). On this machine's copies it renamed 43 events and set 13 steps on priceimpact and set aside 24 of 157 requests there, and 60 of 415 on this repository. `status` and `find` do not say whether a graph needs it.
-
-**Analysis model and reasoning level.** ContextTrail always specifies the model by name because the isolation environment does not carry the user's CLI config file (`~/.codex/config.toml`, etc.). Defaults: Codex `gpt-luna`, Claude `haiku` (the light models, since 2026-10-17; `gpt-sol` and `sonnet` are what they are compared against); override with `--model`. On Codex, `gpt-sol` reads the records more reliably than `gpt-luna` (more requests linked to their answers, more changes linked to the checks that tried them) at about twenty times the price per token. Codex accepts only versioned names, so a name without a version (`gpt-sol`, `gpt-luna`) is resolved before the first call to the newest listed model of that family in the catalog shipped with the installed Codex (`codex debug models --bundled`, run inside the sandbox; today `gpt-6-luna` and `gpt-6.1-sol`), and calls record the resolved name. The reasoning level defaults to `medium`; adjust it with `--extract-effort` (`low`·`medium`·`high`·`xhigh`·`max`), and pick the analysis model apart from the runner's with `--extract-model`. Every call logs the requested model and reasoning level in the local call ledger (`contexttrail ops --details`) and evaluation reports. Claude records the responding model; Codex does not report it in its response.
-
-For non-interactive use, consent can be given with explicit `--yes`. The following command goes beyond a simple example and allows real transmission — confirm scope first:
-
-```bash
-contexttrail analyze /path/to/project --runner codex --yes --no-tui
-```
-
-Default log paths: `CODEX_HOME` or `~/.codex` (`sessions/`, `archived_sessions/`), `CLAUDE_CONFIG_DIR` or `~/.claude` (`projects/`), and the opencode data directory `$XDG_DATA_HOME/opencode` or `~/.local/share/opencode` (every `opencode*.db`, opened read-only; only the `session`, `message` and `part` tables are read, never the credential tables or `auth.json`). A session belongs to the project by its recorded working directory only. Override when paths differ per server (`--opencode-home` for opencode):
-
-```bash
-contexttrail scan /path/to/project \
-  --codex-home /path/to/codex-home \
-  --claude-home /path/to/claude-home
-```
-
-Only the project currently being worked on is analyzed. If logs are on a local PC and the project is on a Linux server, the server does not automatically collect logs from the PC. Cross-machine/repo auto-merge is not a feature of this version.
-
-`--sources codex,claude,opencode` reads only the named tools (saved by `analyze`, like the homes). A home is taken from the command's flag, else the value `analyze` saved for the project, else `CODEX_HOME` / `CLAUDE_CONFIG_DIR` / `$XDG_DATA_HOME`, else the default; `scan` lists each home it used, where it came from and what it found there. Transcript files that are symbolic links are skipped (linked directories are followed), and inherited `GIT_*` variables are ignored on purpose: give ContextTrail a real checkout.
-
-**Driving ContextTrail from a program.** Every JSON output carries a `schema` name (`contexttrail.scan.v1`, …), `contexttrail capabilities` lists the version, the outputs, the readable sources and every command's options, `analyze --json` prints the run's result as one object, and the exit codes are distinct: 0 done, 2 partial, 64 usage error, 75 busy, 77 refused, 130 interrupted, 1 other errors. `export --format json --since-version N` gives what changed since graph version N. The whole contract is in [docs/HOST.md](docs/HOST.md).
-
-Extraction input contains the source text for the work unit plus limited surrounding context. Up to 4 conversation/Git records from the same worktree within 15 minutes are placed at the front of the surrounding context and additional read list. **Temporal proximity alone does not imply causation.** Long Git diffs are split into citable fragments of ≤32,000 characters, the same as logs. Commits whose Git command output exceeds the 4 MB safety limit are deferred while the next commit continues — check `contexttrail scan` for limitations.
-
-Work units are first grouped by session and worktree. Within a session, summary compression, gaps ≥3 hours, and date changes with sufficient gaps are used as boundaries. When the input budget is reached, breaks are made at user-turn boundaries where possible; tool calls/results and source fragments are kept together. Work unit boundaries do not correspond to event node boundaries in the final graph. Already-analyzed segments are not re-chunked in incremental analysis. A unit that fails for its own reasons (the model's answer still invalid after the one repair round, or a request over the input budget with nothing left to trim) is skipped, not the whole run: the run goes on with the next unit and ends `partial` (or `failed` when no unit completed). A skipped unit is not sent again while its records and the analysis settings are unchanged, so a rerun with nothing else to do is a no-op; `contexttrail status` counts such units apart and `analyze --retry-failed` sends them again. If the unit is sent again after later units were integrated, its events are marked out-of-order. A runner error, an unknown error, or an unreadable answer that is still unreadable after one retry stops the run. A run does not start a unit with fewer calls left than it needs; with none completed it ends `call_limit` (exit 2, like partial; the automatic hook does not count it as a failure). The runner's CLI, sandbox and login are checked (no model call) after you agree to the plan and before the first unit.
-
-To preview a small fixed evaluation fixture before model calls, run `contexttrail eval --fixture /tmp/case.json --preview --output /tmp/case-preview`. The output `input-preview.html` shows WorkUnit boundaries and source text, the common system instruction, the extraction instruction, `new_records`/`context_only`, existing events, evidence, manifest, the response JSON Schema, the full task JSON, and the generation path of each part. **The first unit's input is the exact initial request; subsequent units' existing-graph sections are estimates that depend on earlier model responses.** Preview includes private source text; no AI calls are made.
-
-After `contexttrail eval`, `review.html` is generated automatically. It shows event/relationship candidates, citation strings vs. actual source lines, and validation errors for each model call side by side. Eval runs also save failed structured responses to `call-review/` with private user permissions. You can regenerate HTML for earlier evals with `contexttrail review /path/to/eval-output`, but source model response text not saved at the time cannot be recovered. This local review view makes no AI calls or external transmissions.
-
----
-
-## 3. Using the Terminal UI
-
-`contexttrail view`, `contexttrail analyze`, and `contexttrail graph` share the same screen. It opens on the **story view**: one box per request, goal, decision, change of course, finding the assistant stated, and failure nothing came of, each with its title only (the reason and every step are in the selected-event panel). The work (edits, checks, runs) folds into the box it belongs to, and a sub-agent's work becomes one line in the box that handed it the task, `↳ plots: smoke run on one market passed`, with what that agent last said; the box's own folded steps are one dim line, `↳ 4 steps: Check passed: pytest -q · ✗ 1 · ✓ 1` (how many, the latest result, the failed and passed checks). A box's border colour is its status, and its header carries the status's mark after the kind (`[04] result ✗`), so it reads without colour. Work no box takes (a sub-agent whose delegation is not analysed yet) becomes a plain box of its own, per session; a sub-agent line with no delegation behind it says `(no delegation linked)`. `v` switches to every step and back; following a link, a search hit or `!` to a step the story view folded switches to every step by itself. On one priceimpact request (64 events, at 100 columns) the story view drew 12 boxes in 73 rows where every step took 426. When user messages exist in the graph, the left panel shows a **request list**; the center **event flow** panel renders only the span of the selected request — from that message to the next message in the same session. Use `[`/`]` to navigate requests, and `A` to toggle between full-flow and per-request views. Connections to out-of-span events are annotated inline as `← [02] motivates`. Events before any recorded request are grouped under "Events without request record."
-
-The **event flow** panel draws events as boxes with labeled arrows. The left column lists events in record order; execution results that verified a change but do not continue elsewhere are attached to the right of that change as `──verified──▶`. Results that lead to the next story beat (e.g. a failure motivating a fix) remain in the column, so `failure → motivates → fix` reads downward. Adjacent boxes connect with downward arrows; a box at most three boxes away connects via a margin line, which notes the source box number and relationship as `[02] motivates ▶` before the destination, so the origin is visible without scrolling back. A connection farther away, or one with no room for a line, is annotated on both boxes as `→ [06] motivates` / `← [05] motivates` (in the story view only adjacent boxes are joined; the rest are in the selected-event panel). Every user message becomes a `request` box; the work after it in its session belongs to its turn, which the column's order shows (the selected-event panel lists it as dialog order, not a causal claim). A sub-agent's boxes stand beside the delegation that handed it the task, its name once at the top of its stack. Groups of events sharing no session or relationship (e.g. independent features from separate sessions) are rendered under `══ Flow 1/2 ══` headings. Titles and status are never truncated — they wrap. The selected box is drawn with a bold border; only its connected lines, annotations, and boxes are highlighted. When a panel is too narrow for boxes, it falls back to a branch list.
-
-Status markers: `✓` confirmed (verified change, observed result, answered request), `!` needs confirmation (unverified change, completion report, result without a verification target, unanswered request), `✗` failed.
-
-The right **selected event** panel shows the description, the result that verified this change (or the change this result confirmed), connected events, and source evidence. Results and connected events are numbered 1–9; press the digit to navigate and Backspace to return. Evidence is shown with record type, source, timestamp, and line position. Single-line tool-call arguments with escaped newlines (`\n`-escaped patches etc.) are reflowed visually **on screen only** — stored evidence is verbatim. At ≥180 columns, all three panels are side-by-side; at ≥150 columns, the flow and detail panels are side-by-side; below that, they stack vertically.
-
-| Key / Option | Action |
+| | |
 | --- | --- |
-| ↑↓ / `j` `k` | Previous/next event. In per-request view, wraps to the next request at the end of a span |
-| ←→ / `h` `l` | Jump to connected box in adjacent panel (change ↔ right-side result). Horizontal scroll in the narrow branch-list view |
-| PgUp·PgDn / Space | Scroll one screen |
-| `g` `G` / Home·End | First/last event |
-| `[` `]` | Previous/next request |
-| 1–9 / Backspace | Navigate to numbered connection in the selected-event panel / return to previous event |
-| `!` | Jump to next event needing attention (`!`·`✗`); wraps from end to start |
-| `/` → `n` `N` | Search titles, summaries, and source evidence; next/previous result. Matching box titles are underlined |
-| Tab / Enter | Toggle focus between the event flow and selected-event panels |
-| `J` `K` | Scroll the selected-event panel without changing focus |
-| `e` | Toggle full evidence expansion ↔ 8 lines per piece |
-| `z` | Zoom current panel to full screen ↔ restore |
-| `A` | Toggle full-flow / per-request-flow view |
-| `v` | Toggle the story view (requests, decisions, findings; work and sub-agents a line in their box) / every step |
-| Esc | Close search or zoom; return from selected-event panel to flow panel |
-| `?` | Show full keyboard help |
-| Mouse | Click to select a box, request, or numbered connection (clicking a line or `[02] motivates ▶` annotation jumps to the connected box); scroll wheel navigates events/requests and scrolls detail |
-| `y` | Copy a reference (`contexttrail:ev_6226b954@v12`) to clipboard. Paste into a Claude Code or Codex conversation — the agent reads that event with its evidence. Uses `pbcopy` locally on macOS, OSC 52 over SSH; if neither works, select the text from the status line |
-| R | Explicit incremental analysis. Shows pending volume and choices, prompts for unit count, then runs while keeping the previous graph visible (`view`·`analyze`) |
-| B | Print the browser URL and SSH forwarding instructions for the current version / selected event (`view`·`analyze`, optional feature) |
-| Q | Quit. During analysis, confirms cancellation and cleans up child processes |
-| `--ascii` | Replace box-drawing characters, arrows, and status markers with ASCII (`v` `!` `x`). Non-ASCII titles are preserved |
-| `--no-tui` | Print the annotated flow and status without interactive UI |
-| `--no-color` | Disable status colors. Markers (✓ ! ✗) are preserved. Also respects the `NO_COLOR` env var |
-| `--no-mouse` | Disable mouse capture and restore terminal text selection |
+| **Terminal** | Story view by default, `v` every step, `[` `]` between your requests, `!` the next thing that needs a look, `/` search, `y` copies an event reference for an agent chat, `R` analyzes, `?` lists every key |
+| **Browser** | `contexttrail serve` (or `B` in the terminal) starts a loopback-only page with an access token; the same story and every-step views, request navigation, search and each event's evidence |
+| **Agents** | `/contexttrail-context` (`$contexttrail-context` in Codex) answers from the saved graph; `/contexttrail-update 5` analyzes five units, only when you call it |
+| **Notes** (opt-in) | The working agent records its own decisions, changes and test results as it goes, checked against its transcript, with no model call: `contexttrail note --enable` |
+| **Memory** (opt-in) | A short summary of the graph is put into each new session: `contexttrail context --enable` |
+| **Automatic** (opt-in) | The tools' end-of-turn hooks start a small analysis with your saved runner and limits: `contexttrail auto-update --enable --runner claude --units 2` |
+| **Programs** | JSON with a schema name on every command's output (`export` names its `format`), `capabilities`, distinct exit codes, `export --since-version N`: [HOST.md](https://github.com/kisbi3/ContextTrail/blob/main/docs/HOST.md) |
 
-Keys also work when a Korean IME is active (e.g. `ㅂ` → Q, `ㅓ` → J). If the IME is mid-composition when the terminal delays sending, a second keypress may be needed.
+The hooks behind Notes, Memory and Automatic are registered once with `contexttrail install-hooks --claude` (and/or `--codex`, `--opencode`), or come with the Claude Code plugin.
 
-The UI does not depend on terminal image protocols or specific emulators. Mouse is used when available, but every action is accessible via keyboard. Real branches, merges, and back-edges are rendered; already-shown nodes appear as references. Long graphs scroll; deeply nested branches are collapsed to references.
+![The browser's story view of the demo: request, proposal, failed check, second request and unverified report as boxes with coloured borders](https://raw.githubusercontent.com/kisbi3/ContextTrail/main/docs/images/web-story-en.png)
 
-**Compatibility targets:** standard SSH, Windows Terminal, IDE terminals, tmux, screen. Tested: `xterm-256color`, `screen-256color`, `tmux-256color`, `linux`, `vt100` TERM values, and resize on a Linux PTY. This does not imply complete screen/keyboard compatibility verification on each product. `TERM`, CJK width, and font issues must be verified on real servers separately.
+Every option, key and hook is in the **[usage guide](https://github.com/kisbi3/ContextTrail/blob/main/docs/USAGE.md)**: runner setup and authentication limits, consent and what is sent, models and reasoning levels, where transcripts are read, failed units, the terminal keys, the browser over SSH, export formats, the agent commands, notes and audits, session memory, automatic analysis, storage and permissions.
 
-In `TERM=dumb` or when output is piped, the UI falls back to plain text. The `contexttrail graph` text output follows the flow with per-event description, verification, connections, and evidence — the same content as the right panel. ContextTrail agent commands installed into Codex/Claude Code read this output. If curses initialization fails on an unknown terminfo, a clear error is shown; use `--no-tui` to view saved results.
+**Languages:** the screens are in English or Korean (`--language`, else `CONTEXTTRAIL_LANGUAGE`, else the project's saved output language, else the locale). Event titles and summaries are written in the language of your own messages (or `--language`). The instructions the model reads are English; the records are sent as written.
 
-The **analysis tokens** counter at the bottom of the screen is the sum of calls where the runner reported both input and output tokens in this project's local LLM call ledger. If some calls lack usage data, `+ (confirmed calls/total calls)` is appended. It does not include tokens used in the original Codex/Claude conversations or estimated costs.
+## What has been measured
 
-### Developer Execution Tracing
-
-LangSmith tracing (`--langsmith`) is a developer tool for inspecting analysis structure and is not a production feature. It does not appear in command help; see [LLM Ops](docs/guides/LLM_OPS.md) for usage.
-
-### Viewing Analysis Runs in Studio (Developer)
-
-`contexttrail analyze` and `contexttrail eval` invoke the **same LangGraph execution graph** as Studio's `contexttrail_analysis`. The LangGraph runtime is included in the base install; the optional `studio` install adds a development server. You can inspect extraction input preparation, model calls, candidate evidence validation, integration input preparation, graph change summaries, and SQLite publishing in live execution nodes. `extract_input.request` and `integrate_input.request` in node state are the exact tasks to be sent; `candidate_audit` and `graph_change_audit` contain source citations and reflected events/relationships. Additional read and repair calls appear in sub-traces. Claude can be read as log input but only Codex is used as the model runner. Project paths and eval fixtures for live mode are fixed via server environment variables, not Studio input.
-
-```bash
-python -m pip install -e '.[dev,studio]'
-# Use only the LangSmith key from your private .env, with a separate tracing project
-dotenv -f /path/to/private/.env run -- env -u OPENAI_API_KEY \
-  LANGSMITH_TRACING=true LANGSMITH_PROJECT=contexttrail-dev \
-  langgraph dev --no-browser --host 127.0.0.1 --port 2025
-```
-
-Replace `/path/to/private/.env` with your own private file path. In the **Studio UI** URL printed by the server, select `contexttrail_analysis` and run with empty input `{}` to practice with synthetic logs and the Mock Runner. To see a real Codex analysis, stop the server and restart with the project and fixture paths fixed as environment variables:
-
-```bash
-dotenv -f /path/to/private/.env run -- env -u OPENAI_API_KEY \
-  CONTEXTTRAIL_STUDIO_SCOPE=/path/to/project \
-  CONTEXTTRAIL_STUDIO_EVAL_FIXTURE=/path/to/reviewed-small-fixture.json \
-  LANGSMITH_TRACING=true LANGSMITH_PROJECT=contexttrail-dev \
-  langgraph dev --no-browser --host 127.0.0.1 --port 2025
-```
-
-Studio input `{"mode":"eval","confirm_live":true,"max_units":1,"max_calls":10}` analyzes the reviewed small fixture with **real Codex** and saves to a separate temporary state. `{"mode":"live","confirm_live":true,"max_units":1,"max_calls":10}` scans the full project and publishes to the existing ContextTrail state DB. Only one work unit is processed by default; if units remain, the run ends with `partial`. Actual model input/output is visible in the `Codex structured response` sub-trace in Studio. Records from `contexttrail analyze` run separately in the terminal do not appear retroactively in Studio UI (see [LLM Ops](docs/guides/LLM_OPS.md) for developer tracing). The Studio dev server has no user authentication — bind only to `127.0.0.1` and shut down after use. See [Studio Architecture](docs/guides/STUDIO_ARCHITECTURE.md) for details.
-
----
-
-## 4. Browser Detail View
-
-Press `B` in the TUI, or run in a separate terminal:
-
-```bash
-contexttrail serve /path/to/project --port 8765
-```
-
-The server binds to `127.0.0.1` only by default. Set up SSH port forwarding from your PC (replace `user@server` with your actual connection details):
-
-```bash
-ssh -L 127.0.0.1:8765:127.0.0.1:8765 user@server
-```
-
-Open the **full URL including the token** printed in the server terminal in your PC browser. If a port conflict causes a different port to be selected, use the actual port shown. The URL contains a private access token for your records — do not share it externally.
-
-Select a graph node to inspect event/relationship/evidence levels, preserved source excerpts, and diff identification at the time of the event. F5, page load, and node selection do not call AI. Analysis must be explicitly requested via the **"Analyze Changes" button and confirmation dialog**. The token becomes invalid when the server stops.
-
-The page opens on the **story view**, as the terminal does: one column of boxes for the requests, decisions, goals, changes of course, findings and failures nothing came of, each with its title, a line per sub-agent handed work there (what it last said) and a line for its own folded steps, its status the border's colour and a mark after its kind. The button above the graph switches to every step and back; the selected-event panel always shows the whole record.
-
-No external CDNs or web fonts are used. The page opens on the story view (one column of boxes); the button above it switches to every step, drawn as the same boxes and arrows the terminal shows, on a fixed character grid. Buttons above the graph move between your requests (◀ ▶, latest, with each request's date), a search box finds events by words of their title or summary, and the detail shows an event's own evidence first, its relations as links you can click. Both drawings are SVG made by ContextTrail itself and checked against an element whitelist in the page; this is not a Mermaid engine.
-
----
-
-## 5. Saving and Exporting
-
-To open the saved event flow directly in the terminal:
-
-```bash
-contexttrail graph /path/to/project
-contexttrail graph /path/to/eval-output
-```
-
-In a terminal, this opens an interactive view with the event flow and selected event's description and evidence side by side. Use arrow keys to select events, `Tab` to focus the detail panel, and `Q` to close. When a screen cannot be opened (e.g. when piped or run from a coding agent), the same command prints event summaries, relationships, and evidence excerpts to stdout. No AI calls or external transmissions are made.
-
-The same command works on `contexttrail eval` output directories. Stdout may contain private source citations — review before sharing.
-
-To find or inspect individual events:
-
-```bash
-contexttrail find "install script"        # events with all words in title, description, or source evidence — newest first
-contexttrail find                         # recent events and open items
-contexttrail show ev_6226b954             # status, connections, and source evidence for one event
-contexttrail show contexttrail:ev_6226b954@v12   # copied reference; notifies if event changed since v12
-```
-
-Output is brief and machine-friendly by default; `--json` is also supported. No AI calls are made — reads only from stored results.
-
-### Installing the Codex / Claude Code / opencode Commands
-
-`./install.sh` automatically registers two commands as personal skills in the current user's Codex and Claude Code installations and as custom commands in opencode. If you installed via `pip` directly, run `contexttrail install-commands` once. Files created by ContextTrail are updated on reinstall; separately authored files are not overwritten. Use `contexttrail install-commands --force` only if you want to replace those too. If the agent does not recognize the new commands, start a new session.
-
-| Task | Codex | Claude Code / opencode |
-| --- | --- | --- |
-| Update graph | `$contexttrail-update [N units \| current session]` | `/contexttrail-update [N units \| current session]` |
-| Load context from saved graph | `$contexttrail-context [reference \| search term]` | `/contexttrail-context [reference \| search term]` |
-
-The legacy slash-style variants `/prompts:contexttrail-update` and `/prompts:contexttrail-context` for Codex CLI/IDE are also installed for compatibility; Codex recommends the skill form. All of them invoke the `contexttrail` CLI from the shell — no MCP server required. The same graph answers in every tool: a decision made in an opencode session is there when you ask from Claude Code, and the first line of `find` says whether the graph is behind the transcripts (`contexttrail status` has the detail).
-
-- **Update** runs only when the user calls it by name. Claude Code uses `disable-model-invocation`; Codex uses `allow_implicit_invocation: false` in `agents/openai.yaml` to prevent the agent from calling it on its own; opencode's custom commands are never chosen by the model, but opencode also reads the skills in `~/.claude/skills` and `~/.agents/skills` and has no explicit-only flag for a skill, so `install-commands` prints the `permission.skill` line to add to `~/.config/opencode/opencode.json` if you want the update skill to need your approval there (the file is not edited for you). It first shows pending units and per-choice token/time projections, then prompts for unit count. Providing a count (e.g. `/contexttrail-update 5`) skips the prompt; `current session` prioritizes the active conversation's session. The analysis runs with the runner saved for the project; if none is saved, the agent asks whether to use **Codex** or **Claude** (`analyze --runner codex|claude --no-tui --brief --units N`, printing a few-line summary instead of the full flow). opencode is a log source, never a runner. Since it can take a long time, the agent runs it in the background where possible and reports progress as `unit done k/N` lines. Interrupted runs resume from the last completed unit. Running inside Codex may be blocked by Codex's own isolation — the agent will guide you to run the command in a separate terminal.
-- **Context loading** reads only stored results; no AI calls. The agent may invoke it proactively when the user asks about past decisions, attempts, or verifications. The agent uses `contexttrail find "<query>"` (or recent events and open items if no query) and `contexttrail show <event>` (description, connections, cited source evidence). Both support `--json`. Output and skill instructions note that source evidence is a quotation from past records and should be treated as reference — not instruction.
-- **Attaching events as evidence:** Press `y` in the TUI or click "Copy agent reference" in the browser to copy a reference like `contexttrail:ev_6226b954@v12`. Paste it into a Claude Code or Codex conversation — the agent reads that event and its evidence with `show`. If the event was re-analyzed and changed or removed since the copy, `show` will say so.
-- Using context loading in Claude Code sends cited Codex/Claude/opencode records to the model in that conversation (Anthropic); in opencode, to whichever model that session uses.
-
-### Notes: the agent writes the graph as it works (opt-in, per project)
-
-Analysis has a second model read a session that the working agent already understood. With notes on, the agent that did the work writes the events itself, with no model call:
-
-```bash
-contexttrail note --enable                       # in the project folder, once
-contexttrail install-hooks --claude --codex --opencode   # the end-of-turn reminder (and auto-update)
-```
-
-The `contexttrail-note` skill (installed with the other two; Claude Code and Codex pick it themselves) tells the agent to record decisions, file changes and test, build and commit results:
-
-```bash
-contexttrail note --kind outcome --status observed_failure --title "Two-writer test failed" \
-  --quote "test_two_writers - JSONDecodeError" --verifies contexttrail:ev_6e4b75dd@v23
-```
-
-Each `--quote` is text the agent copies from its own session; ContextTrail finds it in that session's transcript (the agent never writes line numbers) and stores the event only if every quote is there and the usual rules hold: `observed_success`/`observed_failure` need a quoted tool result, `verifies` links a change to an observed result, and so on. A refused note stores nothing and says why, with the closest lines when a quote was not found. The person's own messages become request events from the transcript, as in analysis. A session with notes leaves analysis (`analyze` and automatic analysis skip its records), so nothing is written twice; past sessions are still for `analyze`. To check such a session for what the agent left out, run `contexttrail analyze --audit` (explicit only, never by the automatic hook; `--session ID|current` limits it to one session, `--units N` to a number of work units, `scan --audit` previews the plan with no model call): it re-reads the records no analysis has covered, shows the model the existing notes, and adds only events, relations and open items they do not record. It never changes an existing event, and the events it adds carry `origin: "audit"`. The end-of-turn hook (`contexttrail note --hook`, synchronous) sends the agent back once when a turn edited files or ran checks after its last note, and its message names those calls (at most five, newest, each as a kind — edit, test, commit, vcs or run — and a short target: the file edited or the first 80 characters of the command; never their output); in projects without notes it does nothing. In opencode the plugin also passes the session's ID to the tool shell (`OPENCODE_SESSION_ID`) and sends the same reminder when the session goes idle. `contexttrail note --list` shows the session's notes, `--disable` turns notes off. Inside Codex's default sandbox, which keeps `.git` (where the state lives) read-only, a note is checked for its quotes and queued under a `q_…` ID; the end-of-turn hook stores it with every check. Checked on 2026-10-07: in this repository a Claude Code session wrote five notes (two changes, two test results verifying them, one decision), and the hook asked for a note after a test run and stayed quiet once it was answered; in a scratch project, opencode (through `opencode serve`; `opencode run` exits before the idle reminder can be sent) and Codex (`codex exec`) each received the reminder, loaded the skill and wrote notes, Codex through the queue.
-
-**Claude Code plugin.** The repository is also a Claude Code plugin marketplace with the three skills and the hooks (auto-update, note reminder, project memory): `/plugin marketplace add kisbi3/ContextTrail`, then `/plugin install contexttrail@contexttrail`. The CLI is still a separate `pipx install contexttrail`; the hooks do nothing while it is missing. Use either the plugin or `install-commands`/`install-hooks`, not both.
-
-### Project memory at session start (opt-in, per project)
-
-The `contexttrail-context` skill only helps when the agent decides to use it. With project memory on, the tool's start-of-session hook puts a short summary of the saved graph into the session itself, with no model call:
-
-```bash
-contexttrail context --enable                            # in the project folder, once
-contexttrail install-hooks --claude --codex --opencode   # SessionStart hooks next to the Stop hooks
-contexttrail context                                     # preview the text a session would get
-```
-
-The summary is at most 2,000 characters: the most recent decisions and changes, the open items, the latest failed attempts (not those a later fix revised), how many records the last scan left unanalyzed (counted from the store, plus the count an earlier `find`/`status` kept; nothing is re-parsed), and how to look further (`contexttrail find`, `contexttrail show <reference>`). Every item carries a `contexttrail:ev_…@vN` reference. It is written in English for the agent whatever the screen language is. What the graph holds was written by a model from past conversations, so it is treated as data: titles are cut to one line and quoted inside a fenced block that is announced as past records, not instructions; summaries and quotes are not included (`docs/SECURITY.md`). In a project where it is off, or that was never opened with ContextTrail, the hook prints nothing, creates nothing and exits 0; it reads the saved state read-only and takes a fraction of a second (0.14 s to build the text from a synthetic project of 60,000 records).
-
-How each tool receives it: Claude Code and Codex run a `SessionStart` command whose JSON answer is `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": …}}` (format taken from Claude Code's hooks documentation and, for Codex, from the schema inside the Codex 0.162.1 binary); the Claude Code plugin includes the hook too. opencode's plugin posts the same text on `session.created` as a message that asks for no reply (`noReply`; checked against the `@opencode-ai/plugin` 1.19.0 types, top-level sessions only). Not yet run in the real tools: see `docs/plans/SESSION_START_CONTEXT.md` §7 for what to check locally.
-
-### Automatic analysis from the tools' hooks (opt-in, per project)
-
-Analysis still runs only on request. If you want a project's graph to follow your sessions without typing `/contexttrail-update`, enable it for that project, in your own terminal, and install the hooks once:
-
-```bash
-cd /path/to/project
-contexttrail auto-update --enable --runner claude --units 2 --cooldown 15m --max-runs-per-day 8
-contexttrail install-hooks --claude --codex --opencode     # merges into settings.json under CLAUDE_CONFIG_DIR or ~/.claude (Stop, async),
-                                                          # hooks.json under CODEX_HOME or ~/.codex (Stop), plugins/contexttrail.ts under $XDG_CONFIG_HOME/opencode or ~/.config/opencode (session.idle)
-contexttrail auto-update --status
-```
-
-Enabling is the explicit request: it records your consent for that runner and the project. Every hook runs the same command, `contexttrail auto-update`, which exits 0 at once in every case and never blocks the tool. It starts a detached `analyze … --units N` (output in the state directory's `auto-update.log`) only when the project has it enabled, no analysis is running, records are pending, the cooldown has passed and the daily cap is not reached; in other projects the hook does nothing and creates nothing. Runs started this way carry `trigger: hook` in the local run ledger. `contexttrail auto-update --disable` turns it off; `--force` on `install-hooks` refreshes a hook ContextTrail installed earlier, and hooks you wrote yourself are kept. Checked live on 2026-10-06 in this repository: the opencode plugin fired on `session.idle` and started a one-unit analysis (graph v8); Claude Code ran the `Stop` hook in an interactive session (in `claude -p` the async hook is registered and then cancelled when the process exits, as its docs say); Codex ran its `Stop` hook after the "Hooks need review" prompt in its TUI was answered with trust (a new `hooks.json` is not run until then). The hook's log in the state directory has one line per quiet decision (`hook: cooldown`, `lock_held`, `nothing_pending`) so "why did nothing happen?" has an answer. The detached child records how each run ended; after three failed runs in a row (a runner that cannot start, for example) the hooks stop starting new ones, `contexttrail auto-update --status` says so with the log path, and `--enable` again restarts them.
-
-### Export
-
-```bash
-contexttrail export /path/to/project --format md --output ./project-flow.md
-contexttrail export /path/to/project --format mmd --output ./project-flow.mmd
-contexttrail export /path/to/project --format json --output ./project-flow.json
-```
-
-All formats are generated from the same stored graph — no AI calls. `--graph-version N` exports an older version; `--since-version N` (json) writes only the events, relations and open items added, updated or invalidated since version N, with their evidence. Markdown includes events, relationships, source evidence, and limitations. JSON includes the graph and cited evidence. MMD is Mermaid code. Use `--force` to overwrite an existing file. Export to DB, raw logs, or Git internal files is blocked.
-
-**Storage locations:** Git repos use `<git-common-dir>/contexttrail/<scope-key>/`; plain directories use `<folder>/.contexttrail/`. The same repo root/worktree set shares state; different specified sub-paths get separate scopes. Full source text is not permanently copied — only metadata, digests, cited excerpts, and stage results are stored.
-
-Permissions: state directory `0700`, DB and new exports `0600`. This does not imply disk encryption. Known credential formats are masked when read (see above), which is not a guarantee that nothing secret is stored. SQLite locking on network filesystems (NFS, etc.) is not validated.
-
----
-
-## 6. What has been measured
-
-Both real CLIs have been measured end to end on fixtures and on this repository's own logs. Analysis quality is still a draft to check, not a record. Below is every number actually measured.
+Both real CLIs have been measured end to end on fixtures and on this repository's own logs. Analysis quality is still a draft to check, not a record. Below is every number actually measured. The rows dated before 2026-10-20 were measured with the earlier pipeline (separate extract and integrate calls per unit); the one-call pipeline that replaced it was compared with it on the same ten units of a real research project, both with Claude Haiku: about 50 seconds and 12,000–15,000 input tokens per unit instead of 118 seconds and 146,000 (a fifth of the API-equivalent cost), 12 and 11 of 14 requests linked to their answers instead of 9 and 8, and 31 and 29 of 43 changes linked to the check that tried them instead of 30 and 25 ([PIPELINE_V2 §8.4–8.5](https://github.com/kisbi3/ContextTrail/blob/main/docs/plans/PIPELINE_V2.md)).
 
 | | Measured | Not yet done |
 | --- | --- | --- |
-| Real model calls | **Codex CLI 12 analysis calls** (8 on this repository's own logs, 4 on the Linux external project, both `gpt-6-sol`) plus 2 `doctor --smoke` round-trips; **20 calls** across the 6 scored fixture runs ([Linux](docs/reports/artifacts/linux-live-eval-2026-09-28.json) · [table](docs/plans/NEXT_STEPS.md)). **Claude Code CLI: 42 eval runs** on macOS with `claude-sonnet-5-5` (2 installer smoke runs, 40 scored runs on the `repairfix-v2` fixture), 3–4 calls each ([record](docs/plans/PERFORMANCE_PLAN.md) §9–14) | Claude Runner on Linux: 0 calls (that host has no Claude CLI). No Claude run on an external project yet |
-| Real analysis scale | Linux: 5,282 in-scope records → 8 events / 9 edges, 4 runner calls, read-only check passed. macOS self-analysis: 4,199 records → 17 events / 15 edges ([Linux](docs/reports/artifacts/linux-live-eval-2026-09-28.json) · [macOS](docs/reports/artifacts/self-analysis-a4.json)) | — |
-| Cost per work unit | Claude Sonnet, `repairfix-v2` (26–34 records per unit): **1.5–2.4 minutes per run of 2 units**, 130k–240k cached input tokens and 12k–21k output tokens, after the integration step was changed to publish a code-built draft and ask the model only for its changes ([§12–14](docs/plans/PERFORMANCE_PLAN.md)). The first Claude baseline was 2.7 minutes and about twice the tokens for 1 unit | Codex cost after the same change: not measured |
-| Archive parse audit | **156 files** (Claude 40, Codex 116), **31,748 records** selected, `limitations: 0` as of the a4 parser ([audit](docs/reports/artifacts/archive-audit-a4.json) · [report](docs/reports/PRELIVE_AUDIT.md)) | **Stale for this parser.** The record-type split in `sources/local.py` now reports types that audit did not. Re-run needed |
-| Semantic quality | Codex: **79/111 expectations met (71%)** across 6 runs of 2 fixtures. Claude Sonnet on `repairfix-v2`: **11.8/18 mean** over the latest 5 runs (11, 11, 13, 13, 11), two work units, integration against an existing graph, 0 bookkeeping rejections ([§14](docs/plans/PERFORMANCE_PLAN.md)) | **2** human-checked WorkUnits total (14 records on macOS, 1 unit on Linux). Not a rate. The three expectations that fail in every Claude run are two-hop `verifies` judgements (a test run covering the code it calls) |
-| Reproducibility | **Characterized for one configuration.** Five same-configuration Claude Sonnet runs of `repairfix-v2` scored 11, 11, 13, 13, 11; the per-item breakdown shows the spread comes from events being split or merged differently between runs, not from relations ([§11, §14](docs/plans/PERFORMANCE_PLAN.md)). Codex `installer` scored 8/18 and 16/18 on consecutive runs, confounded by different integration effort | No same-configuration repeat with Codex |
-| Platform validation | **Linux/Ubuntu 24.04 + bubblewrap: 1 end-to-end run on an external project** ([report](docs/reports/LINUX_LIVE_EVAL_2026-09-28.md)) · macOS: `sandbox-exec` + Codex smoke + self-analysis + the 42 Claude eval runs above | Claude Runner under bubblewrap: 0 calls (no Claude CLI on the Linux host) |
-| Tool-denial tests | Canary escape probe at startup on both macOS and Linux ([SECURITY](docs/SECURITY.md)) | `~`, `.ssh`, project tree, and real credential write-blocking unverified on both |
-| Tests | **437** in the suite, all passing (2026-10-06; [a4 results](docs/reports/artifacts/tests-a4.txt) · [state](docs/reports/artifacts/self-analysis-a4.json)); CI runs them on Linux + macOS × Python 3.11–3.13 | 0 real model calls in CI, by design |
+| Real model calls | First real runs (2026-09-23 to 10-02): **Codex CLI 12 analysis calls** (8 on this repository's own logs, 4 on the Linux external project, both `gpt-6-sol`) plus 2 `doctor --smoke` round-trips; **20 calls** across the 6 scored fixture runs ([Linux](https://github.com/kisbi3/ContextTrail/blob/main/docs/reports/artifacts/linux-live-eval-2026-09-28.json) · [table](https://github.com/kisbi3/ContextTrail/blob/main/docs/plans/NEXT_STEPS.md)). **Claude Code CLI: 42 eval runs** on macOS with `claude-sonnet-5-5` (2 installer smoke runs, 40 scored runs on the `repairfix-v2` fixture), 3–4 calls each ([record](https://github.com/kisbi3/ContextTrail/blob/main/docs/plans/PERFORMANCE_PLAN.md) §9–14). Later runs on fixtures and real projects with Codex `gpt-6-luna`/`gpt-6-sol`/`gpt-6.1-sol` and Claude Haiku and Sonnet are recorded in PERFORMANCE_PLAN §17–24 and [PIPELINE_V2 §8](https://github.com/kisbi3/ContextTrail/blob/main/docs/plans/PIPELINE_V2.md) | Claude Runner on Linux: 0 calls (that host has no Claude CLI) |
+| Real analysis scale | Linux: 5,282 in-scope records → 8 events / 9 edges, 4 runner calls, read-only check passed. macOS self-analysis: 4,199 records → 17 events / 15 edges ([Linux](https://github.com/kisbi3/ContextTrail/blob/main/docs/reports/artifacts/linux-live-eval-2026-09-28.json) · [macOS](https://github.com/kisbi3/ContextTrail/blob/main/docs/reports/artifacts/self-analysis-a4.json)) | — |
+| Cost per work unit | One-call pipeline on ten units of a research project: Claude Haiku about 50 s, 12,000–15,000 input tokens and $0.006 API-equivalent per unit; Codex `gpt-luna` (medium) $0.002 ([§8.4–8.5](https://github.com/kisbi3/ContextTrail/blob/main/docs/plans/PIPELINE_V2.md)). Earlier pipeline, Claude Sonnet on `repairfix-v2`: 1.5–2.4 minutes per run of 2 units ([§12–14](https://github.com/kisbi3/ContextTrail/blob/main/docs/plans/PERFORMANCE_PLAN.md)) | The one-call pipeline on a large project end to end: not measured |
+| Archive parse audit | **156 files** (Claude 40, Codex 116), **31,748 records** selected, `limitations: 0` as of the a4 parser ([audit](https://github.com/kisbi3/ContextTrail/blob/main/docs/reports/artifacts/archive-audit-a4.json) · [report](https://github.com/kisbi3/ContextTrail/blob/main/docs/reports/PRELIVE_AUDIT.md)) | **Stale for this parser.** The record-type split in `sources/local.py` now reports types that audit did not. Re-run needed |
+| Semantic quality | Codex: **79/111 expectations met (71%)** across 6 runs of 2 fixtures. Claude Sonnet on `repairfix-v2`: **11.8/18 mean** over 5 runs (11, 11, 13, 13, 11) ([§14](https://github.com/kisbi3/ContextTrail/blob/main/docs/plans/PERFORMANCE_PLAN.md)). One-call pipeline: reading-comprehension questions fixed before the run and graded blind, 5.5/10 from the drawing alone and 7.0/10 with event details ([§8.2](https://github.com/kisbi3/ContextTrail/blob/main/docs/plans/PIPELINE_V2.md)) | **2** human-checked WorkUnits total. Not a rate |
+| Reproducibility | Five same-configuration Claude Sonnet runs of `repairfix-v2` scored 11, 11, 13, 13, 11; the spread comes from events being split or merged differently between runs, not from relations ([§11, §14](https://github.com/kisbi3/ContextTrail/blob/main/docs/plans/PERFORMANCE_PLAN.md)). Codex on the earlier pipeline, three same-configuration runs of `repairfix-v2`: 13, 15, 12 with `gpt-6-sol` and 16, 14, 13 with `gpt-6.1-sol` (PERFORMANCE_PLAN §17). In the one-call comparison, the same drawing graded twice differed by up to 2 points, and Haiku's linked checks varied from 21 to 34 of 43 in three runs of the same code | No repeat on a large project |
+| Platform validation | **Linux/Ubuntu 24.04 + bubblewrap: 1 end-to-end run on an external project** ([report](https://github.com/kisbi3/ContextTrail/blob/main/docs/reports/LINUX_LIVE_EVAL_2026-09-28.md)) · macOS: `sandbox-exec` + Codex smoke + self-analysis + the 42 Claude eval runs above | Claude Runner under bubblewrap: 0 calls (no Claude CLI on the Linux host) |
+| Tool-denial tests | Canary escape probe at startup on macOS (a file outside the sandbox must be neither readable nor writable, also through a temp-home link); on Linux, startup checks that bubblewrap runs the CLI, with no escape probe ([SECURITY](https://github.com/kisbi3/ContextTrail/blob/main/docs/SECURITY.md)) | `~`, `.ssh`, project tree, and real credential write-blocking unverified on both |
+| Tests | **789** in the suite, all passing (2026-10-21); CI runs them on Linux and macOS × Python 3.11–3.13 | 0 real model calls in CI, by design |
 
-Evidence behind these numbers is published, not summarized: [design & evaluation history](docs/DECISIONS.md) · [performance plan and Claude measurements](docs/plans/PERFORMANCE_PLAN.md) · [pre-live audit](docs/reports/PRELIVE_AUDIT.md) · [real-CLI evaluation](docs/reports/TWO_CALL_LIVE_EVAL_2026-09-25.md) · [a3 validation](docs/reports/A3_VALIDATION.md) · [what is left](docs/plans/NEXT_STEPS.md).
-
-Redaction in those files: real project names, native session UUIDs, source snapshot IDs, and machine-specific absolute paths are replaced with placeholders. What is deliberately **kept** is the aggregate evidence — record and session counts, work-unit counts, token totals, durations, and the archive SHA-256 digests, because a digest is what proves the audit did not modify the archive. The `LICENSE` copyright name is unchanged, and so is the GitHub account in the badge above.
+Evidence behind these numbers is published, not summarized: [design & evaluation history](https://github.com/kisbi3/ContextTrail/blob/main/docs/DECISIONS.md) · [one-call pipeline](https://github.com/kisbi3/ContextTrail/blob/main/docs/plans/PIPELINE_V2.md) · [performance plan and Claude measurements](https://github.com/kisbi3/ContextTrail/blob/main/docs/plans/PERFORMANCE_PLAN.md) · [pre-live audit](https://github.com/kisbi3/ContextTrail/blob/main/docs/reports/PRELIVE_AUDIT.md) · [real-CLI evaluation](https://github.com/kisbi3/ContextTrail/blob/main/docs/reports/TWO_CALL_LIVE_EVAL_2026-09-25.md) · [what is left](https://github.com/kisbi3/ContextTrail/blob/main/docs/plans/NEXT_STEPS.md). Real project names, session UUIDs and machine-specific paths in those files are replaced with placeholders; counts, token totals, durations and archive digests are kept.
 
 > The quality row is the honest one: extraction is good enough to be useful on a project you remember well, and there is no measurement showing it is stable across repeated runs. Treat a reconstructed flow as a draft to check, not a record.
 
-## 7. Explicit Limitations of This Alpha
+## Limitations of this alpha
 
-1. **Analysis quality is measured only on two small fixtures and this repository's own logs.** Both CLIs have run end to end (Codex on Linux and macOS, Claude on macOS), but a reconstruction of a large, unfamiliar project has not been checked by a person. The known failure modes are events split or merged differently between runs, and two-hop `verifies` links (a test run that covers the code it calls) that cheap models do not draw.
-2. **Not all historical records and files are read without limit.** The default Git commit scope is the 50 most recent per worktree, plus tracked staged/unstaged diffs. Untracked content, all merge parents, and an arbitrary-revision comparison UI are out of scope. Sub-agents whose parent linkage cannot be verified are excluded.
-3. **Long source text is split while preserving semantic lineage.** The parser splits into stable fragments of ≤32,000 characters and preserves `fragment_of/index/count`. Binary/Base64 payloads (e.g. images) are excluded from text model input; only media type, size, and SHA-256 marker are kept. The total input budget per work unit is still limited — very large context combinations may be deferred.
-4. **Historical context retrieval is also limited.** Defaults: 24 relevant events, 200 indexed events + 250 source records + 100 pinned files, up to 2 additional evidence reads, and at most 1 format/reference repair. After repair, invalid candidates are discarded; discarded candidates remain in the graph's limitation list by title. If selected context exceeds the budget, the work unit is deferred/failed. Large-project tuning remains to be done.
-5. **Evidence presence checks do not guarantee semantic correctness.** Citation scope, actor source, and execution evidence presence are checked in code, but whether the source text actually supports a given interpretation or causal claim requires AI and user evaluation.
-6. **Not all MVP acceptance criteria are complete.** Safe mixed-source analysis with both real runners, semantic regression evaluation, and real terminal/browser validation are outstanding. Explicit historical re-analysis commands and user graph editing are also not yet provided.
+1. **Analysis quality is measured only on small fixtures, ten units of one research project and this repository's own logs.** A reconstruction of a large, unfamiliar project has not been checked by a person. The known failure modes are events split or merged differently between runs, and checks a light model does not link to the change they tried.
+2. **Not every record is read without limit.** The default Git commit scope is the 50 most recent per worktree, plus tracked staged/unstaged diffs. Untracked content, all merge parents, and an arbitrary-revision comparison UI are out of scope. Sub-agents whose parent linkage cannot be verified are excluded.
+3. **Long source text is split, and a unit's input is bounded.** Records are split into fragments of ≤32,000 characters; binary payloads (images) are replaced by a media type, size and SHA-256 marker. A unit whose request is over the input budget fails and is skipped; `status` counts it among the units skipped after a failure.
+4. **Evidence checks do not guarantee meaning.** Citation scope, who wrote a record and whether a run happened are checked in code; whether the text supports an interpretation or a cause is the model's reading, and yours.
+5. **Only the machine you run it on.** Logs on a laptop are not merged with a project on a server. There is no graph editing and no command to analyse finished work units again (`refresh` re-derives only what code works out).
 
-Budget tuning example (review increased data transmission and model limit effects together):
-
-```bash
-contexttrail analyze /path/to/project --history-limit 100 --record-chars 64000 --unit-chars 80000
-```
-
-The constraint `record_chars ≤ unit_chars < task_chars` must hold. `task_chars` and detailed context values are adjusted in the Python `AnalysisConfig`. Code or config changes alone do not trigger automatic re-analysis of completed records.
-
----
-
-## 8. Development and Regression Testing
+## Development
 
 ```bash
 python3 -m venv .venv && .venv/bin/python -m pip install -e '.[dev]'
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
+scripts/test.sh -q        # sets PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 and picks the interpreter
 ```
 
-Or simply `scripts/test.sh -q`, which picks the right interpreter. On most current Linux and macOS systems there is no bare `python`, so prefer `python3` or an explicit virtualenv.
-
-This reproducible command prevents unnecessary external pytest plugins from auto-activating. Tests create synthetic logs and Git fixtures in temporary directories; HTTP tests use a loopback port; TUI tests use a PTY. No real AI accounts are called.
-
-**CI runs this suite on Linux and macOS across Python 3.11, 3.12, and 3.13** — see [`.github/workflows/test.yml`](.github/workflows/test.yml). Linux is included because it is the platform README claims as primary; a green badge there is a real signal, not a formality.
-
-The mouse assertion in `tests/test_cli_ui.py` checks the portable invariant — with `--no-mouse` no mouse-reporting enable sequence may appear, and any enable that does appear must have a matching disable before exit — rather than one terminfo-specific escape sequence, so it does not depend on the local terminfo database. A separate test in the same file renders across `xterm-256color`, `screen-256color`, `tmux-256color`, `linux`, and `vt100`.
-
-Structure:
+Tests create synthetic logs and Git fixtures in temporary directories; HTTP tests use a loopback port; TUI tests use a PTY. No real AI accounts are called. CI runs the suite on Linux and macOS across Python 3.11, 3.12 and 3.13 ([workflow](https://github.com/kisbi3/ContextTrail/blob/main/.github/workflows/test.yml)).
 
 ```text
 src/contexttrail/
-  sources/           local log adapters
-  runners/           Codex·Claude CLI / bubblewrap isolation
+  sources/           Codex, Claude Code and opencode readers
+  runners/           Codex·Claude CLI in bubblewrap / sandbox-exec
   analysis.py        incremental planning, the story call, publishing
   light.py           the work code finds in the tool calls, the story request and answer
   blocks.py          what was written, cut into citable blocks
   schema.py          JSON contract, evidence validation, GraphDelta application
   git_context.py     scope/worktree, pinned Git evidence
   store.py           SQLite, lock, ledger, atomic publish
-  render.py          Mermaid subset, character graph, labels, export
+  diagram.py         the story view and the flow as boxes, for the terminal and as SVG
+  render.py          labels, character graph, export
   ui.py              curses TUI
   webview.py         loopback detail server
-  prompts/           SPEC-based analysis instructions
+  prompts/           the story call's instructions
   assets/            local HTML·JS·CSS
   demo.py            Mock Runner for synthetic fixtures only
 ```
 
-See [Documentation Guide](docs/README.md) for the public document list. Design basis: [PRD](docs/PRD.md) and [SPEC](docs/SPEC.md). Also read [Implementation Status](docs/reports/IMPLEMENTATION_STATUS.md), [Test Report](docs/reports/TEST_REPORT.md), and [Security & Execution Constraints](docs/SECURITY.md).
+Design: [PRD](https://github.com/kisbi3/ContextTrail/blob/main/docs/PRD.md) and [SPEC](https://github.com/kisbi3/ContextTrail/blob/main/docs/SPEC.md); the document list is in [docs/README.md](https://github.com/kisbi3/ContextTrail/blob/main/docs/README.md) (Korean). Contributions are welcome: see [CONTRIBUTING.md](https://github.com/kisbi3/ContextTrail/blob/main/CONTRIBUTING.md) for the invariants every change must keep and how model-visible changes are evaluated, [CODE_OF_CONDUCT.md](https://github.com/kisbi3/ContextTrail/blob/main/CODE_OF_CONDUCT.md), and [SECURITY.md](https://github.com/kisbi3/ContextTrail/blob/main/SECURITY.md) for private vulnerability reporting. Changes by date are in [CHANGELOG.md](https://github.com/kisbi3/ContextTrail/blob/main/CHANGELOG.md).
 
-Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md) for the invariants every change must keep and how model-visible changes are evaluated, [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md) for private vulnerability reporting. Changes by date are in [CHANGELOG.md](CHANGELOG.md).
-
-Distributed under the MIT License ([LICENSE](LICENSE)). External packages installed alongside this tool and their licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Distributed under the MIT License ([LICENSE](https://github.com/kisbi3/ContextTrail/blob/main/LICENSE)). External packages installed alongside this tool and their licenses are listed in [THIRD_PARTY_NOTICES.md](https://github.com/kisbi3/ContextTrail/blob/main/THIRD_PARTY_NOTICES.md).

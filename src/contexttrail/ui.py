@@ -13,7 +13,7 @@ from typing import Callable
 from wcwidth import wcswidth
 
 from .diagram import HEAVY, Diagram, _wrap, flow_diagram, request_turns
-from .i18n import language, tr
+from .i18n import count, language, tr
 from .schema import folded_view, story_view
 from .render import (ASCII_MARK, MARK, RUN_STATE, event_detail, linked_events, status_labels, status_tones,
                      terminal_graph)
@@ -944,7 +944,7 @@ class GraphApp:
         _put_runs(screen, 0, 1, [("◆ CONTEXTTRAIL", curses.A_BOLD | styles["frame"])], cols)
         events, relations = len(graph["events"]), sum(edge["active"] for edge in graph["edges"])
         _put_runs(screen, 1, 1, [(f"{self.title}   v{graph['version']}   ·   "
-                                  + tr(f"{events} 사건   ·   {relations} 관계", f"{events} events   ·   {relations} relations")
+                                  + tr(f"{events} 사건   ·   {relations} 관계", f"{count(events, 'events')}   ·   {count(relations, 'relations')}")
                                   + f"   ·   {graph['analysis_status']}", 0)], cols)
         if rows < 14 or cols < 36:
             _put_runs(screen, 3, 1, [(tr("터미널을 넓혀 주세요. Q 종료", "Please widen the terminal. Q quits"), 0)], cols)
@@ -1143,7 +1143,7 @@ class TerminalApp:
         events, relations = len(graph["events"]), sum(e["active"] for e in graph["edges"])
         unplaced = graph.get("unplaced") or 0  # story view: steps whose session has no box to fold into
         self._put(screen, 0, 1, f"◆ CONTEXTTRAIL   {self.title}   v{graph['version']}   ·   "
-                  + tr(f"{events} 사건 · {relations} 관계", f"{events} events · {relations} relations")
+                  + tr(f"{events} 사건 · {relations} 관계", f"{count(events, 'events')} · {count(relations, 'relations')}")
                   + (tr(f" · 상자에 들지 않은 단계 {unplaced} (v)", f" · {unplaced} steps in no box (v)") if unplaced else ""),
                   curses.A_BOLD | styles["frame"])
         none = tr("없음", "none")

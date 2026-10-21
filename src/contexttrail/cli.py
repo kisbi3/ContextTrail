@@ -398,7 +398,7 @@ def _graph(args) -> int:
     print(f"ContextTrail · {safe_text(title, multiline=False)} · v{graph['version']} · "
           f"{safe_text(graph['analysis_status'], multiline=False)}")
     print(tr(f"사건 {len(events)}개 · 관계 {len(edges)}개 · 저장된 결과 · AI 호출 없음",
-             f"{len(events)} events · {len(edges)} relations · saved result · no AI calls"))
+             f"{i18n.count(len(events), 'events')} · {i18n.count(len(edges), 'relations')} · saved result · no AI calls"))
     _print_flow(graph)
     if events:
         print(tr("\n사건 상세", "\nEvent details"))

@@ -4,6 +4,13 @@ All notable changes to ContextTrail are listed here, newest first. Dates are the
 
 ## Unreleased
 
+### Changed
+- **The README shows what the tool is today and the rest moved to a usage guide.** Its screenshots were from 2026-10-06, before the story view became the default screen; they are now the terminal story view, the browser's story view and every step of the demo, drawn from the synthetic demo with no model call (`scripts/tui_screenshot.py` keeps the screen's colours and lines every glyph up with its cell). The README's developer section still described the retired extract-and-integrate pipeline; options, keys, hooks and the developer tools are now in `docs/USAGE.md` (the Studio part rewritten for the one-call graph), the measured table says which rows were measured with the earlier pipeline and gives the one-call comparison, and links and images are absolute so the page reads the same on PyPI. The package metadata names opencode, the Python versions CI runs and the project's links.
+
+### Fixed
+- **English counts read as English.** One step, one session, one event and one relation are no longer `1 steps` (the story view's folded-work line, the flow headings, the header of the screen and of `graph`).
+- **`find` names a request's kind once** (`request · answered`, not `request · request · answered`), and `show` and the detail panel leave out the empty "What happened" heading of a step code titled with no summary.
+
 ## 0.1.0a10 – 2026-10-21
 
 **Upgrading from 0.1.0a9.** Nothing changes for a project that uses neither new option: its scan cache, state and saved settings stay as they are. A host that keeps its own copy of a project can now pass `--previous-path` and `--state-dir` instead of carrying a patch (see `docs/HOST.md`).

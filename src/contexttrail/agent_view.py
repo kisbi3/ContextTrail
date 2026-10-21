@@ -203,9 +203,9 @@ def show_text(result: dict) -> list[str]:
         lines.append("  " + tr("분석: ", "analysed by: ") + analysis_label(event))
     if event["out_of_order"]:
         lines.append("  " + out_of_order_note())
-    lines += ["", tr("무슨 일이 있었나", "What happened")]
-    # Quoted like the evidence, so a line of it cannot pose as the tool's own text.
-    lines += ["  > " + _clean(part) for part in safe_text(event["summary"]).splitlines() if part.strip()]
+    # Quoted like the evidence, so a line of it cannot pose as the tool's own text. A step code titled has no summary.
+    said = ["  > " + _clean(part) for part in safe_text(event["summary"]).splitlines() if part.strip()]
+    lines += ["", tr("무슨 일이 있었나", "What happened"), *said] if said else []
     if event["links"]:
         lines += ["", tr("연결된 사건", "Linked events")]
         for link in event["links"]:
@@ -324,8 +324,10 @@ def find_text(result: dict) -> list[str]:
     for row in result["events"]:
         mark = tr(" [순서 밖 분석]", " [out-of-order analysis]") if row["out_of_order"] else ""
         when = _when(row["when"]) or tr("시각 없음", "no time")
-        lines.append(f"  {row['event']}  {when:16}  "
-                     f"{kind_label(row)} · {_clean(row['status_label'])}  "
+        kind, status = kind_label(row), _clean(row["status_label"])
+        # A request's label already starts with its kind (`request · answered`).
+        shown_as = status if status == kind or status.startswith(kind + " · ") else f"{kind} · {status}"
+        lines.append(f"  {row['event']}  {when:16}  {shown_as}  "
                      f"{_clean(row['title'])}{mark}")
     if result["open_items"]:
         lines += ["", tr("아직 확인되지 않은 일", "Open items")] + ["  • " + _clean(text) for text in result["open_items"]]

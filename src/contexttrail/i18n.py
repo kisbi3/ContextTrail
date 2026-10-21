@@ -56,6 +56,11 @@ def tr(ko: str, en: str) -> str:
     return ko if language() == "ko" else en
 
 
+def count(n: int, word: str) -> str:
+    """An English count with the noun in the number it needs: `1 step`, `2 steps` (`word` is the plural)."""
+    return f"{n} {word[:-1] if n == 1 and word.endswith('s') else word}"
+
+
 class Labels(Mapping):
     """A read-only mapping whose values follow the screen language at the time of each lookup."""
 
