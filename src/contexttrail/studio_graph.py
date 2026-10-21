@@ -894,9 +894,13 @@ def run_engine(engine: Engine, runner_factory: Callable[[], Any], *,
                                               completed=session.completed, reused=session.reused,
                                               runner_calls=session.runners.budget.started,
                                               limitations=session.issues)
+            result = {"status": status, "graph": engine.store.graph(), **details, "skipped_units": len(session.skipped)}
             if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+                # The run was recorded: it travels with the interrupt, so `analyze --json` reports this run and not
+                # one that never started.
+                exc.run_result = result
                 raise
-            return {"status": status, "graph": engine.store.graph(), **details}
+            return result
         finally:
             with _cli_invocations_lock:
                 _cli_invocations.pop(run_id, None)

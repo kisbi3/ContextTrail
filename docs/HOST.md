@@ -59,7 +59,10 @@ given or saved. `scan` reports each home it used, where it came from and what it
 
 `--sources codex,claude,opencode` (on `scan`, `analyze`, `view`, `serve`, `status` and `find`) reads only the named
 tools; the others are not opened at all. `analyze` saves it like the homes; give all three to read everything again.
-Records of a tool left out are marked unavailable in the project's state, as if their files had gone.
+Records of a tool left out are marked unavailable in the project's state, as if their files had gone. A `--sources`
+given to any other command is for that command only: `status`, `find`, the screens' freshness line and the automatic
+analysis read every tool unless `analyze` saved a list, and the scan index keeps what earlier scans saw of the tools a
+scan left out, so their unchanged files do not count as new and their new sessions do.
 
 The runner's own login is not a source: the `codex` and `claude` CLIs that run the analysis read their credentials
 (`auth.json`, `.credentials.json`) from `CODEX_HOME` / `CLAUDE_CONFIG_DIR` or the defaults, never from the
@@ -92,9 +95,13 @@ symbolic links (`/app` is not `/app-backup`). Nothing is matched by keywords. Co
 - An archive recorded at another path (another machine, `/home/x/proj`) attributes nothing to a copy elsewhere.
   There is no path-remap option; a symbolic link at the recorded path that points at the copy makes the records
   attribute (it is picked up by the next scan).
-- Transcript files that are symbolic links are skipped (`sources[].files_skipped_symlink` counts them); linked
-  directories (a linked `sessions/`, a linked home) are followed. Build an archive by copying files or by linking
-  directories, not by linking each file.
+- Transcript files that are symbolic links are skipped (`sources[].files_skipped_symlink` counts them). A linked home
+  and a linked transcript directory (`sessions/`, `archived_sessions/`, `projects/`) are followed wherever they
+  point. A linked directory below one of those (`sessions/2026`, `projects/app`) is followed when it resolves inside
+  the tool's home or inside the transcript directory's own target; one leading elsewhere is not entered, is counted
+  in `sources[].dirs_skipped_symlink` and named in the limitations (the run then reads `partial`). Each directory is
+  read once, so a link back up the tree does not loop. Build an archive by copying files, by linking a home or a
+  transcript directory, or by linking subdirectories to places inside the home, not by linking each file.
 - A scan that finds transcript files but none recorded in the folder still exits 0 with zero records; read
   `records` and `sources[].files_with_records`.
 
@@ -140,7 +147,8 @@ off the parser, options hidden from `--help` left out; `global_options`; `exit_c
 - `records`: counts per `codex`, `claude`, `opencode`, `git`.
 - `sources`: one entry per tool: `provider`, `home`, `origin` (`flag`, `saved`, `environment`, `default`), `exists`,
   `read` (false when `--sources` left it out), `files_examined`, `files_read` (not replayed from the scan cache),
-  `files_with_records`, `files_skipped_symlink`, `records`; opencode adds `databases` (the files opened).
+  `files_with_records`, `files_skipped_symlink`, `dirs_skipped_symlink` (linked directories not followed), `records`;
+  opencode adds `databases` (the files opened).
 - `source_selection`: `sources` (the tools read) and its `origin` (`flag`, `saved`, `default`).
 - `limitations`: strings (labels).
 - `runner`: the runner saved for the project, or `null`. `runner_calls`: always 0.
@@ -159,6 +167,12 @@ One object on stdout; progress lines stay on stderr. `status` (`complete`, `noop
 `completed_units`, `skipped_units`, `reused_extractions`, `runner_calls`, `pending_records`, `graph_version`,
 `stop_reason` (text or `null`), `error_kind` (`null`, `busy`, `refused`, `usage`, `cancelled`, `call_limit`,
 `units_failed`, `error`, `internal`), `error` (text or `null`), `limitations_count`.
+
+The object is printed however the command stops. A command line the parser refuses (an unknown option, a bad value)
+prints `status: not_started`, `error_kind: usage`, `exit_code: 64`, with argparse's message on stderr as well; this
+needs `--json` written out in full after `analyze`. An interrupt (SIGINT, SIGTERM, SIGHUP) during a run prints that
+run as recorded: `status: cancelled`, its `run_id`, the units it completed and the graph version; one before a run
+began prints `status: cancelled` with `run_id: null`.
 
 ### `contexttrail.status.v1` (`status --json`)
 

@@ -17,7 +17,8 @@ from . import auto_update
 from . import journal
 from . import session_context
 from . import contract
-from .contract import EXIT_BUSY, EXIT_INTERRUPTED, EXIT_OK, Parser, error_kind, exit_for, run_exit, schema
+from .contract import (EXIT_BUSY, EXIT_INTERRUPTED, EXIT_OK, EXIT_USAGE, Parser, UsageExit, error_kind, exit_for,
+                       run_exit, schema)
 from .agent_commands import OPENCODE_PERMISSION_HINT, install_agent_commands
 from .auto_update import install_hooks
 from .agent_view import find, find_text, show, show_text
@@ -863,7 +864,14 @@ def main(argv: list[str] | None = None) -> int:
             if hasattr(signal, name) and signal.getsignal(getattr(signal, name)) is signal.SIG_DFL:
                 signal.signal(getattr(signal, name), _stop_on_signal)
     _screen_language(_language_option(argv))
-    args = parser().parse_args(_default_command(argv))
+    argv = _default_command(argv)
+    try:
+        args = parser().parse_args(argv)
+    except UsageExit as exc:
+        if argv[:1] == ["analyze"] and "--json" in argv:
+            # `analyze --json` prints one object whatever stops it, a command line the parser refused included.
+            _unstarted("usage", EXIT_USAGE, exc.message)
+        raise
     try:
         if args.command == "review":
             print(tr("평가 검토 HTML:", "Eval review HTML:"), render_eval_review(Path(args.folder)))
@@ -1187,17 +1195,26 @@ def _analyze_result(result: dict) -> dict:
 
 
 def _not_started(args, exc: BaseException) -> None:
-    """`analyze --json` that stopped before or outside a run (busy, a bad option, an interrupt) still prints one
-    object on stdout, so a host always has a result to read."""
+    """`analyze --json` that stopped outside a finished run (busy, a bad option, an interrupt) still prints one object
+    on stdout, so a host always has a result to read: the run's own result when one was recorded before the stop (an
+    interrupt part-way, `run_result` set by `run_engine`), else one that says no run began."""
     if getattr(args, "command", None) != "analyze" or not getattr(args, "json", False):
         return
+    recorded = getattr(exc, "run_result", None)
+    if isinstance(recorded, dict):
+        print(dumps(_analyze_result(recorded), pretty=True))
+        return
     kind = error_kind(exc)
+    _unstarted(kind, EXIT_INTERRUPTED if kind == "cancelled" else exit_for(exc),
+               str(exc) if isinstance(exc, (FlowError, OSError, sqlite3.Error)) else type(exc).__name__)
+
+
+def _unstarted(kind: str, exit_code: int, error: str) -> None:
     print(dumps({"schema": schema("analyze"), "status": "cancelled" if kind == "cancelled" else "not_started",
-                 "exit_code": EXIT_INTERRUPTED if kind == "cancelled" else exit_for(exc),
+                 "exit_code": exit_code,
                  "run_id": None, "completed_units": 0, "skipped_units": 0, "reused_extractions": 0, "runner_calls": 0,
                  "pending_records": None, "graph_version": None, "stop_reason": None, "error_kind": kind,
-                 "error": str(exc) if isinstance(exc, (FlowError, OSError, sqlite3.Error)) else type(exc).__name__,
-                 "limitations_count": 0}, pretty=True))
+                 "error": error, "limitations_count": 0}, pretty=True))
 
 
 HOME_ENVIRONMENT = {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR", "opencode": "XDG_DATA_HOME"}

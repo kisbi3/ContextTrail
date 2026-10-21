@@ -87,12 +87,22 @@ def run_exit(result: dict) -> int:
             "cancelled": EXIT_INTERRUPTED}.get(result.get("status"), EXIT_OK)
 
 
+class UsageExit(SystemExit):
+    """A command line the parser refused (`EXIT_USAGE`), with argparse's message, so `analyze --json` can still
+    print its one object (`cli.main`)."""
+
+    def __init__(self, message: str):
+        super().__init__(EXIT_USAGE)
+        self.message = message
+
+
 class Parser(argparse.ArgumentParser):
     """argparse with usage errors on `EXIT_USAGE`: its own 2 would read as an analysis that ended partial."""
 
     def error(self, message: str):
         self.print_usage(sys.stderr)
-        self.exit(EXIT_USAGE, f"{self.prog}: error: {message}\n")
+        sys.stderr.write(f"{self.prog}: error: {message}\n")
+        raise UsageExit(message)
 
 
 def _json_value(value: Any) -> Any:

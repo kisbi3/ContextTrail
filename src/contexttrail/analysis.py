@@ -2030,7 +2030,7 @@ class Engine:
         # What this scan saw, so `status` and `find` can count what changed since without parsing everything.
         self.store.set_meta(INDEX_KEY, build_index(source_scope, logs, codex_home=self.config.codex_home,
                                                    claude_home=self.config.claude_home, opencode_home=self.config.opencode_home,
-                                                   sources=self.config.sources))
+                                                   sources=self.config.sources, previous=self.store.get_meta(INDEX_KEY)))
         mark_steps(logs.records)
         return Snapshot(logs.records + artifacts.records, list(dict.fromkeys(logs.limitations + artifacts.limitations)),
                         logs.files, logs.sources)

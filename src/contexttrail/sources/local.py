@@ -843,11 +843,13 @@ def _portable_sidecar(reference: Path, transcript: Path, session: str) -> Path |
     return candidate if within(candidate, expected) else None
 
 
-def _claude_subagent_links(directory: Path) -> dict[str, dict[str, Any]]:
-    """Return only agent transcripts whose parent call AND launch result are both verified."""
+def _claude_subagent_links(directory: Path, roots: tuple[Path, ...] | None = None) -> dict[str, dict[str, Any]]:
+    """Return only agent transcripts whose parent call AND launch result are both verified. Transcripts are found as
+    `jsonl_files` finds them, within `roots` (by default the directory itself)."""
     links: dict[str, dict[str, Any]] = {}
-    for main in sorted(directory.rglob("*.jsonl")):
-        if "subagents" in main.parts or main.is_symlink() or not within(main, directory):
+    roots = roots or transcript_roots(directory, directory)
+    for main in walk_transcripts(directory, roots, (".jsonl",)):
+        if "subagents" in main.parts or main.is_symlink() or not inside(main, roots):
             continue
         # Only rows that can carry a call or a launch result are parsed (`only`; each names its session too), and a
         # parent too large to hold is read through: this runs over every Claude Code transcript at every scan.
@@ -882,7 +884,7 @@ def _claude_subagent_links(directory: Path) -> dict[str, dict[str, Any]]:
                 if tool_id:
                     launches[str(result["agentId"])] = (tool_id, data.get("uuid"))
         session_dir = main.parent / str(session) / "subagents"
-        if not session_dir.is_dir() or not within(session_dir, directory):
+        if not session_dir.is_dir() or not inside(session_dir, roots):
             continue
         for meta in session_dir.glob("*.meta.json"):
             if meta.is_symlink() or not within(meta, session_dir):
@@ -1309,22 +1311,83 @@ def source_homes(codex_home: Path | None = None, claude_home: Path | None = None
     return codex_home, claude_home, opencode_data_dir(opencode_home)
 
 
+def transcript_roots(directory: Path, home: Path) -> tuple[Path, ...]:
+    """Where a transcript under `directory` may really lie: the tool's home and the directory's own target, both
+    resolved. A linked subdirectory is entered, and a file kept, only when it resolves inside one of them."""
+    roots = []
+    for root in (home, directory):
+        try:
+            roots.append(root.resolve())
+        except (OSError, RuntimeError):
+            pass
+    return tuple(dict.fromkeys(roots))
+
+
+def inside(path: Path, roots: tuple[Path, ...]) -> bool:
+    return any(within(path, root) for root in roots)
+
+
+def walk_transcripts(directory: Path, roots: tuple[Path, ...], suffixes: tuple[str, ...],
+                     linked_dirs: list[Path] | None = None) -> list[Path]:
+    """Every file under `directory` whose name ends in one of `suffixes`, sorted, by the path it was found at.
+    Unlike `rglob`, a linked subdirectory is entered when its target lies within `roots` (`transcript_roots`) and
+    was not entered already (a link loop); one leading elsewhere is not entered and is listed in `linked_dirs`.
+    Files that are links are listed like any other; the caller decides on them."""
+    found: list[Path] = []
+    seen: set[Path] = set()
+    stack = [directory]
+    while stack:
+        current = stack.pop()
+        try:
+            real = current.resolve()
+            entries = sorted(os.scandir(current), key=lambda entry: entry.name, reverse=True)  # popped in name order
+        except (OSError, RuntimeError):
+            continue
+        if real in seen:
+            continue
+        seen.add(real)
+        for entry in entries:
+            path = Path(entry.path)
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(path)
+                elif entry.is_symlink() and entry.is_dir(follow_symlinks=True):
+                    if inside(path, roots):
+                        stack.append(path)
+                    elif linked_dirs is not None:
+                        linked_dirs.append(path)
+                elif entry.name.endswith(suffixes):
+                    found.append(path)
+            except OSError:
+                continue
+    return sorted(found)
+
+
 def jsonl_files(codex_home: Path, claude_home: Path, *, sources=None,
-                skipped: list[tuple[Path, str]] | None = None) -> list[tuple[Path, str]]:
-    """Every transcript file with its provider, in collection order (of `sources` only, when given); symlinks and
-    escapes are skipped, and listed in `skipped` when the caller passes one."""
+                skipped: list[tuple[Path, str]] | None = None,
+                skipped_dirs: list[tuple[Path, str]] | None = None) -> list[tuple[Path, str]]:
+    """Every transcript file with its provider, in collection order (of `sources` only, when given). A linked
+    subdirectory is followed while its target stays within the tool's home or the transcript directory's own target
+    (`walk_transcripts`); one leading elsewhere is listed in `skipped_dirs`. Files that are links, and files that
+    resolve outside those roots, are skipped and listed in `skipped` when the caller passes one."""
     found: list[tuple[Path, str]] = []
-    for directory, provider in ((codex_home / "archived_sessions", "codex"), (codex_home / "sessions", "codex"),
-                                (claude_home / "projects", "claude")):
+    for directory, provider, home in ((codex_home / "archived_sessions", "codex", codex_home),
+                                      (codex_home / "sessions", "codex", codex_home),
+                                      (claude_home / "projects", "claude", claude_home)):
         if not reads(sources, provider) or not directory.is_dir():
             continue
-        paths = sorted(directory.rglob("*.jsonl"))
+        roots = transcript_roots(directory, home)
+        linked: list[Path] = []
+        every = walk_transcripts(directory, roots, (".jsonl", COMPRESSED_SUFFIX), linked)
+        if skipped_dirs is not None:
+            skipped_dirs.extend((path, provider) for path in linked)
+        paths = [p for p in every if p.name.endswith(".jsonl")]
         plain = set(paths)
         # A compressed transcript is read unless its uncompressed copy is still there (the same records).
-        paths += sorted(p for p in directory.rglob("*" + COMPRESSED_SUFFIX)
-                        if p.with_name(p.name.removesuffix(".zst")) not in plain)
+        paths += [p for p in every if p.name.endswith(COMPRESSED_SUFFIX)
+                  and p.with_name(p.name.removesuffix(".zst")) not in plain]
         for path in paths:
-            if not path.is_symlink() and within(path, directory):
+            if not path.is_symlink() and inside(path, roots):
                 found.append((path, provider))
             elif skipped is not None:
                 skipped.append((path, provider))
@@ -1464,6 +1527,11 @@ def _stat(path: Path) -> tuple[int, int] | None:
     return info.st_size, info.st_mtime_ns
 
 
+def _cached_provider(entry: dict) -> str | None:
+    """The tool of a `ScanCache` entry: as kept, else as its manifest names it."""
+    return entry.get("provider") or next((m.get("provider") for m in entry.get("files", []) if m.get("provider")), None)
+
+
 def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: Path | None = None,
                  opencode_home: Path | None = None, cache: ScanCache | None = None,
                  progress=None, sources=None) -> Snapshot:
@@ -1475,7 +1543,8 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
     codex_home, claude_home, opencode_home = source_homes(codex_home, claude_home, opencode_home)
     result, warnings, files = {}, [], []
     claude_dir = claude_home / "projects"
-    claude_links = _claude_subagent_links(claude_dir) if reads(sources, "claude") and claude_dir.is_dir() else {}
+    claude_links = (_claude_subagent_links(claude_dir, transcript_roots(claude_dir, claude_home))
+                    if reads(sources, "claude") and claude_dir.is_dir() else {})
     def merge(snapshot: Snapshot) -> None:
         warnings.extend(snapshot.limitations)
         files.extend(snapshot.files)
@@ -1485,7 +1554,10 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
                 warnings.append(f"different content under the same native ID: {record.source_id}; the copy found later was kept.")
             result[record.source_id] = record
     linked: list[tuple[Path, str]] = []
-    transcripts = jsonl_files(codex_home, claude_home, sources=sources, skipped=linked)
+    linked_dirs: list[tuple[Path, str]] = []
+    transcripts = jsonl_files(codex_home, claude_home, sources=sources, skipped=linked, skipped_dirs=linked_dirs)
+    for path, provider in linked_dirs:
+        warnings.append(f"linked directory not followed, its target is outside the {provider} home: {path}")
     for done, (path, provider) in enumerate(transcripts, 1):
         if progress is not None and (done % 25 == 0 or done == len(transcripts)):
             progress(done, len(transcripts))  # counts only, never a path or content
@@ -1514,7 +1586,14 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
                 and _stat(path) == before):
             cache.fresh[str(path)] = {"bytes": before[0], "mtime_ns": before[1], "limitations": list(snapshot.limitations),
                                       "files": [{k: v for k, v in manifest.items() if k != "reused"} for manifest in snapshot.files],
-                                      "paths": sorted(asked.paths)}
+                                      "paths": sorted(asked.paths), "provider": provider}
+    if cache is not None and sources is not None:
+        # A scan of some tools keeps what earlier scans made of the others' files; each entry is still replayed
+        # only while its file's size and mtime are the same.
+        for key, entry in cache.entries.items():
+            provider = _cached_provider(entry)
+            if provider and not reads(sources, provider) and key not in cache.fresh:
+                cache.fresh[key] = entry
     databases = opencode_databases(opencode_home) if reads(sources, "opencode") else []
     for path in databases:
         snapshot = parse_opencode(path, scope)
@@ -1526,15 +1605,17 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
     ordered = sorted(result.values(), key=lambda r: (r.recorded_at or "", r.provider, r.session_id or "",
                                                     r.locator.get("line", 0), r.locator.get("fragment_index", 0), r.source_id))
     summary = source_summary(ordered, files, homes={"codex": codex_home, "claude": claude_home, "opencode": opencode_home},
-                             sources=sources, linked=linked, databases=databases)
+                             sources=sources, linked=linked, linked_dirs=linked_dirs, databases=databases)
     return Snapshot(ordered, list(dict.fromkeys(warnings)), files, summary)
 
 
 def source_summary(records: list[SourceRecord], files: list[dict], *, homes: dict[str, Path], sources,
-                   linked: list[tuple[Path, str]], databases: list[Path]) -> list[dict[str, Any]]:
+                   linked: list[tuple[Path, str]], databases: list[Path],
+                   linked_dirs: list[tuple[Path, str]] = ()) -> list[dict[str, Any]]:
     """Per tool, what a scan read: its home and whether it exists, whether `--sources` let it be read, the transcript
     files (or databases) examined, read (not replayed from the scan cache), giving this project records, the files
-    skipped as symbolic links, and the records kept. Counts only; built from what the scan already holds."""
+    skipped as symbolic links, the linked directories not followed (`jsonl_files`), and the records kept. Counts
+    only; built from what the scan already holds."""
     summary = []
     for provider in SOURCES:
         mine = [manifest for manifest in files if manifest.get("provider") == provider]
@@ -1545,6 +1626,7 @@ def source_summary(records: list[SourceRecord], files: list[dict], *, homes: dic
             "files_examined": len(mine), "files_read": sum(not manifest.get("reused") for manifest in mine),
             "files_with_records": len({record.locator.get("path") for record in kept if record.locator.get("path")}),
             "files_skipped_symlink": sum(kind == provider for _, kind in linked),
+            "dirs_skipped_symlink": sum(kind == provider for _, kind in linked_dirs),
             "records": len(kept)}
         if provider == "opencode":
             entry["databases"] = [str(path) for path in databases]

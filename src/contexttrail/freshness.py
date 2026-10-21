@@ -49,31 +49,47 @@ UNIT_DONE = {"integrated", "superseded"}
 
 
 def build_index(scope: Scope, snapshot: Snapshot, *, codex_home: Path | None, claude_home: Path | None,
-                opencode_home: Path | None, sources=None) -> dict[str, Any]:
-    """What the scan saw: each transcript file's size and mtime, each in-scope opencode session's update time, of
-    the tools it read (`sources`, kept in the index so a later check compares like with like).
+                opencode_home: Path | None, sources=None, previous: dict[str, Any] | None = None) -> dict[str, Any]:
+    """What the scan saw: each transcript file's size and mtime, each in-scope opencode session's update time.
 
-    A file's size is the length the parser read (its manifest), so a file that grew during the
-    scan still counts as changed next time.
+    A scan that read only some tools (`sources`) keeps the `previous` index's entries (files, opencode databases,
+    homes) of the tools it did not read, so a later check of every tool compares like with like instead of taking
+    their unchanged files for new, or a one-off `--sources` for the project's choice. A file's size is the length
+    the parser read (its manifest), so a file that grew during the scan still counts as changed next time.
     """
     codex_home, claude_home, opencode_home = source_homes(codex_home, claude_home, opencode_home)
+    homes = {"codex": str(codex_home), "claude": str(claude_home), "opencode": str(opencode_home)}
     read = {entry["path"]: entry.get("complete_bytes", entry.get("bytes")) for entry in snapshot.files if entry.get("path")}
-    files: dict[str, dict[str, int]] = {}
-    for path, _ in jsonl_files(codex_home, claude_home, sources=sources):
+    files: dict[str, dict[str, Any]] = {}
+    for path, provider in jsonl_files(codex_home, claude_home, sources=sources):
         try:
             info = os.stat(path, follow_symlinks=False)
         except OSError:
             continue
         size = read.get(str(path))
-        files[str(path)] = {"bytes": size if isinstance(size, int) else info.st_size, "mtime_ns": info.st_mtime_ns}
+        files[str(path)] = {"bytes": size if isinstance(size, int) else info.st_size, "mtime_ns": info.st_mtime_ns,
+                            "provider": provider}
     databases: dict[str, dict[str, Any]] = {}
     for path in opencode_databases(opencode_home) if reads(sources, "opencode") else []:
         databases[str(path)] = {"sessions": session_times(path, scope) or {}}
-    index = {"version": INDEX_VERSION, "scanned_at": now(), "files": files, "opencode": databases,
-             "homes": {"codex": str(codex_home), "claude": str(claude_home), "opencode": str(opencode_home)}}
-    if sources is not None:
-        index["sources"] = list(sources)
-    return index
+    if sources is not None and previous and previous.get("version") == INDEX_VERSION:
+        before = previous.get("homes") or {}
+        for path, entry in (previous.get("files") or {}).items():
+            provider = entry.get("provider") or _home_of(path, before)
+            if provider and not reads(sources, provider) and path not in files:
+                files[path] = {**entry, "provider": provider}
+        if not reads(sources, "opencode"):
+            databases = dict(previous.get("opencode") or {})
+        homes.update({tool: before[tool] for tool in before if tool in homes and not reads(sources, tool)})
+    return {"version": INDEX_VERSION, "scanned_at": now(), "files": files, "opencode": databases, "homes": homes}
+
+
+def _home_of(path: str, homes: dict[str, str]) -> str | None:
+    """The tool whose home holds a transcript file an older index listed without its tool."""
+    for tool in ("codex", "claude"):
+        if homes.get(tool) and Path(path).is_relative_to(homes[tool]):
+            return tool
+    return None
 
 
 def stored(store: Store) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, dict]]:
@@ -432,9 +448,9 @@ def saved_homes(store: Store) -> dict[str, Path]:
 
 
 def saved_sources(store: Store) -> tuple[str, ...] | None:
-    """The tools a check reads: the project's saved `--sources`, else those the last scan read, else all (None)."""
-    options = store.get_meta("options", {}) or {}
-    value = options.get("sources") or (store.get_meta(INDEX_KEY) or {}).get("sources")
+    """The tools a check reads: the project's saved `--sources` (only `analyze` saves it), else all (None). A scan's
+    one-off `--sources` is not taken from its index: the index keeps the other tools' entries instead."""
+    value = (store.get_meta("options", {}) or {}).get("sources")
     return tuple(value) if value else None
 
 

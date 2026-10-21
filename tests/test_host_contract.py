@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from contexttrail import auto_update, cli, contract
+from contexttrail import auto_update, cli, contract, studio_graph
 from contexttrail.cli import main, parser
 from contexttrail.git_context import Scope
 from contexttrail.render import graph_changes
@@ -212,7 +212,7 @@ def test_sources_reads_only_the_named_tools_and_scan_says_what_it_read(tmp_path,
     by = {entry["provider"]: entry for entry in every["sources"]}
     assert by["claude"] == {"provider": "claude", "home": str(homes["claude"].resolve()), "origin": "flag", "exists": True,
                             "read": True, "files_examined": 1, "files_read": 1, "files_with_records": 1,
-                            "files_skipped_symlink": 1, "records": 1}
+                            "files_skipped_symlink": 1, "dirs_skipped_symlink": 0, "records": 1}
     assert by["codex"]["records"] == 1 and by["opencode"]["databases"] == []
     assert every["source_selection"] == {"sources": ["codex", "claude", "opencode"], "origin": "default"}
 
@@ -346,3 +346,116 @@ def test_the_hook_child_that_finds_the_project_busy_exits_75_and_is_not_counted(
     state = store.get_meta(auto_update.STATE_KEY)
     assert state["runs"][-1]["exit"] == 75 and state["runs"][-1]["busy"] and not auto_update.failing(state)
     assert any("skipped" in line or "건너뜀" in line for line in auto_update.describe(store))
+
+
+def test_a_one_off_sources_scan_is_not_remembered_by_status_or_the_hook(tmp_path, capsys):
+    folder = demo(tmp_path, capsys)
+    scope = Scope.resolve(folder)
+    store = Store(scope.state_dir, scope.id)
+    auto_update.enable(store, runner="codex", units=1, cooldown=0)
+    assert main(["scan", str(folder)]) == 0
+    capsys.readouterr()
+    assert auto_update.decide(scope, store)[0] == "nothing_pending"
+    assert main(["scan", str(folder), "--sources", "codex"]) == 0  # once, to look at Codex alone
+    capsys.readouterr()
+    # The index keeps what the full scan saw of the other tools, so their unchanged files are not new.
+    assert main(["status", str(folder), "--json"]) == 0
+    since = output(capsys)["since_scan"]
+    assert since["files_new"] == 0 and since["files_changed"] == 0
+    claude_home = Path(store.get_meta("options")["claude_home"])
+    write(claude_home / "projects" / "new" / "n1.jsonl",
+          [{"type": "user", "uuid": "n-0", "sessionId": "n1", "cwd": str(folder.resolve()),
+            "timestamp": "2026-10-20T01:00:00Z", "message": {"content": [{"type": "text", "text": "New Claude work."}]}}])
+    # New work of a tool the one-off scan left out is new work for every check that reads all tools.
+    assert auto_update.decide(scope, store)[0] == "run"
+    assert main(["status", str(folder), "--json"]) == 0
+    since = output(capsys)["since_scan"]
+    assert since["records"] == 1 and since["files_new"] == 1 and since["by_source"] == {"claude": 1}
+
+
+def test_linked_subdirectories_are_followed_within_the_home_and_counted_when_they_lead_out(tmp_path, capsys):
+    folder, flags, homes = project(tmp_path)
+    # A Claude Code project directory moved within the home and linked back: followed.
+    real = homes["claude"] / "archive" / "app"
+    real.parent.mkdir()
+    (homes["claude"] / "projects" / "app").rename(real)
+    (homes["claude"] / "projects" / "app").symlink_to(real, target_is_directory=True)
+    # A Codex year directory linked to a place outside the Codex home: not entered, counted and named.
+    outside = tmp_path / "elsewhere" / "2026"
+    outside.parent.mkdir()
+    (homes["codex"] / "sessions" / "2026").rename(outside)
+    (homes["codex"] / "sessions" / "2026").symlink_to(outside, target_is_directory=True)
+    # A link back up the tree is entered once, not forever.
+    (homes["claude"] / "projects" / "loop").symlink_to(homes["claude"] / "projects", target_is_directory=True)
+    assert main(["scan", str(folder), *flags]) == 0
+    found = output(capsys)
+    by = {entry["provider"]: entry for entry in found["sources"]}
+    assert found["records"]["claude"] == 1 and by["claude"]["files_examined"] == 1
+    assert by["claude"]["dirs_skipped_symlink"] == 0
+    assert found["records"]["codex"] == 0 and by["codex"]["files_examined"] == 0
+    assert by["codex"]["dirs_skipped_symlink"] == 1
+    assert any(line.startswith("linked directory not followed") and "2026" in line for line in found["limitations"])
+    # The same directory linked from inside the Codex home is followed.
+    inside = homes["codex"] / "kept"
+    outside.rename(inside)
+    (homes["codex"] / "sessions" / "2026").unlink()
+    (homes["codex"] / "sessions" / "2026").symlink_to(inside, target_is_directory=True)
+    assert main(["scan", str(folder), *flags]) == 0
+    found = output(capsys)
+    by = {entry["provider"]: entry for entry in found["sources"]}
+    assert found["records"]["codex"] == 1 and by["codex"]["dirs_skipped_symlink"] == 0
+    assert not any(line.startswith("linked directory not followed") for line in found["limitations"])
+
+
+def test_analyze_json_interrupted_mid_run_reports_the_recorded_run(tmp_path, capsys, monkeypatch):
+    folder = demo(tmp_path, capsys)
+
+    class Interrupted:
+        def invoke(self, state, config=None):
+            studio_graph._cli_invocations[state["run_id"]].completed = 2  # two units published, then SIGTERM
+            raise KeyboardInterrupt("SIGTERM")
+    monkeypatch.setattr(studio_graph, "graph", Interrupted())
+    assert main(["analyze", str(folder), "--json"]) == 130
+    result = output(capsys)
+    assert result["status"] == "cancelled" and result["exit_code"] == 130 and result["error_kind"] == "cancelled"
+    assert result["run_id"] and result["run_id"].startswith("run_") and result["completed_units"] == 2
+    assert result["graph_version"] >= 1
+    # An interrupt before any run began is still reported as one that never started.
+    def early(*a, **k):
+        raise KeyboardInterrupt("SIGINT")
+    monkeypatch.setattr(cli.Engine, "analyze", early)
+    assert main(["analyze", str(folder), "--json"]) == 130
+    result = output(capsys)
+    assert result["status"] == "cancelled" and result["run_id"] is None and result["completed_units"] == 0
+
+
+def test_a_usage_error_of_analyze_json_still_prints_one_object(tmp_path, capsys):
+    folder, flags, _ = project(tmp_path)
+    for argv in (["analyze", str(folder), "--json", "--bogus"], ["analyze", str(folder), "--json", "--workers", "x"]):
+        with pytest.raises(SystemExit) as stopped:
+            main(argv)
+        assert stopped.value.code == 64
+        captured = capsys.readouterr()
+        result = json.loads(captured.out)
+        assert result["schema"] == "contexttrail.analyze.v1" and result["status"] == "not_started"
+        assert result["error_kind"] == "usage" and result["exit_code"] == 64 and result["error"]
+        assert "error:" in captured.err
+    with pytest.raises(SystemExit):
+        main(["analyze", str(folder), "--bogus"])  # without --json, stdout stays empty
+    assert capsys.readouterr().out == ""
+
+
+def test_a_full_scan_after_a_sources_scan_still_reuses_the_other_tools_files(tmp_path, capsys):
+    folder, flags, homes = project(tmp_path)
+    write(homes["codex"] / "sessions" / "2026" / "10" / "06" / "rollout-other.jsonl",
+          [{"type": "session_meta", "timestamp": "2026-10-06T02:00:00Z", "payload": {"id": "o1", "cwd": "/elsewhere"}},
+           {"type": "response_item", "timestamp": "2026-10-06T02:00:01Z",
+            "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "other"}]}}])
+    assert main(["scan", str(folder), *flags]) == 0
+    codex = {entry["provider"]: entry for entry in output(capsys)["sources"]}["codex"]
+    assert (codex["files_examined"], codex["files_read"]) == (2, 2)
+    assert main(["scan", str(folder), *flags, "--sources", "claude"]) == 0
+    capsys.readouterr()
+    assert main(["scan", str(folder), *flags]) == 0
+    codex = {entry["provider"]: entry for entry in output(capsys)["sources"]}["codex"]
+    assert (codex["files_examined"], codex["files_read"]) == (2, 1)  # the other project's file is not read again
