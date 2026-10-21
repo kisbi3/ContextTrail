@@ -16,7 +16,7 @@ from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
-from .freshness import INDEX_KEY, build_index
+from .freshness import INDEX_KEY, SCAN_CACHE_META, build_index
 from .git_context import Scope, collect_git
 from .i18n import tr
 from .langsmith_trace import LangSmithTracer
@@ -250,8 +250,6 @@ LEAN_INDEX_RECORDS, LEAN_INDEX_EVENTS, LEAN_INDEX_FILES = 100, 30, 50  # the eve
 # What the extraction input carries besides the records: short IDs, a tool-step outline
 # and the user's messages. Part of the cache signature, so older extractions are redone.
 EXTRACT_INPUT_VERSION = "aliases_steps_requests_read_heads_v2"
-# What earlier scans made of the transcript files that gave this project nothing (`ScanCache`).
-SCAN_CACHE_META = "scan_cache"
 
 # IDs a model must copy back exactly; they go to the Runner as S12 / E3 and come back whole.
 ALIASED_ID = re.compile(r"(src|srcseg|ev|edge|open|file)_[0-9a-f]{24}")

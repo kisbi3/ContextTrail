@@ -39,6 +39,14 @@ ZSTD_INPUT_CHUNK = 4 * 1024
 SESSION_META_ROWS = 64
 # Keep a single prompt-visible record below Engine.record_chars (48k by default).
 SEGMENT_CHARS = 32_000
+# A plain transcript's reading keeps a digest of this many bytes at its start and before the end it read, so lines
+# appended later can be read on their own once those bytes are found unchanged (`read_claude_appended`).
+RESUME_EDGE = 4 * 1024
+RESUME_VERSION = 1
+# A reading that asked about more distinct paths than this leaves no state to read on from.
+RESUME_PATHS = 256
+# Appended lines are held in memory while read; more than this since the last reading, and the file is read whole.
+RESUME_MAX_BYTES = 256 * 1024 * 1024
 
 # Record types that carry no decision narrative, so dropping them loses nothing.
 # Keyed by the literal string the parser would otherwise add to `unknown`.
@@ -300,6 +308,9 @@ def _streamed_rows(path: Path, chunks: Iterator[bytes], warnings: list[str], man
     says so in the warnings."""
     committed, pending = hashlib.sha256(), hashlib.sha256()
     buffer, skipping, line_no, total, consumed = bytearray(), False, 0, 0, 0
+    # The first bytes, the last `RESUME_EDGE` bytes before the chunk being read, and where the last committed line
+    # ended (that window, the chunk, the newline's index): the same edges `_jsonl` gives a file it holds whole.
+    first, window, last = bytearray(), b"", (b"", b"", -1)
     try:
         for chunk in chunks:
             total += len(chunk)
@@ -308,6 +319,9 @@ def _streamed_rows(path: Path, chunks: Iterator[bytes], warnings: list[str], man
                 manifest["partial"] = "cap"
                 warnings.append(f"log file read only in part: {path.name} (over {STREAM_MAX_BYTES} bytes)")
                 return
+            if len(first) < RESUME_EDGE:
+                first += chunk[:RESUME_EDGE - len(first)]
+            before, window = window, (window + chunk[-RESUME_EDGE:])[-RESUME_EDGE:]
             start = 0
             while True:
                 newline = chunk.find(b"\n", start)
@@ -322,6 +336,7 @@ def _streamed_rows(path: Path, chunks: Iterator[bytes], warnings: list[str], man
                 pending.update(chunk[start:newline + 1])
                 committed = pending.copy()
                 consumed = total - len(chunk) + newline + 1  # bytes through this newline
+                last = (before, chunk, newline)
                 line_no += 1
                 if skipping:
                     warnings.append(f"JSONL record over the size limit: {path.name}:{line_no}")
@@ -346,6 +361,10 @@ def _streamed_rows(path: Path, chunks: Iterator[bytes], warnings: list[str], man
         settled = compressed or manifest.get("partial") == "cap"
         manifest.update(complete_bytes=manifest["bytes"] if settled else consumed, digest=committed.hexdigest(),
                         streamed=True)
+        if not compressed:
+            ahead, piece, newline = last
+            manifest.update(lines=line_no, head=_edge(bytes(first[:consumed])),
+                            tail=_edge((ahead + piece[:newline + 1])[-RESUME_EDGE:] if newline >= 0 else b""))
 
 
 def _jsonl(path: Path, *, stream_large: bool = False,
@@ -367,6 +386,8 @@ def _jsonl(path: Path, *, stream_large: bool = False,
                     # The file opened here, not one opened again by its path.
                     copy = os.dup(stream.fileno())
                     manifest = {"path": str(path), "bytes": before.st_size}
+                    if not compressed:
+                        manifest.update(dev=before.st_dev, ino=before.st_ino)
                     chunks = (_zstd_chunks(os.fdopen(copy, "rb")) if compressed else _file_chunks(copy, before.st_size))
                     return _streamed_rows(path, chunks, warnings, manifest, compressed, only), warnings, manifest
                 # English: the reason lands in the limitations the model reads.
@@ -398,14 +419,24 @@ def _jsonl(path: Path, *, stream_large: bool = False,
     boundary = data.rfind(b"\n") + 1
     if boundary != len(data):
         warnings.append(f"last JSONL record still being written, skipped: {path.name}")
+    line_no = 0
     for line_no, raw in enumerate(data[:boundary].splitlines(), 1):
         row = _parsed(raw, line_no, path.name, warnings, only)
         if row is not None:
             rows.append(row)
     # `complete_bytes` is the length of the file that was read, which the freshness index compares with the file's
     # size: a compressed file is read whole, so it is the size on disk, not the decompressed length.
-    return rows, warnings, {"path": str(path), "bytes": before.st_size,
-                            "complete_bytes": before.st_size if compressed else boundary, "digest": digest(data[:boundary])}
+    manifest = {"path": str(path), "bytes": before.st_size,
+                "complete_bytes": before.st_size if compressed else boundary, "digest": digest(data[:boundary])}
+    if not compressed:
+        # What a later reading of the lines appended to it checks first (`read_claude_appended`).
+        manifest.update(dev=before.st_dev, ino=before.st_ino, lines=line_no, head=_edge(data[:min(RESUME_EDGE, boundary)]),
+                        tail=_edge(data[max(0, boundary - RESUME_EDGE):boundary]))
+    return rows, warnings, manifest
+
+
+def _edge(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _binary_marker(block: dict[str, Any]) -> str | None:
@@ -864,22 +895,229 @@ def _claude_subagent_links(directory: Path) -> dict[str, dict[str, Any]]:
     return links
 
 
+class _ClaudeReader:
+    """`parse_claude`'s pass over a transcript's rows, with what it carries from one row to the next: the working
+    directory, whether any row was the project's (`relevant`), each tool call's directory and model (a result is
+    attributed by its call). `state` and `resumed` keep and restore that, so the lines appended to a file later
+    are read on from where a reading stopped (`read_claude_appended`) with the same records a whole reading gives."""
+
+    def __init__(self, path: Path, scope: Scope, session: str, lineage: dict[str, Any], warnings: list[str]):
+        self.path, self.scope, self.session, self.lineage, self.warnings = path, scope, session, lineage, warnings
+        self.cwd: str | None = None
+        self.relevant = False
+        self.result: list[SourceRecord] = []
+        self.unknown: set[str] = set()
+        self.deferred: dict[str, int] = {}
+        self.call_cwd: dict[str | None, str | None] = {}
+        self.call_authoring: dict[str | None, dict] = {}  # a tool result is written by the tool, for the turn that called it
+        self.rows = 0
+
+    def state(self) -> dict[str, Any]:
+        """The carried values as JSON: each call's directory and model by index into the distinct ones."""
+        cwds: dict[Any, int] = {}
+        models: dict[str, int] = {}
+        calls = [[call, cwds.setdefault(cwd, len(cwds)),
+                  models.setdefault(json.dumps(self.call_authoring.get(call, {}), sort_keys=True), len(models))]
+                 for call, cwd in self.call_cwd.items()]
+        return {"cwd": self.cwd, "relevant": self.relevant, "calls": calls, "cwds": list(cwds),
+                "authorings": [json.loads(text) for text in models]}
+
+    def resumed(self, state: dict[str, Any]) -> "_ClaudeReader":
+        self.cwd, self.relevant = state["cwd"], state["relevant"]
+        for call, cwd, model in state["calls"]:
+            self.call_cwd[call] = state["cwds"][cwd]
+            self.call_authoring[call] = state["authorings"][model]
+        return self
+
+    def read(self, rows: Iterable[tuple[int, dict, str]]) -> None:
+        path, scope, session, lineage, warnings = self.path, self.scope, self.session, self.lineage, self.warnings
+        result, unknown, deferred = self.result, self.unknown, self.deferred
+        call_cwd, call_authoring = self.call_cwd, self.call_authoring
+        cwd, relevant = self.cwd, self.relevant
+        for line, data, raw_hash in rows:
+            self.rows += 1
+            cwd = data.get("cwd", cwd)
+            relevant |= scope.includes(cwd)
+            typ = data.get("type")
+            if typ in {"file-history-snapshot", "file-history-delta", "queue-operation", "progress", "last-prompt",
+                       "custom-title", "ai-title", "atis-latch", "mode", "permission-mode", "bridge-session",
+                       "agent-name", "tag", "bridge-config", "pr-link"}:
+                _classify_unknown(str(typ), unknown, deferred)
+                continue
+            if typ == "system" and not data.get("isCompactSummary"):
+                # Two shapes below still produce a compaction record and must reach it:
+                # a `compact_boundary` marker (a work-unit boundary) and any system row
+                # carrying summary text. Only rows with neither are unread.
+                if data.get("subtype") != "compact_boundary" and not data.get("summary"):
+                    _classify_unknown("system:" + str(data.get("subtype")), unknown, deferred)
+                    continue
+            if data.get("isCompactSummary"):
+                if scope.includes(cwd):
+                    message = data.get("message", {})
+                    text = _text(message.get("content") if isinstance(message, dict) else message)
+                    if text:
+                        result.append(_record("claude", session, str(data.get("uuid") or f"line:{line}"), "metadata",
+                            text, path, line, raw_hash, cwd, scope, derivation="summary", recorded_at=data.get("timestamp"),
+                            parent_record_id=data.get("parentUuid"), lineage={**lineage, "kind": "compaction"},
+                            git={"branch": data["gitBranch"]} if data.get("gitBranch") else {}))
+                continue
+            if typ in {"summary", "system"}:
+                if scope.includes(cwd) and (data.get("summary") or data.get("subtype") == "compact_boundary"):
+                    text = _text(data.get("summary") or data.get("content") or "Compaction boundary")
+                    result.append(_record("claude", session, str(data.get("uuid") or f"line:{line}"), "metadata",
+                                          text, path, line, raw_hash, cwd, scope, derivation="summary",
+                                          recorded_at=data.get("timestamp"), lineage={**lineage, "kind": "compaction"}))
+                continue
+            if typ == "attachment":
+                extracted = _claude_attachment(data)
+                if extracted and scope.includes(cwd):
+                    text, attachment_meta = extracted
+                    result.append(_record("claude", session, str(data.get("uuid") or f"line:{line}"), "metadata",
+                        text, path, line, raw_hash, cwd, scope, native_record_id=data.get("uuid"),
+                        parent_record_id=data.get("parentUuid"), recorded_at=data.get("timestamp"),
+                        git={"branch": data["gitBranch"]} if data.get("gitBranch") else {},
+                        lineage={**lineage, "kind": "attachment", **attachment_meta}))
+                elif not extracted and "attachment" in data:
+                    # An attachment shape we cannot read is a format gap, not an
+                    # intentionally skipped file, and it used to vanish silently.
+                    # Keyed on presence, not truthiness: `[]`, `""` and `{}` are
+                    # malformed too, and a falsey value must not hide that.
+                    shape = data["attachment"]
+                    name = shape.get("type") if isinstance(shape, dict) else type(shape).__name__
+                    _classify_unknown(f"attachment:{name}", unknown, deferred)
+                continue
+            if typ not in {"user", "assistant"}:
+                unknown.add(str(typ))
+                continue
+            message = data.get("message", {})
+            if not isinstance(message, dict):
+                unknown.add("message:not-object")
+                continue
+            blocks = message.get("content", [])
+            if isinstance(blocks, str):
+                blocks = [{"type": "text", "text": blocks}]
+            native_id = data.get("uuid")
+            base = str(native_id or f"line:{line}")
+            # An assistant row names its model and the effort in force (`perTurnEffort`, else the session's
+            # `effort`); `<synthetic>` is a message Claude Code wrote itself, with no model behind it.
+            authoring = _authoring(message.get("model"), data.get("perTurnEffort") or data.get("effort")) if typ == "assistant" else {}
+            if authoring.get("model", "").startswith("<"):
+                authoring = {}
+            for part, block in enumerate(blocks):
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                role, call_id, item_cwd = typ, None, cwd
+                record_lineage, record_authoring = lineage, authoring
+                if btype in {"thinking", "redacted_thinking"}:
+                    continue
+                if btype == "text":
+                    text = _text(block.get("text"))
+                elif btype == "image":
+                    role = "metadata"
+                    record_lineage = {**lineage, "kind": "binary_attachment"}
+                    text = _text(block)
+                elif btype == "tool_use":
+                    role, call_id = "tool_call", block.get("id")
+                    params = block.get("input", {})
+                    if isinstance(params, dict):
+                        other = params.get("cwd") or params.get("workdir")
+                        if isinstance(other, str) and Path(other).is_absolute():
+                            item_cwd = other
+                    call_cwd[call_id] = item_cwd
+                    call_authoring[call_id] = authoring
+                    # Every argument, so a Write keeps its file path next to the content.
+                    body = json.dumps(params, ensure_ascii=False, sort_keys=True) if isinstance(params, dict) else _text(params)
+                    text = f"Tool: {block.get('name', 'unknown')}\n{body}"
+                elif btype == "tool_result":
+                    role, call_id = "tool_result", block.get("tool_use_id")
+                    item_cwd = call_cwd.get(call_id, item_cwd)
+                    record_authoring = call_authoring.get(call_id, {})
+                    text = _text(block.get("content"))
+                else:
+                    unknown.add("content:" + str(btype))
+                    continue
+                if not text or not scope.includes(item_cwd):
+                    continue
+                rec = _record("claude", session, f"{base}:{part}", role, text, path, line, raw_hash, item_cwd, scope,
+                              native_record_id=native_id, parent_record_id=data.get("parentUuid"),
+                              recorded_at=data.get("timestamp"), tool_call_id=call_id,
+                              git={"branch": data["gitBranch"]} if data.get("gitBranch") else {}, lineage=record_lineage,
+                              authoring=record_authoring)
+                result.append(rec)
+                if role == "tool_result":
+                    matches = re.findall(r"Full output saved to:\s*([^\n<]+)", text)
+                    for name in matches:
+                        reference = Path(name.strip())
+                        sidecar = _portable_sidecar(reference, path, str(session))
+                        allowed = _claude_session_root(path, str(session)) / "tool-results"
+                        if sidecar is None or sidecar.is_symlink() or not within(sidecar, allowed):
+                            warnings.append(f"Claude tool sidecar outside the allowed directory not read: {path.name}")
+                            continue
+                        try:
+                            before = sidecar.stat()
+                            if before.st_size > MAX_FILE_BYTES:
+                                raise OSError("oversize")
+                            content = sidecar.read_text(encoding="utf-8")
+                            after = sidecar.stat()
+                            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                                raise OSError("changed")
+                        except (OSError, UnicodeError):
+                            warnings.append(f"Claude tool sidecar missing or not read: {sidecar.name}")
+                            continue
+                        result.append(SourceRecord(ident("src_", rec.source_id, "sidecar"), "claude", session,
+                            "tool_result", content, {"kind": "sidecar", "path": str(sidecar), "raw_hash": digest(content),
+                            "referenced_from": rec.source_id}, native_record_id=native_id, recorded_at=data.get("timestamp"),
+                            cwd=item_cwd, worktree_id=scope.worktree_for(item_cwd), tool_call_id=call_id,
+                            lineage={**lineage, "kind": "tool_sidecar", "parent_source_id": rec.source_id},
+                            authoring=record_authoring))
+        self.cwd, self.relevant = cwd, relevant
+
+
+def _claude_lineage(subagent_link: dict[str, Any] | None, entry: str) -> dict[str, Any]:
+    lineage = dict(subagent_link or {})
+    if not lineage and entry.startswith("sdk-"):
+        # `claude -p` or an SDK: no person at the terminal (see the Codex `exec` case).
+        lineage = {"kind": "unattended", "agent_type": "claude -p" if entry == "sdk-cli" else "claude sdk"}
+    return lineage
+
+
+class _Answers:
+    """The scope, keeping its answer for every path a reading asks about (`worktree_for`; `includes` is whether
+    there is one), so a later reading of the same file's appended lines can first ask them again."""
+
+    def __init__(self, scope: Scope, answers: dict[str, str | None] | None = None):
+        self._scope, self.answers = scope, dict(answers or {})
+
+    def worktree_for(self, cwd: str | None) -> str | None:
+        answer = self._scope.worktree_for(cwd)
+        if isinstance(cwd, str):
+            self.answers[cwd] = answer
+        return answer
+
+    def includes(self, cwd: str | None) -> bool:
+        return self.worktree_for(cwd) is not None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._scope, name)
+
+
 def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | None = None,
-                 stream_large: bool = True) -> Snapshot:
+                 stream_large: bool = True, resumable: bool = False) -> Snapshot:
     """A Claude Code transcript's in-scope records. With `stream_large` (the default; off for a check on a byte
     budget) a transcript too large to hold is read through line by line, its session, entrypoint and sidechain mark
-    taken from its first rows (`_head`)."""
+    taken from its first rows (`_head`). With `resumable`, the manifest carries what `read_claude_appended` needs to
+    read the lines appended later on their own (`resume`), when this reading can be continued."""
+    answers = _Answers(scope) if resumable else None
+    scope = answers or scope
     rows, warnings, manifest = _jsonl(path, stream_large=stream_large)
     seen, rows = _head(rows)
-    session = next((d.get("sessionId") for _, d, _ in seen if d.get("sessionId")), transcript_stem(path))
-    cwd = None
-    result, unknown, relevant = [], set(), False
-    deferred: dict[str, int] = {}
-    call_cwd: dict[str, str | None] = {}
-    call_authoring: dict[str, dict] = {}  # a tool result is written by the tool, for the model turn that called it
+    found = next((d.get("sessionId") for _, d, _ in seen if d.get("sessionId")), None)
+    session = found or transcript_stem(path)
     is_subagent_file = "subagents" in path.parts or any(bool(d.get("isSidechain")) for _, d, _ in seen)
     row_count = 0
     if is_subagent_file and not subagent_link:
+        cwd, relevant = None, False
         for _, data, _ in rows:
             row_count += 1
             cwd = data.get("cwd", cwd)
@@ -889,151 +1127,19 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
         else:
             # Not this project's: what a linked reading of it says (below), so a link changes nothing.
             warnings = warnings if not row_count else [note for note in warnings if note.startswith("log file read only in part")]
+        if answers:
+            _keep_resume(path, manifest, answers, rows=row_count, session=found, entry=None, subagent=True,
+                         carried={"cwd": cwd, "relevant": relevant, "calls": [], "cwds": [], "authorings": []})
         # In the project, its result depends on the parent's transcript, which may yet link it: not kept by
         # `ScanCache`. Out of it, the same paths decide either way, so that result is settled.
         return Snapshot([], warnings, [{**manifest, **({"unlinked_subagent": True} if relevant else {})}] if manifest else [])
-    lineage = dict(subagent_link or {})
-    entry = next((d.get("entrypoint") for _, d, _ in seen if isinstance(d.get("entrypoint"), str)), "")
-    if not lineage and entry.startswith("sdk-"):
-        # `claude -p` or an SDK: no person at the terminal (see the Codex `exec` case).
-        lineage = {"kind": "unattended", "agent_type": "claude -p" if entry == "sdk-cli" else "claude sdk"}
-    for line, data, raw_hash in rows:
-        row_count += 1
-        cwd = data.get("cwd", cwd)
-        relevant |= scope.includes(cwd)
-        typ = data.get("type")
-        if typ in {"file-history-snapshot", "file-history-delta", "queue-operation", "progress", "last-prompt",
-                   "custom-title", "ai-title", "atis-latch", "mode", "permission-mode", "bridge-session",
-                   "agent-name", "tag", "bridge-config", "pr-link"}:
-            _classify_unknown(str(typ), unknown, deferred)
-            continue
-        if typ == "system" and not data.get("isCompactSummary"):
-            # Two shapes below still produce a compaction record and must reach it:
-            # a `compact_boundary` marker (a work-unit boundary) and any system row
-            # carrying summary text. Only rows with neither are unread.
-            if data.get("subtype") != "compact_boundary" and not data.get("summary"):
-                _classify_unknown("system:" + str(data.get("subtype")), unknown, deferred)
-                continue
-        if data.get("isCompactSummary"):
-            if scope.includes(cwd):
-                message = data.get("message", {})
-                text = _text(message.get("content") if isinstance(message, dict) else message)
-                if text:
-                    result.append(_record("claude", session, str(data.get("uuid") or f"line:{line}"), "metadata",
-                        text, path, line, raw_hash, cwd, scope, derivation="summary", recorded_at=data.get("timestamp"),
-                        parent_record_id=data.get("parentUuid"), lineage={**lineage, "kind": "compaction"},
-                        git={"branch": data["gitBranch"]} if data.get("gitBranch") else {}))
-            continue
-        if typ in {"summary", "system"}:
-            if scope.includes(cwd) and (data.get("summary") or data.get("subtype") == "compact_boundary"):
-                text = _text(data.get("summary") or data.get("content") or "Compaction boundary")
-                result.append(_record("claude", session, str(data.get("uuid") or f"line:{line}"), "metadata",
-                                      text, path, line, raw_hash, cwd, scope, derivation="summary",
-                                      recorded_at=data.get("timestamp"), lineage={**lineage, "kind": "compaction"}))
-            continue
-        if typ == "attachment":
-            extracted = _claude_attachment(data)
-            if extracted and scope.includes(cwd):
-                text, attachment_meta = extracted
-                result.append(_record("claude", session, str(data.get("uuid") or f"line:{line}"), "metadata",
-                    text, path, line, raw_hash, cwd, scope, native_record_id=data.get("uuid"),
-                    parent_record_id=data.get("parentUuid"), recorded_at=data.get("timestamp"),
-                    git={"branch": data["gitBranch"]} if data.get("gitBranch") else {},
-                    lineage={**lineage, "kind": "attachment", **attachment_meta}))
-            elif not extracted and "attachment" in data:
-                # An attachment shape we cannot read is a format gap, not an
-                # intentionally skipped file, and it used to vanish silently.
-                # Keyed on presence, not truthiness: `[]`, `""` and `{}` are
-                # malformed too, and a falsey value must not hide that.
-                shape = data["attachment"]
-                name = shape.get("type") if isinstance(shape, dict) else type(shape).__name__
-                _classify_unknown(f"attachment:{name}", unknown, deferred)
-            continue
-        if typ not in {"user", "assistant"}:
-            unknown.add(str(typ))
-            continue
-        message = data.get("message", {})
-        if not isinstance(message, dict):
-            unknown.add("message:not-object")
-            continue
-        blocks = message.get("content", [])
-        if isinstance(blocks, str):
-            blocks = [{"type": "text", "text": blocks}]
-        native_id = data.get("uuid")
-        base = str(native_id or f"line:{line}")
-        # An assistant row names its model and the effort in force (`perTurnEffort`, else the session's
-        # `effort`); `<synthetic>` is a message Claude Code wrote itself, with no model behind it.
-        authoring = _authoring(message.get("model"), data.get("perTurnEffort") or data.get("effort")) if typ == "assistant" else {}
-        if authoring.get("model", "").startswith("<"):
-            authoring = {}
-        for part, block in enumerate(blocks):
-            if not isinstance(block, dict):
-                continue
-            btype = block.get("type")
-            role, call_id, item_cwd = typ, None, cwd
-            record_lineage, record_authoring = lineage, authoring
-            if btype in {"thinking", "redacted_thinking"}:
-                continue
-            if btype == "text":
-                text = _text(block.get("text"))
-            elif btype == "image":
-                role = "metadata"
-                record_lineage = {**lineage, "kind": "binary_attachment"}
-                text = _text(block)
-            elif btype == "tool_use":
-                role, call_id = "tool_call", block.get("id")
-                params = block.get("input", {})
-                if isinstance(params, dict):
-                    other = params.get("cwd") or params.get("workdir")
-                    if isinstance(other, str) and Path(other).is_absolute():
-                        item_cwd = other
-                call_cwd[call_id] = item_cwd
-                call_authoring[call_id] = authoring
-                # Every argument, so a Write keeps its file path next to the content.
-                body = json.dumps(params, ensure_ascii=False, sort_keys=True) if isinstance(params, dict) else _text(params)
-                text = f"Tool: {block.get('name', 'unknown')}\n{body}"
-            elif btype == "tool_result":
-                role, call_id = "tool_result", block.get("tool_use_id")
-                item_cwd = call_cwd.get(call_id, item_cwd)
-                record_authoring = call_authoring.get(call_id, {})
-                text = _text(block.get("content"))
-            else:
-                unknown.add("content:" + str(btype))
-                continue
-            if not text or not scope.includes(item_cwd):
-                continue
-            rec = _record("claude", session, f"{base}:{part}", role, text, path, line, raw_hash, item_cwd, scope,
-                          native_record_id=native_id, parent_record_id=data.get("parentUuid"),
-                          recorded_at=data.get("timestamp"), tool_call_id=call_id,
-                          git={"branch": data["gitBranch"]} if data.get("gitBranch") else {}, lineage=record_lineage,
-                          authoring=record_authoring)
-            result.append(rec)
-            if role == "tool_result":
-                matches = re.findall(r"Full output saved to:\s*([^\n<]+)", text)
-                for name in matches:
-                    reference = Path(name.strip())
-                    sidecar = _portable_sidecar(reference, path, str(session))
-                    allowed = _claude_session_root(path, str(session)) / "tool-results"
-                    if sidecar is None or sidecar.is_symlink() or not within(sidecar, allowed):
-                        warnings.append(f"Claude tool sidecar outside the allowed directory not read: {path.name}")
-                        continue
-                    try:
-                        before = sidecar.stat()
-                        if before.st_size > MAX_FILE_BYTES:
-                            raise OSError("oversize")
-                        content = sidecar.read_text(encoding="utf-8")
-                        after = sidecar.stat()
-                        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-                            raise OSError("changed")
-                    except (OSError, UnicodeError):
-                        warnings.append(f"Claude tool sidecar missing or not read: {sidecar.name}")
-                        continue
-                    result.append(SourceRecord(ident("src_", rec.source_id, "sidecar"), "claude", session,
-                        "tool_result", content, {"kind": "sidecar", "path": str(sidecar), "raw_hash": digest(content),
-                        "referenced_from": rec.source_id}, native_record_id=native_id, recorded_at=data.get("timestamp"),
-                        cwd=item_cwd, worktree_id=scope.worktree_for(item_cwd), tool_call_id=call_id,
-                        lineage={**lineage, "kind": "tool_sidecar", "parent_source_id": rec.source_id},
-                        authoring=record_authoring))
+    entry = next((d.get("entrypoint") for _, d, _ in seen if isinstance(d.get("entrypoint"), str)), None)
+    reader = _ClaudeReader(path, scope, session, _claude_lineage(subagent_link, entry or ""), warnings)
+    reader.read(rows)
+    row_count, relevant, result, unknown, deferred = reader.rows, reader.relevant, reader.result, reader.unknown, reader.deferred
+    if answers and not subagent_link:
+        _keep_resume(path, manifest, answers, rows=row_count, session=found, entry=entry, subagent=False,
+                     carried=reader.state())
     if not relevant:
         # Nothing of this project, nothing reported; the manifest says the file was read (`ScanCache`, the index).
         # A file that could not be read (no rows) says so, as a Codex one does: it may have been this project's;
@@ -1045,6 +1151,111 @@ def parse_claude(path: Path, scope: Scope, *, subagent_link: dict[str, Any] | No
         warnings.append(f"Claude unsupported record types {path.name}: {', '.join(sorted(unknown))}")
     _flush_deferred(deferred, warnings, "Claude", path)
     return Snapshot(_segments(result), list(dict.fromkeys(warnings)), [manifest] if manifest else [])
+
+
+def _keep_resume(path: Path, manifest: dict, answers: _Answers, *, rows: int, session: str | None,
+                 entry: str | None, subagent: bool, carried: dict[str, Any]) -> None:
+    """Put into the manifest what `read_claude_appended` needs to read on from this reading (`resume`), when it can:
+    a plain file read to its end (not cut short) that asked about at most `RESUME_PATHS` paths, and, for a file
+    read through (`streamed`) whose rows are the project's, one whose first `SESSION_META_ROWS` rows were all
+    here (a whole reading takes its session, entrypoint and sidechain mark from them)."""
+    if (path.name.endswith(COMPRESSED_SUFFIX) or not manifest or manifest.get("partial")
+            or not all(key in manifest for key in ("dev", "ino", "lines", "head", "tail"))
+            or len(answers.answers) > RESUME_PATHS):
+        return
+    streamed = bool(manifest.get("streamed"))
+    counted = carried["relevant"] and not subagent  # only then can lines appended later add records
+    if counted and streamed and rows < SESSION_META_ROWS:
+        return
+    if not counted:
+        carried = {**carried, "calls": [], "cwds": [], "authorings": []}
+    manifest["resume"] = {"v": RESUME_VERSION, "end": manifest["complete_bytes"], "lines": manifest["lines"],
+                          "head": manifest["head"], "tail": manifest["tail"], "dev": manifest["dev"],
+                          "ino": manifest["ino"], "streamed": streamed, "rows": rows, "session": session,
+                          "entry": entry, "subagent": subagent, "paths": dict(answers.answers), **carried}
+
+
+def _read_at(descriptor: int, size: int, offset: int) -> bytes:
+    pieces, left = [], size
+    while left > 0:
+        piece = os.pread(descriptor, min(STREAM_CHUNK * 16, left), offset + size - left)
+        if not piece:
+            break
+        pieces.append(piece)
+        left -= len(piece)
+    return b"".join(pieces)
+
+
+def read_claude_appended(path: Path, scope: Scope, state: dict[str, Any]) -> tuple[Snapshot, dict[str, Any]] | None:
+    """The records of the lines appended to a Claude Code transcript since the reading that left `state`
+    (`parse_claude(..., resumable=True)`), exactly those a whole reading of the file gives now past that reading's
+    end, and the state after them; a partial last line is left for next time. None when the appended lines cannot
+    be read on their own and the file is to be read whole: a compressed file, another file at the path (device and
+    inode), a file shorter than that end, one whose first or last `RESUME_EDGE` bytes before that end changed, a
+    path the reading asked about that the scope now answers differently, a file that crossed `MAX_FILE_BYTES` (a
+    whole reading would read it through, not hold it) or `STREAM_MAX_BYTES`, more than `RESUME_MAX_BYTES` appended,
+    and, when the file's rows are the project's, a line that changes what a whole reading takes from the first rows
+    (a session ID where there was none, an `sdk-` entrypoint, a sidechain mark). A file none of whose rows was the
+    project's stays empty unless an appended row is; a sub-agent's file read with no parent link stays empty."""
+    try:
+        if state.get("v") != RESUME_VERSION or path.name.endswith(COMPRESSED_SUFFIX):
+            return None
+        answers = _Answers(scope)
+        if any(answers.worktree_for(asked) != answer for asked, answer in state["paths"].items()):
+            return None
+        end, streamed = state["end"], state["streamed"]
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            size = info.st_size
+            if ((info.st_dev, info.st_ino) != (state["dev"], state["ino"]) or size < end
+                    or (size > MAX_FILE_BYTES) != streamed or size > STREAM_MAX_BYTES or size - end > RESUME_MAX_BYTES):
+                return None
+            edge = min(RESUME_EDGE, end)
+            head, before = _read_at(stream.fileno(), edge, 0), _read_at(stream.fileno(), edge, end - edge)
+            if _edge(head) != state["head"] or _edge(before) != state["tail"]:
+                return None
+            data = _read_at(stream.fileno(), size - end, end)
+            if len(data) < size - end or os.fstat(stream.fileno()).st_size < size:
+                return None
+    except (OSError, KeyError, TypeError, ValueError, AttributeError):
+        return None
+    boundary = data.rfind(b"\n") + 1
+    complete, warnings = data[:boundary], []
+    # Numbered as the whole reading numbers them: held whole, by `splitlines`; read through, at each newline.
+    lines = ([raw[:-1] if raw.endswith(b"\r") else raw for raw in complete.split(b"\n")[:-1]] if streamed
+             else complete.splitlines())
+    rows = [row for number, raw in enumerate(lines, state["lines"] + 1)
+            if (row := _parsed(raw, number, path.name, warnings)) is not None]
+    after = {**state, "end": end + boundary, "lines": state["lines"] + len(lines), "rows": state["rows"] + len(rows),
+             "head": _edge((head + complete)[:RESUME_EDGE]), "tail": _edge((before + complete)[-RESUME_EDGE:])}
+    if state["subagent"]:
+        return Snapshot([], warnings, []), {**after, "paths": answers.answers}
+    if not state["relevant"]:
+        cwd = state["cwd"]
+        for _, value, _ in rows:
+            cwd = value.get("cwd", cwd)
+            if answers.includes(cwd):
+                return None  # its earlier rows' records count now: read whole
+        if len(answers.answers) > RESUME_PATHS:
+            return None
+        return Snapshot([], warnings, []), {**after, "cwd": cwd, "paths": answers.answers}
+    if not streamed:
+        # A whole reading takes these from every row of a file it holds.
+        for _, value, _ in rows:
+            if (value.get("sessionId") and state["session"] is None) or value.get("isSidechain"):
+                return None
+            entry = value.get("entrypoint")
+            if isinstance(entry, str) and after["entry"] is None:
+                if entry.startswith("sdk-"):
+                    return None
+                after["entry"] = entry
+    reader = _ClaudeReader(path, answers, state["session"] or transcript_stem(path),
+                           _claude_lineage(None, after["entry"] or ""), warnings).resumed(state)
+    reader.read(rows)
+    if len(answers.answers) > RESUME_PATHS:
+        return None
+    return Snapshot(_segments(reader.result), warnings, []), {**after, **reader.state(), "paths": answers.answers}
 
 
 def source_homes(codex_home: Path | None = None, claude_home: Path | None = None,

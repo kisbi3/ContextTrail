@@ -10,12 +10,17 @@ Two numbers answer "is this graph current?":
   `find` header) can skip that parse above a byte limit and gets the file count instead. What one
   check parsed is kept per file (`freshness_cache`: size, mtime and the counts) under the scan and
   the stored records it was measured against, so a `find` after a `find` re-reads only what changed
-  in between.
+  in between. A Claude Code transcript that only grew is read from where the last reading stopped
+  (`read_claude_appended`, with the state that reading left): a live session of another project
+  passed 300 MB here and was parsed whole at every check. A file none of whose rows was the project's
+  holds no count, so its state outlives the scan and the stored records, and the scan's own reading
+  of such a file (`scan_cache`) gives the first one.
 
 Nothing here estimates. What was not parsed is reported as not parsed.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import time
 from datetime import datetime, timezone
@@ -25,7 +30,8 @@ from typing import Any
 from .git_context import Scope
 from .i18n import tr
 from .model import Snapshot
-from .sources.local import jsonl_files, parse_claude, parse_codex, source_homes
+from .sources.local import (COMPRESSED_SUFFIX, RESUME_VERSION, jsonl_files, parse_claude, parse_codex,
+                            read_claude_appended, scan_cache_key, source_homes)
 from .sources.opencode import opencode_databases, parse_opencode, session_times
 from .store import Store, in_journal
 from .util import digest, now
@@ -33,6 +39,8 @@ from .util import digest, now
 INDEX_KEY = "source_index"
 INDEX_VERSION = 1
 CACHE_KEY = "freshness_cache"
+# What earlier scans made of the transcript files that gave this project nothing (`ScanCache`).
+SCAN_CACHE_META = "scan_cache"
 # `find` parses changed files up to this many bytes (about a second and a half at the measured
 # 80 MB/s); `status` has no limit.
 FIND_BUDGET_BYTES = 128 * 1024 * 1024
@@ -138,6 +146,7 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
     known = index.get("files", {})
     changed: list[tuple[Path, str]] = []
     stats: dict[str, dict[str, int]] = {}
+    infos: dict[str, os.stat_result] = {}
     new_files, changed_bytes, newest_mtime = 0, 0, 0
     for path, provider in jsonl_files(codex_home, claude_home):
         try:
@@ -151,36 +160,63 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
             new_files += 1
         changed.append((path, provider))
         stats[str(path)] = {"bytes": info.st_size, "mtime_ns": info.st_mtime_ns}
+        infos[str(path)] = info
         changed_bytes += info.st_size
         newest_mtime = max(newest_mtime, info.st_mtime_ns)
     deleted = sum(1 for path in known if not Path(path).exists())
     databases_changed: list[tuple[Path, dict[str, int]]] = []
+    database_bytes = 0
     for path in opencode_databases(opencode_home):
         before = (index.get("opencode", {}).get(str(path)) or {}).get("sessions", {})
         times = session_times(path, scope)
         if times is None or any(before.get(session) != stamp for session, stamp in times.items()):
             databases_changed.append((path, times or {}))
             try:
-                changed_bytes += os.stat(path).st_size
+                database_bytes += os.stat(path).st_size
             except OSError:
                 pass
             if times:
                 newest_mtime = max(newest_mtime, max(times.values()) * 1_000_000)
     since: dict[str, Any] = {"files_changed": len(changed), "files_new": new_files, "files_deleted": deleted,
-                             "databases_changed": len(databases_changed), "bytes": changed_bytes,
+                             "databases_changed": len(databases_changed), "bytes": changed_bytes + database_bytes,
                              "newest_change_at": _iso_ns(newest_mtime), "parsed": False}
     result["since_scan"] = since
-    if budget_bytes is not None and changed_bytes > budget_bytes:
-        result["took_ms"] = int((time.perf_counter() - started) * 1000)
-        return result
     # Per-file results of an earlier check against the same scan and the same stored records (a "new" record is
     # one the store does not hold with that hash, so the cache is keyed on both); a file is re-read only when it
-    # changed again.
+    # changed again, and a Claude Code transcript that only grew is read from where that check stopped.
     basis = {"scanned_at": index.get("scanned_at"),
              "sources": digest(sorted((key, row["content_hash"]) for key, row in sources.items())),
              "journaled": sorted(store.journaled_sessions())}
     cache = store.get_meta(CACHE_KEY) or {}
-    cached = cache.get("files", {}) if cache.get("basis") == basis else {}
+    same = cache.get("basis") == basis
+    earlier = cache.get("files", {})
+    cached = earlier if same else {}
+    seeds: dict[str, dict] | None = None
+    starts: dict[str, tuple[dict, dict]] = {}  # file → (the state to read on from, the counts up to it)
+    to_read = database_bytes  # what this check reads: the budget is on that
+    for path, provider in changed:
+        key, info = str(path), infos[str(path)]
+        entry = cached.get(key)
+        if entry and entry.get("bytes") == info.st_size and entry.get("mtime_ns") == info.st_mtime_ns:
+            continue
+        start = None
+        if provider == "claude" and not key.endswith(COMPRESSED_SUFFIX):
+            entry = earlier.get(key) or {}
+            state = entry.get("resume")
+            if state and (same or _holds_nothing(state)):
+                start = (state, entry if same else {})
+            else:
+                seeds = _scan_seeds(store, scope) if seeds is None else seeds
+                start = (seeds[key], {}) if key in seeds else None
+        if start and (start[0].get("dev"), start[0].get("ino")) == (info.st_dev, info.st_ino) \
+                and info.st_size >= start[0].get("end", info.st_size + 1):
+            starts[key] = start
+            to_read += info.st_size - start[0]["end"]
+        else:
+            to_read += info.st_size
+    if budget_bytes is not None and to_read > budget_bytes:
+        result["took_ms"] = int((time.perf_counter() - started) * 1000)
+        return result
     kept: dict[str, dict[str, Any]] = {}
     parsed_now = False
 
@@ -207,9 +243,16 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
         key = str(path)
         entry = cached.get(key)
         if not (entry and entry.get("bytes") == stats[key]["bytes"] and entry.get("mtime_ns") == stats[key]["mtime_ns"]):
+            appended = read_claude_appended(path, scope, starts[key][0]) if key in starts else None
+            if appended:
+                snapshot, state = appended
+                entry = {**stats[key], **_added(starts[key][1], tally(snapshot.records)), "resume": state}
+                parsed_now = True
+                kept[key] = entry
+                continue
             # On a byte budget a transcript too large to hold is not read through (its size on disk says nothing
             # of what it holds once decompressed); `status`, with no budget, reads it.
-            snapshot = (parse_claude(path, scope, stream_large=budget_bytes is None) if provider == "claude"
+            snapshot = (parse_claude(path, scope, stream_large=budget_bytes is None, resumable=True) if provider == "claude"
                         else parse_codex(path, scope, stream_large=budget_bytes is None))
             if any(note.startswith("log file not read") for note in snapshot.limitations):
                 # Not read (too large to hold on a budget, or unreadable): not parsed, and not kept as 0 records,
@@ -217,6 +260,9 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
                 unread += 1
                 continue
             entry = {**stats[key], **tally(snapshot.records)}
+            state = next((manifest["resume"] for manifest in snapshot.files if manifest.get("resume")), None)
+            if state:
+                entry["resume"] = state
             parsed_now = True
         kept[key] = entry
     for path, times in databases_changed:
@@ -247,6 +293,52 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
                  by_source=by_source)
     result["took_ms"] = int((time.perf_counter() - started) * 1000)
     return result
+
+
+def _holds_nothing(state: dict[str, Any]) -> bool:
+    """A reading state of a file whose rows add no record whatever the store holds (a sub-agent's file read with no
+    parent link, or one none of whose rows was the project's): its count, 0, does not depend on the stored records."""
+    return bool(state.get("subagent")) or not state.get("relevant")
+
+
+def _added(counts: dict[str, Any], more: dict[str, Any]) -> dict[str, Any]:
+    """The counts of a file up to where a reading stopped, with those of the lines appended since."""
+    by_source = dict(counts.get("by_source") or {})
+    for provider, n in more["by_source"].items():
+        by_source[provider] = by_source.get(provider, 0) + n
+    newest = max((value for value in (counts.get("newest"), more["newest"]) if value), default=None)
+    sessions = {tuple(s) for s in counts.get("sessions", [])} | {tuple(s) for s in more["sessions"]}
+    return {"records": counts.get("records", 0) + more["records"], "newest": newest, "by_source": by_source,
+            "sessions": sorted(sessions, key=lambda s: tuple(str(part) for part in s))}
+
+
+def _scan_seeds(store: Store, scope: Scope) -> dict[str, dict[str, Any]]:
+    """A state to read on from for each plain Claude Code transcript the last scan read to its end and found nothing
+    of the project in (its `ScanCache` entry, made by the same reading code and scope roots: `scan_cache_key`):
+    none of its rows was the project's, so its lines appended since are all a check needs to read. Every path the
+    scan asked about is asked again before the state is used (`read_claude_appended`)."""
+    saved = store.get_meta(SCAN_CACHE_META) or {}
+    proven = [Path(p) for p in store.get_meta("known_worktree_roots", []) or []]
+    try:
+        key = scan_cache_key(dataclasses.replace(scope, roots=list(dict.fromkeys(scope.roots + proven))))
+    except Exception:
+        return {}
+    if saved.get("key") != key:
+        return {}
+    seeds: dict[str, dict[str, Any]] = {}
+    for path, entry in (saved.get("files") or {}).items():
+        manifests = entry.get("files") or []
+        if path.endswith(COMPRESSED_SUFFIX) or len(manifests) != 1:
+            continue
+        manifest = manifests[0]
+        if manifest.get("partial") or not all(k in manifest for k in ("dev", "ino", "lines", "head", "tail", "complete_bytes")):
+            continue
+        seeds[path] = {"v": RESUME_VERSION, "end": manifest["complete_bytes"], "lines": manifest["lines"],
+                       "head": manifest["head"], "tail": manifest["tail"], "dev": manifest["dev"], "ino": manifest["ino"],
+                       "streamed": bool(manifest.get("streamed")), "rows": 0, "session": None, "entry": None,
+                       "subagent": False, "cwd": None, "relevant": False, "calls": [], "cwds": [], "authorings": [],
+                       "paths": {asked: None for asked in entry.get("paths", [])}}
+    return seeds
 
 
 def held_failures(store: Store, sources: dict[str, dict], units: list[dict]) -> dict[str, dict]:

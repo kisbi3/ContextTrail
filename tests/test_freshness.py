@@ -82,9 +82,15 @@ def test_only_changed_files_are_parsed_and_their_new_records_counted(tmp_path, m
     # a second check re-reads nothing: the per-file counts are kept under this scan; a file that changes again is re-read alone
     again = check(scope, store, **homes)
     assert sorted(parsed) == ["new.jsonl", "old.jsonl"] and again["since_scan"] == since
+    # a file that only grew is read from where the last check stopped, not parsed whole
     write(homes["claude_home"] / "projects" / "p" / "new.jsonl", claude_rows(folder, "new", ["Hello.", "Hi."], start=5))
+    assert check(scope, store, **homes)["since_scan"]["records"] == 4 and sorted(parsed) == ["new.jsonl", "old.jsonl"]
+    # one rewritten is parsed whole
+    write(homes["claude_home"] / "projects" / "p" / "new.jsonl", claude_rows(folder, "new", ["Hullo.", "Hi."], start=5))
     assert check(scope, store, **homes)["since_scan"]["records"] == 4 and sorted(parsed) == ["new.jsonl", "new.jsonl", "old.jsonl"]
-    # The budget only counts
+    # The budget is on what a check reads: within it the kept counts answer, over it the files are only counted
+    assert check(scope, store, budget_bytes=10, **homes)["since_scan"]["records"] == 4
+    write(homes["claude_home"] / "projects" / "p" / "new.jsonl", claude_rows(folder, "new", ["Hullo.", "Hi.", "Bye."], start=5))
     result = check(scope, store, budget_bytes=10, **homes)
     assert result["since_scan"]["parsed"] is False and result["since_scan"]["files_changed"] == 3
     assert summary(result).startswith("scan 이후 바뀐 기록 파일 3개 (파싱 안 함")
