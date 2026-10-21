@@ -110,10 +110,86 @@ def test_work_never_folds_into_another_sessions_box_and_a_choice_stays_in_its_tu
     ]
     view = story_view({"version": 1, "events": events, "edges": []})
     assert view["homes"]["edit"] == "choice"  # the latest box before it in its own session
-    assert "elsewhere" not in view["homes"] and "drawn" not in view["homes"]  # no box of their own session
-    assert view["unplaced"] == 2
-    assert not any(e.get("folded_agents") for e in view["events"])
+    # No box of their own session: each session's work is a box of its own, never folded into another session's.
+    assert "elsewhere" not in view["homes"] and "drawn" not in view["homes"]
+    boxes = {e["id"]: e for e in view["events"]}
+    assert boxes["elsewhere"]["gathered"] and boxes["drawn"]["gathered"] and view["unplaced"] == 0
+    assert boxes["drawn"]["folded_agents"] == [{"agent": "plots", "said": "drawn (위임 연결 없음)"}]
+    assert "folded_agents" not in boxes["elsewhere"]
     from contexttrail.diagram import story_svg
-    assert "상자에 들지 않은 단계 2개" in story_svg(view)  # said, not silently dropped
+    assert "상자에 들지 않은 단계" not in story_svg(view)
     turns = dict(request_turns({"version": 1, "events": events, "edges": []}))
     assert turns["ask"][:3] == ["ask", "plan", "choice"]
+
+
+def test_each_box_counts_its_own_folded_work_with_the_latest_result_and_the_checks():
+    view = story_view(project())
+    boxes = {e["id"]: e for e in view["events"]}
+    # The plan's own steps: the failed and the passed check of the later change, and the change; the delegations
+    # and the sub-agent's steps are its agent lines, not its work.
+    assert boxes["plan"]["folded_work"] == {"count": 3, "last": "passed", "failed": 1, "passed": 1}
+    assert boxes["ask"]["folded_work"] == {"count": 1, "last": "edit", "failed": 0, "passed": 0}  # no result: the step
+    assert boxes["found"]["folded_work"] == {"count": 1, "last": "test", "failed": 0, "passed": 1}
+    assert "folded_work" not in boxes["broke"]
+
+
+def test_the_story_box_says_its_work_in_one_dim_line_and_its_status_mark_in_the_header():
+    view = story_view(project())
+    diagram = flow_diagram(view, 120)
+    rows = diagram.lines()
+    text = "\n".join(rows)
+    assert "↳ 작업 3건: passed · ✗ 1 · ✓ 1" in text and "↳ 작업 1건: edit" in text
+    line = next(n for n, row in enumerate(rows) if "↳ 작업 3건" in row)
+    assert diagram.rows[line][diagram.boxes["plan"][1] + 2].style == "dim"
+    assert "[01] 요청 ✓ ─" in rows[diagram.boxes["ask"][0]]  # readable without colour
+    assert "[10] 결과 ✗ ─" in rows[diagram.boxes["broke"][0]]
+    assert "[09] 결과 ! ─" in rows[diagram.boxes["found"][0]]
+    assert "[02] 결정 ─" in rows[diagram.boxes["plan"][0]]  # plain: no mark
+    ascii_rows = flow_diagram(view, 120, ascii_only=True).lines()
+    assert any("[01] 요청 v -" in row for row in ascii_rows) and any("[10] 결과 x -" in row for row in ascii_rows)
+    assert any("-> 작업 3건: passed · x 1 · v 1" in row for row in ascii_rows)
+    full = "\n".join(flow_diagram(project(), 160).lines())  # every step: unchanged
+    assert "[01] 요청 ─" in full and "[01] 요청 ✓" not in full and "↳ 작업" not in full
+
+
+def test_a_request_nothing_is_linked_to_is_plain_and_the_flag_key_passes_it_by():
+    events = [event("ask", "question", "asked", "10:00", actor="user"),
+              event("broke", "outcome", "observed_failure", "10:01", basis="tool_record"),
+              event("later", "question", "asked", "10:02", actor="user")]
+    view = story_view({"version": 1, "events": events, "edges": []})
+    assert view["labels"]["later"] == "요청 · 이어진 사건 연결 없음" and view["tones"]["later"] == "plain"
+    diagram = flow_diagram(view, 100)
+    top, x, _, _ = diagram.boxes["later"]
+    assert diagram.rows[top][x].style == "" and "[03] 요청 ─" in diagram.lines()[top]
+    panels = FlowPanels({"version": 1, "events": events, "edges": []}, lambda _: None)
+    panels.select("ask")
+    panels.handle("!")
+    assert panels.current == "broke"
+    panels.handle("!")
+    assert panels.current == "broke"  # the only place that needs a look
+
+
+def test_the_story_svg_writes_the_work_line_and_the_status_mark_in_its_colour():
+    from contexttrail.diagram import SVG_TONE, story_svg
+    out = story_svg(story_view(project()))
+    assert "↳ 작업 3건: passed · ✗ 1 · ✓ 1" in out and 'fill="#617686" font-size="12">↳ 작업' in out
+    assert f'fill="{SVG_TONE["ok"]}" font-size="11" font-weight="700">✓</text>' in out
+    assert f'fill="{SVG_TONE["fail"]}" font-size="11" font-weight="700">✗</text>' in out
+    assert out.count('font-weight="700">') == 3  # ask ✓, found !, broke ✗; the plain decision has none
+
+
+def test_a_gathered_box_names_its_agent_in_its_line_not_its_header():
+    events = [event("ask", "question", "asked", "10:00", actor="user"),
+              event("draw", "action", "applied", "10:01", basis="tool_record", authoring=SUB, session_ids=["sub"]),
+              event("commit", "action", "applied", "10:02", basis="tool_record", session_ids=[]),
+              event("drawn", "outcome", "reported_complete", "10:03", authoring=SUB, session_ids=["sub"], title="그림 완성")]
+    edges = [link("draw", "commit", "produces")]
+    view = story_view({"version": 1, "events": events, "edges": edges})
+    assert [e["id"] for e in view["events"]] == ["ask", "drawn"]
+    # The commit with no session joins the work that led to it; the latest of them is the box.
+    assert view["homes"] == {"draw": "drawn", "commit": "drawn"} and view["unplaced"] == 0
+    drawn = view["events"][1]
+    assert drawn["folded_agents"] == [{"agent": "plots", "said": "그림 완성 (위임 연결 없음)"}]
+    assert drawn["folded_work"] == {"count": 1, "last": "commit", "failed": 0, "passed": 0}
+    text = "\n".join(flow_diagram(view, 100).lines())
+    assert "[04] 결과 ! ─" in text and "하위 plots" not in text and "↳ plots: 그림 완성 (위임 연결 없음)" in text

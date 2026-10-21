@@ -1701,12 +1701,19 @@ def story_view(graph: dict) -> dict:
     a request, a goal, proposal, decision or change of course, a finding the assistant stated, or a failure nothing
     later answered; the work (edits, checks, runs), the delegations and every sub-agent step fold into the story box
     they belong to: by a relation first (a decision's work, the work a finding rests on), else into the intention
-    before them in their session (never into a finding). What folds in is kept per box as `folded_agents`: each
-    agent handed work there, with the title of what it last said (None while its work waits for analysis).
+    before them in their session (never into a finding). Work none of that places (no delegation, no relation to a
+    box, no intention in its own session: a sub-agent no delegation reaches yet) goes where a folded step it has a
+    relation with went, else is gathered per session (with its delegation and the left work it has a relation with)
+    into its latest event, which becomes a box of its own (`gathered`; its agent's line says no delegation is
+    linked), so no step is left out of the story; `unplaced` counts what is still in no box. What folds in is kept
+    per box as `folded_agents`: each agent handed work there, with the title of what it last said (None while its
+    work waits for analysis); and as `folded_work`, the box's own folded steps (not an agent's, not a delegation):
+    how many, the title of the latest result among them (else of the latest step), and the checks failed and passed.
     Only relations between two drawn boxes stay; every event keeps its number in the whole list (`number`), and the
     tones and labels are those of the whole graph (`tones`, `labels`), so a request answered by a folded step still
-    reads answered. `homes` maps each folded event to its box; `hidden` counts the events not drawn. Display only: the stored graph is unchanged, and
-    the detail, `find`, `show` and the agents read the whole graph."""
+    reads answered. `homes` maps each folded event to its box; `hidden` counts the events not drawn. Display only:
+    the stored graph is unchanged, and the detail, `find`, `show` and the agents read the whole graph."""
+    from .i18n import tr
     from .render import status_labels, status_tones
     events = graph["events"]
     by_id = {event["id"]: event for event in events}
@@ -1769,6 +1776,58 @@ def story_view(graph: dict) -> dict:
         homes[key] = found
         return found
 
+    # Work no box takes: first into the box of a folded step it has a relation with (a commit with no session that a
+    # folded edit led to), then gathered per session (with its delegation's and with the left work it has a
+    # relation with) into the latest of it, which becomes a box: the story says the work happened instead of
+    # leaving it out.
+    left = [key for key in sorted(by_id, key=when.get) if key not in shown and home(key) is None]
+    near: dict[str, tuple[list[str], list[str]]] = {key: ([], []) for key in left}
+    for edge in active:
+        if edge["to_event_id"] in near:
+            near[edge["to_event_id"]][0].append(edge["from_event_id"])
+        if edge["from_event_id"] in near:
+            near[edge["from_event_id"]][1].append(edge["to_event_id"])
+    while True:
+        moved = False
+        for key in left:
+            leads, led = ([other for other in side if homes.get(other)] for side in near[key])
+            if leads or led:
+                homes[key] = homes[(sorted(leads, key=when.get) or sorted(led, key=when.get))[0]]
+                moved = True
+        left = [key for key in left if homes.get(key) is None]
+        if not moved:
+            break
+
+    # One group per session, joined where a step's delegation or a relation leads to another session's left work.
+    group = {key: key for key in left}
+
+    def root(key: str) -> str:
+        while group[key] != key:
+            key = group[key]
+        return key
+
+    def join(one: str, other: str) -> None:
+        group[root(other)] = root(one)
+
+    first_in: dict[str, str] = {}
+    for key in left:
+        session = (by_id[key].get("session_ids") or [""])[0]
+        join(first_in.setdefault(session, key), key)
+        if by_id[key].get(DELEGATED) in group:
+            join(by_id[key][DELEGATED], key)
+    for edge in active:
+        if edge["from_event_id"] in group and edge["to_event_id"] in group:
+            join(edge["from_event_id"], edge["to_event_id"])
+    members_of: dict[str, list[str]] = {}
+    for key in left:
+        members_of.setdefault(root(key), []).append(key)
+    gathered = {members[-1]: members for members in members_of.values()}
+    for box, members in gathered.items():
+        shown.add(box)
+        homes.pop(box, None)
+        for key in members[:-1]:
+            homes[key] = box
+
     # Whom each delegation went to: as its call named it, else as the work it started names its agent (a graph
     # published before the name was recorded), else its title.
     worked: dict[str, str] = {}
@@ -1778,31 +1837,54 @@ def story_view(graph: dict) -> dict:
     named = {event["id"]: event.get("delegated_to") or worked.get(event["id"]) or event["title"]
              for event in events if event.get("step") == "delegate"}
     # Each agent handed work at a box, once, with what it last said there: its last stated finding or decision, else
-    # its last step.
-    agents: dict[str, dict[str, dict[str, str | None]]] = {}
+    # its last step. A gathered box counts itself: its agent's last word may be the box.
+    agents: dict[str, dict[str, dict]] = {}
     for event in sorted(events, key=lambda event: when[event["id"]]):
         key = event["id"]
-        if key in shown:
+        if key in shown and key not in gathered:
             continue
-        at = home(key)
+        at = key if key in gathered else homes.get(key)
         if at is None:
             continue
         if event.get("step") == "delegate":
-            agents.setdefault(at, {}).setdefault(named[key], {"stated": None, "last": None})
+            agents.setdefault(at, {}).setdefault(named[key], {"stated": None, "last": None})["handed"] = True
         elif _sub_agents(event):
             name = named.get(event.get(DELEGATED) or "") or _sub_agents(event)[0]
             said = agents.setdefault(at, {}).setdefault(name, {"stated": None, "last": None})
             said["last"] = event["title"]
             if event.get("basis") != "tool_record":
                 said["stated"] = event["title"]
+            if event.get(DELEGATED) in by_id:
+                said["handed"] = True
+
+    def agent_line(at: str, name: str, said: dict) -> dict:
+        words = said["stated"] or said["last"]
+        if at in gathered and not said.get("handed") and words:
+            words += tr(" (위임 연결 없음)", " (no delegation linked)")
+        return {"agent": name, "said": words}
+
+    # The box's own steps folded into it (not an agent's, not a delegation): how many, the latest result among
+    # them (else the latest step), and how many checks failed and passed.
+    work: dict[str, list[str]] = {}
+    for key in sorted(homes, key=when.get):
+        if homes[key] and not _sub_agents(by_id[key]) and by_id[key].get("step") != "delegate":
+            work.setdefault(homes[key], []).append(key)
+
+    def folded_work(keys: list[str]) -> dict:
+        results = [key for key in keys if by_id[key]["kind"] == "outcome"]
+        return {"count": len(keys), "last": by_id[(results or keys)[-1]]["title"],
+                "failed": sum(by_id[key]["status"] == "observed_failure" for key in results),
+                "passed": sum(by_id[key]["status"] == "observed_success" for key in results)}
+
     tones, labels = status_tones(graph), status_labels(graph)
     view_events = []
     for number, event in enumerate(events, 1):
-        if event["id"] in shown:
+        key = event["id"]
+        if key in shown:
             view_events.append({**event, "number": number, **(
-                {"folded_agents": [{"agent": name, "said": said["stated"] or said["last"]}
-                                   for name, said in agents[event["id"]].items()]}
-                if agents.get(event["id"]) else {})})
+                {"folded_agents": [agent_line(key, name, said) for name, said in agents[key].items()]}
+                if agents.get(key) else {}), **({"folded_work": folded_work(work[key])} if work.get(key) else {}),
+                **({"gathered": True} if key in gathered else {})})
     edges = [edge for edge in graph["edges"] if edge["from_event_id"] in shown and edge["to_event_id"] in shown]
     return {**graph, "events": view_events, "edges": edges, "view": STORY_VIEW, "tones": tones, "labels": labels,
             "homes": {key: value for key, value in homes.items() if value}, "hidden": len(events) - len(view_events),

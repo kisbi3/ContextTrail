@@ -162,14 +162,15 @@ def status_labels(graph: dict) -> dict[str, str]:
 def status_tones(graph: dict) -> dict[str, str]:
     """ok / warn / fail / plain per event, from the same relations as the labels."""
     checks, unlinked = verification_links(graph)
-    answered, followed = request_links(graph)
+    answered, _ = request_links(graph)
     tones = {}
     for event in graph["events"]:
         kind, status = event["kind"], event["status"]
         if event.get("step") == "delegate":
             tone = "plain"
         elif kind == "question" and status == "asked":
-            tone = "ok" if event["id"] in answered else "plain" if event["id"] in followed else "warn"
+            # Unanswered is never claimed (`status_labels`): a request with no answer linked is plain, not a warning.
+            tone = "ok" if event["id"] in answered else "plain"
         elif kind in CHANGE_KINDS and status in CHANGE_STATUSES:
             results = {item["status"] for item in checks.get(event["id"], [])}
             tone = "fail" if "observed_failure" in results else "ok" if results else "warn"

@@ -157,7 +157,8 @@ def test_a_request_with_work_after_it_but_no_answer_linked_does_not_read_as_igno
                        {"from_event_id": "followed", "to_event_id": "work", "relation": "follows", "active": True}]}
     labels, tones = status_labels(graph), status_tones(graph)
     assert [labels[k] for k in ("answered", "followed", "alone")] == ["요청 · 답변됨", "요청 · 답변 연결 없음", "요청 · 이어진 사건 연결 없음"]
-    assert [tones[k] for k in ("answered", "followed", "alone")] == ["ok", "plain", "warn"]
+    # Nothing linked claims no unanswered request either: plain, so `!` (warnings and failures) passes it by.
+    assert [tones[k] for k in ("answered", "followed", "alone")] == ["ok", "plain", "plain"]
 
 
 def test_a_queued_message_ends_the_turn_before_it_and_its_own_work_hangs_on_no_request():

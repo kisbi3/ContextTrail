@@ -543,12 +543,15 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
             none = frozenset()
             lines = [(part, "title", none) for part in _wrap(safe_text(by_id[key]["title"], multiline=False), inner)]
             if story_view:
-                # The title and the agents handed work here, each with what it last said; the status is the
-                # border's colour, the reason and every step are in the detail and the full view.
+                # The title, the agents handed work here, each with what it last said, and the box's own work in one
+                # dim line; the status is the border's colour and the mark in the header, the reason and every step
+                # are in the detail and the full view.
                 for agent in by_id[key].get("folded_agents", []):
                     said = safe_text(agent["said"], multiline=False) if agent["said"] else tr("아직 분석 전", "not analysed yet")
                     text = f"{g['sub_mark']} {safe_text(agent['agent'], multiline=False)}: {said}"
                     lines += [(part, "sub", none) for part in _wrap(text, inner)]
+                if by_id[key].get("folded_work"):
+                    lines += [(part, "dim", none) for part in _wrap(folded_work_line(by_id[key]["folded_work"], g, marks), inner)]
                 drawn_lines[(key, box_w, fold)] = lines
                 return lines
             if by_id[key]["kind"] in ("decision", "outcome") and by_id[key].get("summary") and key not in placed:
@@ -576,9 +579,13 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
 
     diagram = Diagram(width, beside={key: main for key, (main, _, _) in placed.items()})
 
+    def whose(key: str) -> str:
+        # A box the story view gathered from work no box took names its agent in its line, not again in its header.
+        return "" if story_view and by_id[key].get("gathered") else delegate_label(by_id[key])
+
     def border_of(key: str) -> str:
         # Another model's run (cyan in a terminal) and a sub-agent (magenta) keep their colour whatever their status.
-        if delegate_label(by_id[key]):
+        if whose(key):
             return "llm" if _called(by_id[key]) else "sub"
         return tones[key] if tones[key] in ("ok", "warn", "fail") else ""
 
@@ -586,11 +593,13 @@ def flow_diagram(graph: dict, width: int, *, ascii_only: bool = False,
         tone = tones[key]
         # A sub-agent's box (or a run another call started) has its own border colour, whatever its status;
         # the status keeps its mark and label inside. The header says whose work it is.
-        delegate = delegate_label(by_id[key])
+        delegate = whose(key)
         border = border_of(key)
         kind = kind_label(by_id[key]) + (f" · {delegate}" if delegate else "")
         lines = contents(key, box_w, fold)
-        header = f"{g['h']} {number[key]} {kind} "
+        # The story view writes the status's mark after the kind, so it reads without colour.
+        mark = f"{marks[tone]} " if story_view and tone in ("ok", "warn", "fail") else ""
+        header = f"{g['h']} {number[key]} {kind} {mark}"
         diagram.put(top, x, g["tl"] + g["h"] * (box_w - 2) + g["tr"], border, key, True)
         diagram.put(top, x + 1, header, border, key, True)
         for n, (text, style, links) in enumerate(lines, 1):
@@ -797,11 +806,23 @@ SVG_TITLE_CELLS, SVG_LINE_CELLS = 64, 78
 SVG_TONE = {"ok": "#3f8f5a", "warn": "#b8862b", "fail": "#c0453d", "plain": "#ced7df"}
 
 
+def folded_work_line(work: dict, g: dict, marks: dict) -> str:
+    """The story view's line for a box's own folded steps (`schema.story_view`, `folded_work`): how many, the latest
+    result, and the failed and passed checks with their marks."""
+    text = f"{g['sub_mark']} " + tr(f"작업 {work['count']}건: ", f"{work['count']} steps: ") + safe_text(work["last"], multiline=False)
+    if work.get("failed"):
+        text += f" · {marks['fail']} {work['failed']}"
+    if work.get("passed"):
+        text += f" · {marks['ok']} {work['passed']}"
+    return text
+
+
 def story_svg(view: dict) -> str:
     """The story view (`schema.story_view`) as the browser draws it: each flow (events joined by a session or a
     relation, `_flows`) as one column of boxes in the order of the list, under its own heading when there are
-    several, each box with its number and kind, its title and a line per agent handed work there, wrapped (never
-    cut), its status as the border's colour; a box joined to the one before it by a relation gets that arrow
+    several, each box with its number and kind, its title, a line per agent handed work there and one for its own
+    folded steps (`folded_work_line`), wrapped (never cut), its status as the border's colour and as a mark after
+    the kind; a box joined to the one before it by a relation gets that arrow
     (dashed with `·추정` when inferred, as on the rest of the page), and boxes with no relation get no line: order is
     not a cause. Each box lists the steps folded into it (`data-folds`), so the page can light the box of a folded
     step. Only the elements the page imports (svg, defs, marker, path, g, rect, text), every text escaped."""
@@ -862,7 +883,8 @@ def story_svg(view: dict) -> str:
                       for line in _wrap(f"↳ {safe_text(agent['agent'], multiline=False)}: "
                                         + (safe_text(agent["said"], multiline=False) if agent["said"]
                                            else tr("아직 분석 전", "not analysed yet")), SVG_LINE_CELLS)]
-            height = 16 + 18 + 20 * len(title) + 18 * len(agents) + 12
+            work = _wrap(folded_work_line(event["folded_work"], LIGHT, MARK), SVG_LINE_CELLS) if event.get("folded_work") else []
+            height = 16 + 18 + 20 * len(title) + 18 * (len(agents) + len(work)) + 12
             tone = tones.get(key, "plain")
             number = event.get("number", order[key] + 1)
             label = f"{number:02d} · {title_text} · {safe_text(labels.get(key, ''), multiline=False)}"
@@ -873,13 +895,21 @@ def story_svg(view: dict) -> str:
                         + f' transform="translate({x},{y})">')
             body.append(f'<rect width="{SVG_BOX}" height="{height}" rx="9" fill="#ffffff" stroke="{SVG_TONE[tone]}" '
                         f'stroke-width="{1.6 if tone != "plain" else 1}"/>')
-            body.append(f'<text x="16" y="24" fill="#7b8995" font-size="11">{number:02d} · {html.escape(kind_label(event))}</text>')
+            kind = f"{number:02d} · {kind_label(event)}"
+            body.append(f'<text x="16" y="24" fill="#7b8995" font-size="11">{html.escape(kind)}</text>')
+            if tone in ("ok", "warn", "fail"):
+                # The status's mark after the kind, in its colour, so it reads without the border.
+                body.append(f'<text x="{16 + 5 * wcswidth(kind) + 5}" y="24" fill="{SVG_TONE[tone]}" font-size="11" '
+                            f'font-weight="700">{MARK[tone]}</text>')
             line_y = 24 + 22
             for part in title:
                 body.append(f'<text x="16" y="{line_y}" fill="#203343" font-size="14" font-weight="600">{html.escape(part)}</text>')
                 line_y += 20
             for part in agents:
                 body.append(f'<text x="16" y="{line_y - 2}" fill="#8e4fb0" font-size="12">{html.escape(part)}</text>')
+                line_y += 18
+            for part in work:
+                body.append(f'<text x="16" y="{line_y - 2}" fill="#617686" font-size="12">{html.escape(part)}</text>')
                 line_y += 18
             body.append("</g>")
             bottom = y + height

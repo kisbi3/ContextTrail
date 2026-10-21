@@ -156,7 +156,7 @@ def test_the_story_svg_keeps_one_meaning_for_a_dashed_line_and_lights_a_folded_s
     assert "흐름 1/2" in out and "흐름 2/2" in out  # the other session is a flow of its own
     assert 'data-folds="e"' in out  # the edit folded into the decision that led to it
     work_only = story_view({"version": 1, "events": [events[2]], "edges": []})
-    assert "모든 단계를 보세요" in story_svg(work_only)
+    assert 'data-event-id="e"' in story_svg(work_only)  # work with no box of its session is a box of its own
 
 
 def test_the_story_svg_draws_every_relation_between_neighbours_and_wraps_its_empty_message():
@@ -175,7 +175,8 @@ def test_the_story_svg_draws_every_relation_between_neighbours_and_wraps_its_emp
     assert "동기·추정·수정" in out and "stroke-dasharray" not in out  # one explicit relation: a solid line
     assert 'class="story"' in out
     i18n.set_language("en")
-    empty = story_svg(story_view({"version": 1, "events": [event("w", "action", "10:02", basis="tool_record")], "edges": []}))
+    view = story_view({"version": 1, "events": [event("w", "action", "10:02", basis="tool_record")], "edges": []})
+    empty = story_svg({**view, "events": [], "hidden": 1})
     lines = [line for line in empty.split("<text")[1:] if 'font-size="15"' in line]
     assert len(lines) >= 2 and "every step" in empty  # wrapped onto lines that fit, the pointer to the button kept
 
