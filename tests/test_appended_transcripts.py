@@ -1,4 +1,5 @@
 """Reading only the lines appended to a Claude Code transcript gives what reading the whole file gives."""
+import dataclasses
 import json
 import os
 import random
@@ -245,3 +246,69 @@ def test_status_reads_only_what_was_appended_and_counts_as_a_whole_reading(tmp_p
     fourth = freshness.check(scope, store, **homes)["since_scan"]
     assert appended == ["elsewhere.jsonl"] and whole == ["mine.jsonl"]
     assert fourth["records"] == exact()["records"] == 2
+
+
+def test_a_budgeted_check_counts_a_resume_that_falls_back_as_the_whole_file(tmp_path, monkeypatch):
+    folder, other, scope, store, engine, homes = laboratory(tmp_path)
+    theirs = homes["claude_home"] / "projects" / "b" / "theirs.jsonl"
+    theirs.parent.mkdir(parents=True)
+    theirs.write_bytes(b"".join(row(other, n, "t") for n in range(50)))
+    engine.preview_plan(engine.scan())
+    # A row of the project appended to a file that had none: read on from the scan's state, it falls back to a
+    # whole reading, which the budget, sized for the appended bytes only, does not cover.
+    with theirs.open("ab") as stream:
+        stream.write(row(folder, 50, "t"))
+    whole = []
+    monkeypatch.setattr(freshness, "parse_claude", lambda path, scope, **kw: whole.append(path.name) or parse_claude(path, scope, **kw))
+    since = freshness.check(scope, store, budget_bytes=1000, **homes)["since_scan"]
+    assert whole == []
+    assert not since["parsed"] and since["not_read"] == 1
+    # With no budget (`status`) it is read whole and counted.
+    since = freshness.check(scope, store, **homes)["since_scan"]
+    assert whole == ["theirs.jsonl"] and since["parsed"] and since["records"] == 1
+
+
+def test_a_resume_state_left_by_other_reading_code_is_not_read_on_from(tmp_path, monkeypatch):
+    folder, other, scope, store, engine, homes = laboratory(tmp_path)
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(b"".join(row(folder, n) for n in range(3)))
+    state = parse_claude(path, scope, resumable=True).files[0]["resume"]
+    assert state["code"] == local.reading_code()
+    with path.open("ab") as stream:
+        stream.write(row(folder, 3))
+    assert read_claude_appended(path, scope, state)[0].records
+    monkeypatch.setattr(local, "reading_code", lambda: "other code")
+    assert read_claude_appended(path, scope, state) is None
+    # A state that holds nothing outlives the scan, but not a change of the reading code: the file is read whole.
+    theirs = homes["claude_home"] / "projects" / "b" / "theirs.jsonl"
+    theirs.parent.mkdir(parents=True)
+    theirs.write_bytes(b"".join(row(other, n, "t") for n in range(5)))
+    monkeypatch.undo()
+    engine.preview_plan(engine.scan())
+    with theirs.open("ab") as stream:
+        stream.write(row(other, 5, "t"))
+    assert freshness.check(scope, store, **homes)["since_scan"]["parsed"]
+    assert store.get_meta(freshness.CACHE_KEY)["files"][str(theirs)]["resume"]["code"] == local.reading_code()
+    with theirs.open("ab") as stream:
+        stream.write(row(other, 6, "t"))
+    whole, appended = [], []
+    monkeypatch.setattr(local, "reading_code", lambda: "other code")
+    monkeypatch.setattr(freshness, "parse_claude", lambda path, scope, **kw: whole.append(path.name) or parse_claude(path, scope, **kw))
+    original = local.read_claude_appended
+    monkeypatch.setattr(freshness, "read_claude_appended", lambda path, scope, state: appended.append(path.name) or original(path, scope, state))
+    assert freshness.check(scope, store, budget_bytes=200, **homes)["since_scan"]["parsed"] is False
+    assert appended == [] and whole == []  # charged as a whole reading: over the budget, not read at all
+
+
+def test_counts_made_under_other_scope_roots_are_not_reused(tmp_path):
+    folder, other, scope, store, engine, homes = laboratory(tmp_path)
+    theirs = homes["claude_home"] / "projects" / "b" / "theirs.jsonl"
+    theirs.parent.mkdir(parents=True)
+    theirs.write_bytes(b"".join(row(other, n, "t") for n in range(5)))
+    engine.preview_plan(engine.scan())
+    with theirs.open("ab") as stream:
+        stream.write(row(other, 5, "t"))
+    assert freshness.check(scope, store, **homes)["since_scan"]["records"] == 0
+    # The other folder becomes a worktree of the project: the same unchanged file holds six of its records now.
+    widened = dataclasses.replace(scope, roots=[*scope.roots, other])
+    assert freshness.check(widened, store, **homes)["since_scan"]["records"] == 6

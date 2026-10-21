@@ -31,7 +31,7 @@ from .git_context import Scope
 from .i18n import tr
 from .model import Snapshot
 from .sources.local import (COMPRESSED_SUFFIX, RESUME_VERSION, jsonl_files, parse_claude, parse_codex,
-                            read_claude_appended, scan_cache_key, source_homes)
+                            read_claude_appended, reading_code, resume_current, scan_cache_key, source_homes)
 from .sources.opencode import opencode_databases, parse_opencode, session_times
 from .store import Store, in_journal
 from .util import digest, now
@@ -183,10 +183,12 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
     result["since_scan"] = since
     # Per-file results of an earlier check against the same scan and the same stored records (a "new" record is
     # one the store does not hold with that hash, so the cache is keyed on both); a file is re-read only when it
-    # changed again, and a Claude Code transcript that only grew is read from where that check stopped.
+    # changed again, and a Claude Code transcript that only grew is read from where that check stopped. Counts made
+    # by other reading code or under other scope roots (a worktree added or removed) are not those of this check
+    # (`scan_cache_key`: the reading code and what attribution reads of the scope).
     basis = {"scanned_at": index.get("scanned_at"),
              "sources": digest(sorted((key, row["content_hash"]) for key, row in sources.items())),
-             "journaled": sorted(store.journaled_sessions())}
+             "journaled": sorted(store.journaled_sessions()), "reading": scan_cache_key(scope)}
     cache = store.get_meta(CACHE_KEY) or {}
     same = cache.get("basis") == basis
     earlier = cache.get("files", {})
@@ -203,7 +205,7 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
         if provider == "claude" and not key.endswith(COMPRESSED_SUFFIX):
             entry = earlier.get(key) or {}
             state = entry.get("resume")
-            if state and (same or _holds_nothing(state)):
+            if state and resume_current(state) and (same or _holds_nothing(state)):
                 start = (state, entry if same else {})
             else:
                 seeds = _scan_seeds(store, scope) if seeds is None else seeds
@@ -217,6 +219,7 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
     if budget_bytes is not None and to_read > budget_bytes:
         result["took_ms"] = int((time.perf_counter() - started) * 1000)
         return result
+    spent = to_read  # rises when a file charged only its appended bytes has to be read whole after all
     kept: dict[str, dict[str, Any]] = {}
     parsed_now = False
 
@@ -250,6 +253,13 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
                 parsed_now = True
                 kept[key] = entry
                 continue
+            if key in starts:
+                # Its appended lines could not be read on their own: the file is read whole, of which the budget
+                # was charged only the appended part. Past the budget it is not read and counts as not parsed.
+                spent += starts[key][0]["end"]
+                if budget_bytes is not None and spent > budget_bytes:
+                    unread += 1
+                    continue
             # On a byte budget a transcript too large to hold is not read through (its size on disk says nothing
             # of what it holds once decompressed); `status`, with no budget, reads it.
             snapshot = (parse_claude(path, scope, stream_large=budget_bytes is None, resumable=True) if provider == "claude"
@@ -333,8 +343,8 @@ def _scan_seeds(store: Store, scope: Scope) -> dict[str, dict[str, Any]]:
         manifest = manifests[0]
         if manifest.get("partial") or not all(k in manifest for k in ("dev", "ino", "lines", "head", "tail", "complete_bytes")):
             continue
-        seeds[path] = {"v": RESUME_VERSION, "end": manifest["complete_bytes"], "lines": manifest["lines"],
-                       "head": manifest["head"], "tail": manifest["tail"], "dev": manifest["dev"], "ino": manifest["ino"],
+        seeds[path] = {"v": RESUME_VERSION, "code": reading_code(), "end": manifest["complete_bytes"],
+                       "lines": manifest["lines"], "head": manifest["head"], "tail": manifest["tail"], "dev": manifest["dev"], "ino": manifest["ino"],
                        "streamed": bool(manifest.get("streamed")), "rows": 0, "session": None, "entry": None,
                        "subagent": False, "cwd": None, "relevant": False, "calls": [], "cwds": [], "authorings": [],
                        "paths": {asked: None for asked in entry.get("paths", [])}}

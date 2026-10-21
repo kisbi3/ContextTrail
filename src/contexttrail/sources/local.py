@@ -1158,7 +1158,8 @@ def _keep_resume(path: Path, manifest: dict, answers: _Answers, *, rows: int, se
     """Put into the manifest what `read_claude_appended` needs to read on from this reading (`resume`), when it can:
     a plain file read to its end (not cut short) that asked about at most `RESUME_PATHS` paths, and, for a file
     read through (`streamed`) whose rows are the project's, one whose first `SESSION_META_ROWS` rows were all
-    here (a whole reading takes its session, entrypoint and sidechain mark from them)."""
+    here (a whole reading takes its session, entrypoint and sidechain mark from them). The state names the reading
+    code (`reading_code`), so other code does not read on from it."""
     if (path.name.endswith(COMPRESSED_SUFFIX) or not manifest or manifest.get("partial")
             or not all(key in manifest for key in ("dev", "ino", "lines", "head", "tail"))
             or len(answers.answers) > RESUME_PATHS):
@@ -1169,9 +1170,9 @@ def _keep_resume(path: Path, manifest: dict, answers: _Answers, *, rows: int, se
         return
     if not counted:
         carried = {**carried, "calls": [], "cwds": [], "authorings": []}
-    manifest["resume"] = {"v": RESUME_VERSION, "end": manifest["complete_bytes"], "lines": manifest["lines"],
-                          "head": manifest["head"], "tail": manifest["tail"], "dev": manifest["dev"],
-                          "ino": manifest["ino"], "streamed": streamed, "rows": rows, "session": session,
+    manifest["resume"] = {"v": RESUME_VERSION, "code": reading_code(), "end": manifest["complete_bytes"],
+                          "lines": manifest["lines"], "head": manifest["head"], "tail": manifest["tail"],
+                          "dev": manifest["dev"], "ino": manifest["ino"], "streamed": streamed, "rows": rows, "session": session,
                           "entry": entry, "subagent": subagent, "paths": dict(answers.answers), **carried}
 
 
@@ -1186,11 +1187,17 @@ def _read_at(descriptor: int, size: int, offset: int) -> bytes:
     return b"".join(pieces)
 
 
+def resume_current(state: dict[str, Any]) -> bool:
+    """Whether a `resume` state was left by this reading code (`reading_code`) in this state's form."""
+    return state.get("v") == RESUME_VERSION and state.get("code") == reading_code()
+
+
 def read_claude_appended(path: Path, scope: Scope, state: dict[str, Any]) -> tuple[Snapshot, dict[str, Any]] | None:
     """The records of the lines appended to a Claude Code transcript since the reading that left `state`
     (`parse_claude(..., resumable=True)`), exactly those a whole reading of the file gives now past that reading's
     end, and the state after them; a partial last line is left for next time. None when the appended lines cannot
-    be read on their own and the file is to be read whole: a compressed file, another file at the path (device and
+    be read on their own and the file is to be read whole: a state other reading code left (`reading_code`, as for
+    `ScanCache`), a compressed file, another file at the path (device and
     inode), a file shorter than that end, one whose first or last `RESUME_EDGE` bytes before that end changed, a
     path the reading asked about that the scope now answers differently, a file that crossed `MAX_FILE_BYTES` (a
     whole reading would read it through, not hold it) or `STREAM_MAX_BYTES`, more than `RESUME_MAX_BYTES` appended,
@@ -1198,7 +1205,7 @@ def read_claude_appended(path: Path, scope: Scope, state: dict[str, Any]) -> tup
     (a session ID where there was none, an `sdk-` entrypoint, a sidechain mark). A file none of whose rows was the
     project's stays empty unless an appended row is; a sub-agent's file read with no parent link stays empty."""
     try:
-        if state.get("v") != RESUME_VERSION or path.name.endswith(COMPRESSED_SUFFIX):
+        if not resume_current(state) or path.name.endswith(COMPRESSED_SUFFIX):
             return None
         answers = _Answers(scope)
         if any(answers.worktree_for(asked) != answer for asked, answer in state["paths"].items()):
@@ -1363,12 +1370,29 @@ class ScanCache:
     reused: int = 0
 
 
+_READING_CODE: list[str] = []
+
+
+def reading_code() -> str:
+    """A digest of the code that reads and attributes transcripts: this module, the scope's path test and
+    `util.within` under it. Read once per process, since it is the code this process runs. What was made of a file
+    under other code (`ScanCache`, a `resume` state) is not used."""
+    if not _READING_CODE:
+        _READING_CODE.append(digest(b"".join(Path(module.__file__).read_bytes()
+                                             for module in (sys.modules[__name__], git_context, util))))
+    return _READING_CODE[0]
+
+
+def scope_attribution(scope: Scope) -> list:
+    """What attribution reads of the scope: its roots and the folder within them (not the folder it was opened from,
+    so worktrees sharing one state share what was counted under it)."""
+    return [scope.relative, scope.root is not None, sorted(str(root) for root in scope.roots)]
+
+
 def scan_cache_key(scope: Scope) -> str:
-    """The code that reads and attributes transcripts (this module, the scope's path test and `util.within` under it)
-    and what attribution reads of the scope (its roots and the folder within them; not the folder it was opened
-    from, so worktrees sharing one state share the cache): a cache made under another is not used."""
-    code = b"".join(Path(module.__file__).read_bytes() for module in (sys.modules[__name__], git_context, util))
-    return digest([digest(code), scope.relative, scope.root is not None, sorted(str(root) for root in scope.roots)])
+    """The code that reads and attributes transcripts (`reading_code`) and what attribution reads of the scope
+    (`scope_attribution`): a cache made under another is not used."""
+    return digest([reading_code(), *scope_attribution(scope)])
 
 
 class _AskedScope:
