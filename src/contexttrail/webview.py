@@ -72,8 +72,15 @@ def page_requests(graph: dict) -> tuple[list[dict], dict[str, int]]:
 
 
 # A limitation's head is the text before its first ": " when that is this short (read as `_limitation_key`); longer
-# text before a colon is a sentence, not a head.
+# text before a colon is a sentence, not a head, unless it is one of the scan's own warnings (`KNOWN_HEAD`), whose
+# record type or file name can carry it past the cap (`Claude unparsed record type system:stop_hook_summary, N records
+# not sent to analysis`).
 LIMITATION_HEAD_CHARS = 80
+KNOWN_HEAD = re.compile(r"unparsed record type|unsupported record types|excluded from scope|not read")
+
+
+def _is_head(text: str) -> bool:
+    return len(text) <= LIMITATION_HEAD_CHARS or bool(KNOWN_HEAD.search(text))
 
 
 def _limitation_key(head: str) -> str:
@@ -93,7 +100,7 @@ def limitation_groups(messages: list[str]) -> list[dict]:
     for message in dict.fromkeys(message for message in messages if isinstance(message, str) and message.strip()):
         head, colon, _ = message.partition(": ")
         key = _limitation_key(head) if colon else None
-        key = key if key and len(key) <= LIMITATION_HEAD_CHARS else None
+        key = key if key and _is_head(key) else None
         groups.setdefault(key, []).append(message)
         heads.setdefault(key, set()).add(head)
     order = sorted((key for key in groups if key is not None), key=lambda key: -len(groups[key]))

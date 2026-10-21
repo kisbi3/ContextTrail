@@ -395,6 +395,15 @@ def test_limitations_are_grouped_by_their_head_the_largest_first():
     assert sum(g['count'] for g in groups)==len(set(messages))
 
 
+def test_a_scan_warning_head_longer_than_the_cap_is_still_a_head():
+    from contexttrail.webview import LIMITATION_HEAD_CHARS, limitation_groups
+    messages=[f"Claude unparsed record type system:stop_hook_summary, {n} records not sent to analysis (10/18/{n}.jsonl#6c): "
+              "a hook's summary" for n in (2,7)]+["A sentence the analysis wrote, with no head at all."]
+    head="Claude unparsed record type system:stop_hook_summary, N records not sent to analysis"
+    assert len(head)>LIMITATION_HEAD_CHARS
+    assert [(g['head'],g['count']) for g in limitation_groups(messages)]==[(head,2),(None,1)]
+
+
 def test_the_page_has_request_navigation_and_search_in_both_languages(viewer):
     from contexttrail import i18n
     obj,_,_=viewer
