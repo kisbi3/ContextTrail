@@ -20,7 +20,8 @@ written for people.
 | One event with its links and evidence | `contexttrail show REF FOLDER --json` |
 | The whole graph, or what changed | `contexttrail export FOLDER --format json --output FILE [--since-version N] [--graph-version N]` |
 | The local call ledger | `contexttrail ops FOLDER [--details]` (always JSON) |
-| The runner CLIs and the sandbox | `contexttrail doctor [--runner codex\|claude]` (always JSON; no model call) |
+| The runner CLIs and the sandbox | `contexttrail doctor [--runner codex\|claude] [--json]` (always JSON; no model call) |
+| A copy of the project the host keeps | `--previous-path PATH` (sessions recorded where the folder was) and `--state-dir DIR` (state outside the copy), below |
 
 Every JSON output names its shape in `"schema": "contexttrail.<command>.v1"` (`export` keeps its `"format"`).
 A schema name changes (`.v2`) only when a field is removed or changes meaning; new fields are added under the same
@@ -58,7 +59,7 @@ is added only when the opencode home in use is opencode's own data directory (st
 given or saved. `scan` reports each home it used, where it came from and what it found there (`sources`, below).
 
 `--sources codex,claude,opencode` (on `scan`, `analyze`, `view`, `serve`, `status` and `find`) reads only the named
-tools; the others are not opened at all. `analyze` saves it like the homes; give all three to read everything again.
+tools; the others are not opened at all. Without it (and with none saved) all three are read. `analyze` saves it like the homes; give all three to read everything again.
 Records of a tool left out are marked unavailable in the project's state, as if their files had gone. A `--sources`
 given to any other command is for that command only: `status`, `find`, the screens' freshness line and the automatic
 analysis read every tool unless `analyze` saved a list, and the scan index keeps what earlier scans saw of the tools a
@@ -86,15 +87,35 @@ folder it reads. A folder that is not a Git checkout is read without Git evidenc
 `find --json` answer `{"schema": …, "state": "none", …}` with exit 0, `show` exits 1. `scan` and `analyze` create
 the state.
 
+`--state-dir DIR` puts the state (database, locks, the export list, the scan cache) in `DIR` instead, so nothing is
+written into the checkout. It is accepted by every command that reads or writes a project's state (`analyze`,
+`view`, `scan`, `serve`, `refresh`, `status`, `find`, `show`, `graph`, `export`, `ops`, the `context` preview).
+`DIR` must be absolute (else exit 64) and outside the project's worktrees (else 64); it is created `0700` when
+something is written, and a read command finds no state there without creating one. The value is the state's
+location, so it is never saved: give it to every command, or the command reads (and `scan`/`analyze` create) the
+state with the checkout. The scope ID is the folder's as usual: a `DIR` already holding another folder's state is
+refused (exit 1). The tools' hooks find a state by the session's folder, so `note`, `auto-update` and
+`context --enable` refuse `--state-dir` (exit 64).
+
 ## Attribution: which records belong to the folder
 
 A record belongs to the project only by the working directory its transcript recorded (`cwd` of the session or
 turn, a tool call's `workdir`, opencode's `session.directory`), compared by path components after resolving
 symbolic links (`/app` is not `/app-backup`). Nothing is matched by keywords. Consequences for a host:
 
-- An archive recorded at another path (another machine, `/home/x/proj`) attributes nothing to a copy elsewhere.
-  There is no path-remap option; a symbolic link at the recorded path that points at the copy makes the records
-  attribute (it is picked up by the next scan).
+- An archive recorded at another path (another machine, `/home/x/proj`) attributes nothing to a copy elsewhere,
+  unless that path is given as `--previous-path` (below).
+- `--previous-path PATH` (repeatable; `scan`, `analyze`, `view`, `serve`) names where the folder was before it was
+  moved or copied. A record whose working directory is under `PATH` (under `PATH/<relative>` when the folder is a
+  subfolder of its checkout) belongs to the project, with the folder's own worktree, as if it had never moved.
+  `PATH` need not exist; it is resolved first, so one given through a symbolic link is kept as its target and keeps
+  matching under either spelling. Nothing is read from it (no Git) or written to it. A `PATH` that holds the folder
+  or lies in it (or in another worktree of it) is refused (exit 64). `analyze` saves the list in the project's state
+  (like the homes, after its checks), and every later command, screen, note and automatic analysis uses it;
+  `--previous-path` on `scan`, `view` or `serve` adds to the saved list for that command only. `--no-previous-paths`
+  leaves the saved list out (with `analyze`, clears it; with `--previous-path`, replaces it). `scan` and
+  `status --json` report the list in use (`previous_paths`), and the consent screen names it. Adding a path changes
+  what is attributed, so the scan cache is read again once.
 - Transcript files that are symbolic links are skipped (`sources[].files_skipped_symlink` counts them). A linked home
   and a linked transcript directory (`sessions/`, `archived_sessions/`, `projects/`) are followed wherever they
   point. A linked directory below one of those (`sessions/2026`, `projects/app`) is followed when it resolves inside
@@ -143,7 +164,7 @@ off the parser, options hidden from `--help` left out; `global_options`; `exit_c
 
 ### `contexttrail.scan.v1` (`scan`)
 
-- `scope`, `worktrees`, `state_dir`, `snapshot_id`.
+- `scope`, `worktrees`, `previous_paths` (the earlier locations in use, resolved), `state_dir`, `snapshot_id`.
 - `records`: counts per `codex`, `claude`, `opencode`, `git`.
 - `sources`: one entry per tool: `provider`, `home`, `origin` (`flag`, `saved`, `environment`, `default`), `exists`,
   `read` (false when `--sources` left it out), `files_examined`, `files_read` (not replayed from the scan cache),
@@ -156,7 +177,9 @@ off the parser, options hidden from `--help` left out; `global_options`; `exit_c
   `input_tokens_this_run`, `minutes_this_run`, `basis` (`estimate` or `past_runs`), `past_units`, `choices`
   (`units`, `input_tokens`, `minutes` for 5/15/30 units), `output_language`; with `--recent`/`--since` a
   `selection`, with `--audit` an `audit`. Estimates, not promises.
-- `plan_error`: `null`, or `{kind, message}` when no plan could be made (`kind` `busy`: another analysis runs).
+- `plan_error`: `null`, or `{kind, message}` when no plan could be made, with `plan` `null`. The scan itself ran,
+  so the exit code is 0, except 75 for `kind` `busy` (another analysis runs). The other kinds are those of
+  `error_kind` below (an empty selection of `--recent`/`--since` is `error`).
 - `plan_text`, `plan_choices`: the same as text (labels; never parse them).
 - `steps`: code-classified tool calls. `codex_selection`: per-file selection counts over every tool (the old name).
 
@@ -180,7 +203,7 @@ began prints `status: cancelled` with `run_id: null`.
 no analysis processed; `units` stored and not done), `failed_units`, `unavailable_unprocessed`, `unaudited`
 (`sessions`, `records`), `since_scan` (`null` before the first scan; else `files_changed`, `files_new`,
 `files_deleted`, `databases_changed`, `bytes`, `newest_change_at`, `parsed`, `not_read`, `sessions`, `records`,
-`newest_at`, `by_source`), `took_ms`, `summary` (label).
+`newest_at`, `by_source`), `previous_paths`, `took_ms`, `summary` (label).
 
 ### `contexttrail.find.v1` (`find --json`)
 
@@ -204,9 +227,9 @@ when the note waits for the end of the turn. `note --list --json`: `session`, `v
 
 ### `contexttrail.doctor.v1` (`doctor`)
 
-A JSON array, one object per runner, each with `schema`, `runner`, `installed`, `live_model_test`, `auth`,
-`sandbox_exec` (macOS) or `bubblewrap` (Linux), what the runner's preflight reports, and `error` when it failed
-(exit 1).
+Always JSON (`--json` is accepted and changes nothing): an array, one object per runner, each with `schema`,
+`runner`, `installed`, `live_model_test`, `auth`, `sandbox_exec` (macOS) or `bubblewrap` (Linux), what the runner's
+preflight reports, and `error` when it failed (exit 1).
 
 ### `contexttrail.ops.v1` (`ops`)
 
@@ -233,6 +256,5 @@ Exports may hold conversation text and code; they are written `0600` and refuse 
 
 ## Not provided
 
-- **No path remapping** (`--path-map`): records are attributed by the paths they recorded; use a symbolic link at
-  the recorded path.
-- **No state directory option** (`--state-dir`): the state lives with the checkout (above).
+- **No general path remapping** (`--path-map OLD=NEW`): `--previous-path` maps a whole earlier location of the
+  folder onto it; other recorded paths are not rewritten. A symbolic link at the recorded path still works.

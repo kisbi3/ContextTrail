@@ -170,6 +170,10 @@ class Store:
         finally:
             os.close(fd)
 
+    def previous_paths(self) -> list[str]:
+        """The folder's earlier locations `analyze --previous-path` saved (`project_meta.previous_paths`)."""
+        return [str(p) for p in self.get_meta("previous_paths", []) or [] if isinstance(p, str)]
+
     def get_meta(self, key: str, default: Any = None) -> Any:
         with self.connection() as db:
             row = db.execute("SELECT value FROM project_meta WHERE key=?", (key,)).fetchone()

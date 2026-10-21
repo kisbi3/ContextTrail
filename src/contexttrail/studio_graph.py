@@ -283,6 +283,8 @@ def scan_sources(state: StudioState) -> StudioState:
             scope = Scope(output, None, None, "", [output], output / "state",
                           ident("eval_", frozen_snapshot.id))
         store = Store(scope.state_dir, scope.id)
+        if frozen_snapshot is None:
+            scope = scope.with_previous(store.previous_paths())
         lock = store.analyze_lock()
         lock.__enter__()
         try:

@@ -84,6 +84,25 @@ def _sources(text: str) -> tuple[str, ...]:
 _sources.value_type = "list"  # for `capabilities`
 
 
+def state_dir_option(sub) -> None:
+    sub.add_argument("--state-dir", type=Path, metavar="DIR",
+                     help=tr("상태(데이터베이스·잠금·내보내기 기록)를 체크아웃 대신 이 절대 경로에 둠. 저장하지 않으니 매 명령에 줌",
+                             "Keep the state (database, locks, export records) in this absolute directory instead of with "
+                             "the checkout. Not saved: give it to every command"))
+
+
+def previous_path_options(sub) -> None:
+    sub.add_argument("--previous-path", dest="previous_paths", action="append", metavar="PATH",
+                     help=tr("이 폴더가 옮겨지기 전 경로(반복 가능): cwd가 그 아래로 기록된 세션도 이 프로젝트의 것. "
+                             "그 경로는 읽지도 쓰지도 않음; analyze만 저장",
+                             "Where this folder was before it was moved or copied (repeatable): sessions recorded under "
+                             "it belong to this project too. Nothing is read from or written to that path; saved by "
+                             "analyze only"))
+    sub.add_argument("--no-previous-paths", action="store_true",
+                     help=tr("저장된 이전 경로를 쓰지 않음(analyze는 목록을 지움)",
+                             "Leave out the saved previous paths (analyze clears the list)"))
+
+
 def sources_option(sub) -> None:
     sub.add_argument("--sources", type=_sources, metavar="LIST",
                      help=tr("읽을 기록 도구만, 쉼표로: " + ",".join(SOURCES) + ". 기본은 셋 다; analyze만 저장",
@@ -116,6 +135,8 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--opencode-home", type=Path, help=tr("opencode 데이터 폴더(opencode.db가 있는 곳); 기본 ~/.local/share/opencode",
                                                                "opencode data directory (where opencode.db is); default ~/.local/share/opencode"))
         sources_option(sub)
+        previous_path_options(sub)
+        state_dir_option(sub)
         sub.add_argument("--history-limit", type=int)
         sub.add_argument("--timeout", type=float, help=tr("모델 호출 하나의 제한 시간(초); 기본 600", "Time limit per model call in seconds; default 600"))
         sub.add_argument("--record-chars", type=int)
@@ -195,16 +216,19 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("folder", nargs="?", default=".")
     sub.add_argument("--run-id")
     sub.add_argument("--details", action="store_true", help=tr("원문 없이 단계별 호출 순서·상태·사용량 표시", "Show each call's stage, order, status and usage, without content"))
+    state_dir_option(sub)
     sub = commands.add_parser("graph", help=tr("저장된 프로젝트 또는 eval 그래프를 터미널에서 열기. AI 호출 없음",
                                                "Open a saved project or eval graph in the terminal; no AI calls"))
     sub.add_argument("folder", nargs="?", default=".", help=tr("프로젝트 경로 또는 eval 출력 디렉터리", "Project path or eval output directory"))
     sub.add_argument("--no-mouse", action="store_true", help=tr("터미널 화면에서 마우스를 쓰지 않음(터미널의 글자 선택 사용)",
                                                                "No mouse on the terminal screen (use the terminal's own text selection)"))
+    state_dir_option(sub)
     sub = commands.add_parser("status", help=tr("그래프가 기록에 비해 얼마나 오래됐는지: 미분석 기록 수와 마지막 scan 이후 변화. AI 호출 없음",
                                                 "How far the graph lags the transcripts: unanalyzed records and changes since the last scan; no AI calls"))
     sub.add_argument("folder", nargs="?", default=".")
     sub.add_argument("--json", action="store_true")
     sources_option(sub)
+    state_dir_option(sub)
     sub = commands.add_parser("refresh", help=tr("예전 규칙으로 만든 그래프를 지금 규칙대로 다시 읽기: 작성자·단계·위임 연결, 사람의 요청이 아닌 요청. "
                                                  "scan만 하고 AI 호출 없음",
                                                  "Bring a graph built under older rules up to the current ones: authoring, steps, "
@@ -214,6 +238,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--codex-home", type=Path)
     sub.add_argument("--claude-home", type=Path)
     sub.add_argument("--opencode-home", type=Path)
+    state_dir_option(sub)
     sub = commands.add_parser("auto-update", help=tr("프로젝트별 자동 갱신: 켜기·끄기·상태. 인자 없이 부르면 훅용(설정된 프로젝트에서만 백그라운드 분석 시작, 항상 종료 코드 0)",
                                                      "Per-project automatic analysis: enable, disable, status. Without flags it is the hook entry point (starts a background analysis only where enabled; always exits 0)"))
     sub.add_argument("--folder", help=tr("프로젝트 폴더; 없으면 stdin JSON의 cwd, 그것도 없으면 현재 폴더(--enable/--disable/--status)",
@@ -226,6 +251,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--cooldown", default="15m", help=tr("자동 실행 사이 최소 간격; 기본 15m", "Minimum gap between hook-started runs; default 15m"))
     sub.add_argument("--max-runs-per-day", type=int, default=8)
     sub.add_argument("--run", action="store_true", help=argparse.SUPPRESS)  # the detached child the hook starts
+    state_dir_option(sub)
     sub = commands.add_parser("install-hooks", help=tr("세 도구의 훅에 auto-update·note 알림·세션 시작 기억 명령을 등록 (설정 파일은 병합, 사용자 항목 유지)",
                                                        "Register the auto-update, note reminder and session-start memory commands in the three tools' hooks (settings are merged, user entries kept)"))
     sub.add_argument("--claude", action="store_true", help="~/.claude/settings.json: Stop hooks (auto-update async, note reminder) and SessionStart (project memory)")
@@ -239,12 +265,14 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--limit", type=int, default=20)
     sub.add_argument("--json", action="store_true")
     sources_option(sub)
+    state_dir_option(sub)
     sub = commands.add_parser("show", help=tr("사건 하나의 설명·연결·원문 근거. AI 호출 없음",
                                               "One event's summary, links and quoted evidence; no AI calls"))
     sub.add_argument("ref", help=tr("사건 ID 앞부분 또는 복사한 참조(contexttrail:ev_…@v12)", "Event ID prefix or a copied reference (contexttrail:ev_…@v12)"))
     sub.add_argument("folder", nargs="?", default=".")
     sub.add_argument("--quote-lines", type=int, default=40, help=tr("근거 하나에 보일 최대 줄 수; 기본 40", "Maximum lines shown per quote; default 40"))
     sub.add_argument("--json", action="store_true")
+    state_dir_option(sub)
     sub = commands.add_parser("note", help=tr("지금 세션의 결정·변경·결과 하나를 인용과 함께 그래프에 적기(에이전트용). AI 호출 없음",
                                               "Write one decision, change or result of the current session into the graph, with quotes (for agents); no AI calls"))
     sub.add_argument("folder", nargs="?", default=".")
@@ -266,6 +294,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--disable", action="store_true")
     sub.add_argument("--hook", action="store_true", help=argparse.SUPPRESS)  # the end-of-turn hook: stdin JSON, never fails
     sub.add_argument("--json", action="store_true")
+    state_dir_option(sub)
     sub = commands.add_parser("context", help=tr("세션 시작 때 에이전트에게 넣는 프로젝트 기억(저장된 그래프의 요약): 켜기·끄기·미리 보기. AI 호출 없음",
                                                  "The project memory given to the agent when a session starts (a summary of the saved graph): turn on or off, preview; no AI calls"))
     sub.add_argument("folder", nargs="?", default=".")
@@ -273,6 +302,7 @@ def parser() -> argparse.ArgumentParser:
                                                              "Turn it on for this project: the session-start hook puts the summary into the session"))
     sub.add_argument("--disable", action="store_true")
     sub.add_argument("--hook", action="store_true", help=argparse.SUPPRESS)  # the session-start hook: stdin JSON, never fails
+    state_dir_option(sub)
     sub = commands.add_parser("install-commands", help=tr("Codex·Claude Code에 ContextTrail 명령 설치",
                                                           "Install the ContextTrail commands into Codex and Claude Code"))
     sub.add_argument("--force", action="store_true", help=tr("이미 설치된 ContextTrail 명령 갱신", "Refresh ContextTrail commands already installed"))
@@ -287,10 +317,13 @@ def parser() -> argparse.ArgumentParser:
                      help=tr("버전 N 이후 더해지거나 바뀌거나 무효가 된 사건·관계와 그 근거만(json만). N은 이전 내보내기의 graph.version",
                              "Only the events and relations added, updated or invalidated since graph version N, with their "
                              "evidence (json only); N is the graph.version a previous export carried"))
+    state_dir_option(sub)
     sub = commands.add_parser("doctor", help=tr("로컬 CLI·격리 capability 진단; 기본 AI 호출 없음",
                                                 "Check the local CLIs and isolation capabilities; no AI calls by default"))
     sub.add_argument("--runner", choices=["codex", "claude"])
     sub.add_argument("--smoke", action="store_true", help=tr("명시적으로 실제 CLI에 합성 JSON 분석 요청", "Explicitly send a synthetic JSON task to the real CLI"))
+    sub.add_argument("--json", action="store_true", help=tr("doctor의 출력은 항상 JSON; 다른 명령과 맞추려고 받습니다",
+                                                           "doctor always prints JSON; accepted to match the other commands"))
     sub.add_argument("--yes", action="store_true")
     sub.add_argument("--model")
     sub = commands.add_parser("demo", help=tr("합성 데이터와 Mock Runner로 로컬 동작 확인; AI 호출 없음",
@@ -350,7 +383,7 @@ def _graph(args) -> int:
         title = report.get("name") or folder.name
         lookup = evidence.get
     else:
-        scope = Scope.resolve(folder)
+        scope = _scope(args, folder)
         store = Store(scope.state_dir, scope.id)
         _screen_language(None, store)
         graph = store.graph()
@@ -504,6 +537,45 @@ def _brief(result: dict) -> None:
     print(tr("새 사건 보기: contexttrail find", "See the new events: contexttrail find"))
 
 
+def _scope(args, folder) -> Scope:
+    """The scope of `folder`, its state in `--state-dir` when given (a value refused there is a usage error)."""
+    scope = Scope.resolve(folder)
+    if getattr(args, "state_dir", None) is None:
+        return scope
+    try:
+        return dataclasses.replace(scope, state_dir=scope.own_state_dir(args.state_dir))
+    except FlowError as exc:
+        raise UsageError(str(exc)) from None
+
+
+def _no_state_dir(args, what: str) -> None:
+    """A hook finds the state by the session's folder, so it would never find one kept in `--state-dir`."""
+    if getattr(args, "state_dir", None) is not None:
+        raise UsageError(tr(f"{what}은 --state-dir과 함께 쓸 수 없습니다: 훅은 세션의 폴더로 상태를 찾습니다.",
+                            f"{what} cannot be used with --state-dir: hooks find the state by the session's folder."))
+
+
+def _given_previous(args, scope: Scope) -> list[str]:
+    """This command's `--previous-path`s, checked (a refused one is a usage error, before any state is made)."""
+    try:
+        return [str(scope.previous_path(value)) for value in getattr(args, "previous_paths", None) or []]
+    except FlowError as exc:
+        raise UsageError(str(exc)) from None
+
+
+def _previous(args, scope: Scope, store: Store, given: list[str] | None = None) -> tuple[Scope, list[str]]:
+    """The scope with the folder's earlier locations: the saved ones (unless `--no-previous-paths`) and this
+    command's `--previous-path`s. Only `analyze` saves the list, after its settings pass their checks."""
+    saved = [] if getattr(args, "no_previous_paths", False) else store.previous_paths()
+    paths = list(dict.fromkeys(saved + (_given_previous(args, scope) if given is None else given)))
+    return scope.with_previous(Path(p) for p in paths), paths
+
+
+def _previous_line(paths: list[str]) -> str:
+    return tr("이전 경로(이 아래 기록도 이 프로젝트의 것): ", "Previous paths (records under them belong here too): ") + \
+        ", ".join(safe_text(p) for p in paths)
+
+
 def _reading_store(scope: Scope) -> Store | None:
     """The saved state for a command that only reads it (find, show, status, the context preview): None when the
     project has none, so nothing is created; else the state opened as usual; else, when it cannot be written (Codex's
@@ -539,10 +611,11 @@ def _find(args) -> int:
     elif not Path(args.folder).expanduser().is_dir():
         raise UsageError(tr(f"폴더가 없습니다: {args.folder}. 여러 단어를 찾으려면 따옴표로 묶으세요: find \"{args.query} {args.folder}\"",
                            f"No such folder: {args.folder}. To search for several words, quote them: find \"{args.query} {args.folder}\""))
-    scope = Scope.resolve(args.folder)
+    scope = _scope(args, args.folder)
     store = _reading_store(scope)
     if store is None:
         return _no_state(scope, args.json)
+    scope, _ = _previous(args, scope, store)
     _screen_language(None, store)
     result = find(store.graph(), args.query, store.evidence_many, limit=max(1, args.limit))
     # The header says what the graph does not hold yet; changed files are parsed up to a byte budget.
@@ -554,6 +627,7 @@ def _find(args) -> int:
 
 
 def _auto_update(args) -> int:
+    _no_state_dir(args, "auto-update")
     if args.run:
         return auto_update.run_child(Path(args.folder or "."))
     if args.enable or args.disable or args.status:
@@ -596,6 +670,7 @@ def _note(args) -> int:
         if decision:
             print(dumps(decision))
         return 0
+    _no_state_dir(args, "note")
     scope = Scope.resolve(args.folder)
     try:
         store = Store(scope.state_dir, scope.id)
@@ -604,6 +679,8 @@ def _note(args) -> int:
         if args.enable or args.disable:
             raise
         store = None
+    if store is not None:
+        scope = scope.with_previous(store.previous_paths())
     if args.enable or args.disable:
         (journal.enable if args.enable else journal.disable)(store)
         print(tr(f"note를 {'켰' if args.enable else '껐'}습니다: {safe_text(scope.folder)}",
@@ -671,7 +748,9 @@ def _context(args) -> int:
         if answer:
             print(dumps(answer))
         return 0
-    scope = Scope.resolve(args.folder)
+    if args.enable:
+        _no_state_dir(args, "context --enable")
+    scope = _scope(args, args.folder)
     store = Store(scope.state_dir, scope.id) if args.enable or args.disable else _reading_store(scope)
     if store is None:
         return _no_state(scope, False)
@@ -712,20 +791,22 @@ def _refresh(args, scope: Scope, store: Store) -> int:
 
 
 def _status(args) -> int:
-    scope = Scope.resolve(args.folder)
+    scope = _scope(args, args.folder)
     store = _reading_store(scope)
     if store is None:
         return _no_state(scope, args.json, "status")
+    scope, previous = _previous(args, scope, store)
     _screen_language(None, store)
     result = check(scope, store, budget_bytes=None, sources=args.sources or saved_sources(store), **saved_homes(store))
     result["summary"] = freshness_summary(result)
-    print(dumps({"schema": schema("status"), **result}, pretty=True) if args.json
-          else "\n".join(status_lines(result, Path(args.folder))))
+    result["previous_paths"] = previous
+    lines = status_lines(result, Path(args.folder)) + ([_previous_line(previous)] if previous else [])
+    print(dumps({"schema": schema("status"), **result}, pretty=True) if args.json else "\n".join(lines))
     return 0
 
 
 def _show(args) -> int:
-    scope = Scope.resolve(args.folder)
+    scope = _scope(args, args.folder)
     store = _reading_store(scope)
     if store is None:
         raise FlowError(tr(f"이 폴더에는 ContextTrail 상태가 없습니다: {safe_text(scope.folder)}",
@@ -965,10 +1046,12 @@ def main(argv: list[str] | None = None) -> int:
                             title=tr("합성 fixture / Mock", "Synthetic fixture / mock"), ascii_only=args.ascii, mouse=not args.no_mouse,
                             scope=scope).run()
             return 0 if result["status"] in {"complete", "noop"} else 1
-        scope = Scope.resolve(args.folder)
+        scope = _scope(args, args.folder)
         if args.command == "refresh" and not (scope.state_dir / "state.sqlite").is_file():
             return _no_state(scope, args.json)  # nothing to refresh, and no state is made for it
+        given = _given_previous(args, scope)
         store = Store(scope.state_dir, scope.id)
+        scope, previous = _previous(args, scope, store, given)
         _screen_language(getattr(args, "output_language", None), store)
         if args.command == "refresh":
             return _refresh(args, scope, store)
@@ -982,6 +1065,8 @@ def main(argv: list[str] | None = None) -> int:
             return _export(args, scope, store)
         saved_options = dict(store.get_meta("options", {}) or {})
         config, effective = _options(args, store, persist=args.command == "analyze")
+        if args.command == "analyze" and previous != store.previous_paths():
+            store.set_meta("previous_paths", previous)  # like the options: saved by analyze, after the checks
         as_json = bool(getattr(args, "json", False)) and args.command == "analyze"
         engine = Engine(scope, store, config)
         is_demo = store.get_meta("demo", False)
@@ -1015,6 +1100,8 @@ def main(argv: list[str] | None = None) -> int:
             key = "consent:" + name
             if args.yes or store.get_meta(key, False):
                 store.set_meta(key, True)
+                if previous:
+                    print(_previous_line(previous), file=sys.stderr)
                 print(plan_text(plan), file=sys.stderr)
                 if args.yes or not sys.stdin.isatty():
                     return True
@@ -1027,6 +1114,8 @@ def main(argv: list[str] | None = None) -> int:
             print(tr(f"범위: {safe_text(scope.folder)}\n연결 worktree: {len(scope.roots)} | 선택 원문: {len(snapshot.records)}개",
                      f"Scope: {safe_text(scope.folder)}\nLinked worktrees: {len(scope.roots)} | selected records: {len(snapshot.records)}"),
                   file=out)
+            if previous:
+                print(_previous_line(previous), file=out)
             print(tr(f"Codex·Claude 기록과 Git 근거 중 분석 입력이 {name} CLI의 클라우드 모델에 전송될 수 있습니다.",
                      f"Analysis input from the Codex/Claude transcripts and Git evidence may be sent to the cloud model of the {name} CLI."),
                   file=out)
@@ -1097,6 +1186,7 @@ def main(argv: list[str] | None = None) -> int:
                 plan, plan_error, plan_kind = None, str(exc), error_kind(exc)
             counts = {provider: sum(r.provider == provider for r in snapshot.records) for provider in ("codex", "claude", "opencode", "git")}
             print(dumps({"schema": schema("scan"), "scope": str(scope.folder), "worktrees": [str(p) for p in scope.roots],
+                         "previous_paths": previous,
                          "state_dir": str(scope.state_dir), "snapshot_id": snapshot.id,
                          "records": counts, "steps": classify_steps(snapshot.records),
                          "limitations": snapshot.limitations, "runner_calls": 0,

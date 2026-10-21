@@ -180,5 +180,6 @@ def capabilities(root: argparse.ArgumentParser) -> dict[str, Any]:
         "global_options": [_argument(action) for action in root._actions
                            if action.option_strings and not isinstance(action, argparse._HelpAction)],
         "exit_codes": {str(code): text for code, text in EXIT_CODES.items()},
-        "not_provided": ["--path-map (remapping recorded paths)", "--state-dir (state outside the project)"],
+        # --previous-path maps a whole earlier location of the folder onto it; other paths are not rewritten.
+        "not_provided": ["--path-map (remapping arbitrary recorded paths)"],
     }

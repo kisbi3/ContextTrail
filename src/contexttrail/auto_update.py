@@ -131,7 +131,7 @@ def decide(scope: Scope, store: Store, *, moment: datetime | None = None) -> tup
         return "daily_cap", None
     if failing(state):
         return "failing", None
-    fresh = check(scope, store, budget_bytes=FIND_BUDGET_BYTES, sources=saved_sources(store), **_homes(store))
+    fresh = check(scope.with_previous(store.previous_paths()), store, budget_bytes=FIND_BUDGET_BYTES, sources=saved_sources(store), **_homes(store))
     since = fresh.get("since_scan") or {}
     pending = fresh["pending"]["records"] or since.get("records") or (
         not since.get("parsed", True) and (since.get("files_changed") or since.get("databases_changed")))

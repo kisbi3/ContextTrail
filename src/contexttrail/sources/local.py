@@ -1488,8 +1488,10 @@ def reading_code() -> str:
 
 def scope_attribution(scope: Scope) -> list:
     """What attribution reads of the scope: its roots and the folder within them (not the folder it was opened from,
-    so worktrees sharing one state share what was counted under it)."""
-    return [scope.relative, scope.root is not None, sorted(str(root) for root in scope.roots)]
+    so worktrees sharing one state share what was counted under it), and the folder's earlier locations, named only
+    when there are any so a cache made before they existed stays valid."""
+    answer = [scope.relative, scope.root is not None, sorted(str(root) for root in scope.roots)]
+    return answer + [sorted(str(path) for path in scope.previous)] if scope.previous else answer
 
 
 def scan_cache_key(scope: Scope) -> str:

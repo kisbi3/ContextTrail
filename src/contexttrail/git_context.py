@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .i18n import tr
@@ -43,6 +43,10 @@ class Scope:
     roots: list[Path]
     state_dir: Path
     id: str
+    # Where the folder was before it was moved or copied (`--previous-path`): records recorded under one of them
+    # (under PATH/<relative> for a subfolder scope) belong to the folder as if it had never moved. Resolved, so a
+    # path given through a symbolic link matches under either spelling; never read with Git, never written to.
+    previous: tuple[Path, ...] = ()
     # One scan asks about the same few folders hundreds of thousands of times; each answer resolves
     # symlinks on disk. A scan builds its own Scope (dataclasses.replace), so answers last one scan.
     _answers: dict = field(default_factory=dict, init=False, repr=False, compare=False)
@@ -64,16 +68,52 @@ class Scope:
             allowed = root / self.relative if self.root else root
             if within(path, allowed):
                 return ident("wt_", str(root))
+        for earlier in self.previous:
+            if within(path, earlier / self.relative if self.root else earlier):
+                return ident("wt_", str(self.root or self.folder))  # the folder's own worktree, as if never moved
         return None
 
     def includes(self, cwd: str | None) -> bool:
         return self.worktree_for(cwd) is not None
 
+    def with_previous(self, paths) -> "Scope":
+        """This scope with these earlier locations (`previous`); a scope of its own, so no answer is reused."""
+        return replace(self, previous=tuple(dict.fromkeys(Path(p) for p in paths)))
+
+    def previous_path(self, value: str | Path) -> Path:
+        """An earlier location of the folder as given (`--previous-path`): resolved (it need not exist), refused when
+        it holds the folder or lies in it or in another of its worktrees, which are this project already."""
+        path = Path(value).expanduser().resolve()
+        for root in [self.folder, *self.roots]:
+            current = root / self.relative if self.root and root != self.folder else root
+            if within(path, current) or within(current, path):
+                raise FlowError(tr(f"--previous-path가 프로젝트 폴더를 담거나 그 안에 있습니다: {path}",
+                                   f"--previous-path holds the project folder or lies within it: {path}"))
+        return path
+
     @classmethod
-    def resolve(cls, folder: str | Path) -> "Scope":
+    def resolve(cls, folder: str | Path, state_dir: Path | None = None) -> "Scope":
+        """The scope of `folder`. Its state lives with the checkout (the Git common directory, else the folder's
+        `.contexttrail`) unless `state_dir` (`--state-dir`) puts it elsewhere; the scope ID is the same either way."""
         folder = Path(folder).expanduser().resolve()
         if not folder.is_dir():
             raise FlowError(tr(f"프로젝트 디렉터리가 없습니다: {folder}", f"Project directory does not exist: {folder}"))
+        scope = cls._resolve(folder)
+        return scope if state_dir is None else replace(scope, state_dir=scope.own_state_dir(state_dir))
+
+    def own_state_dir(self, value: Path) -> Path:
+        """A state directory given outside the checkout: absolute, and not in the project, whose files would then be
+        read as its changes. Created (0700) by the store when something is written, not here."""
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            raise FlowError(tr(f"--state-dir는 절대 경로여야 합니다: {value}", f"--state-dir must be an absolute path: {value}"))
+        path = Path(os.path.abspath(path))
+        if any(within(path, root) for root in self.roots):
+            raise FlowError(tr(f"--state-dir가 프로젝트 안에 있습니다: {path}", f"--state-dir lies within the project: {path}"))
+        return path
+
+    @classmethod
+    def _resolve(cls, folder: Path) -> "Scope":
         root_text = git(folder, "rev-parse", "--show-toplevel", ok=True)
         if not root_text:
             return cls(folder, None, None, "", [folder], _state_dir(folder / ".contexttrail", folder / ".projectflow"),

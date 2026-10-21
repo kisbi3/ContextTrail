@@ -776,6 +776,7 @@ def hook(stdin_text: str | None, **homes: Path | None) -> dict[str, Any] | None:
         store = Store(scope.state_dir, scope.id)
         if not enabled(store):
             return None
+        scope = scope.with_previous(store.previous_paths())
         with _hook_lock(scope):
             return _remind(scope, store, payload, session_id, **homes)
     except Exception:  # a hook never fails the host's turn
