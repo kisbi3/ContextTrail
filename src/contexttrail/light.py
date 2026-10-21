@@ -19,7 +19,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .model import SourceRecord, is_queued_message, is_user_prompt, question_reply
-from .schema import STATUSES, STR, agent_name, arr, enum, obj
+from .schema import STATUSES, STR, agent_name, arr, enum, is_request, obj
 
 # A citation code cuts is at most this many lines of what the model was shown; the rest is one `show` away.
 CITED_LINES = 20
@@ -477,7 +477,7 @@ def open_requests(graph: dict, assigned: list[SourceRecord], source_of) -> dict[
             starts[key] = min(starts.get(key, record.recorded_at), record.recorded_at)
     last: dict[tuple, tuple[str, str]] = {}
     for event in graph.get("events", []):
-        if event["kind"] != "question" or event.get("actor") != "user" or not event.get("recorded_at"):
+        if not is_request(event) or event["kind"] != "question" or not event.get("recorded_at"):
             continue
         meta = next((m for m in map(source_of, event.get("evidence_ids", [])) if m), None)
         key = (meta.get("provider"), meta.get("session_id")) if meta else None

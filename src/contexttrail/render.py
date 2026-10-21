@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from .i18n import Labels, tr
+from .schema import retired
 from .util import FlowError, cell_slice, dumps, ellipsis, merge_focus, safe_text
 
 # Screen labels follow the screen language at lookup time (`i18n.Labels`), so a module that
@@ -77,7 +78,7 @@ def graph_summary(graph: dict) -> dict:
     answered = {edge["from_event_id"] for edge in active if edge["relation"] == "answers"}
     changes = [event for event in graph["events"] if event["kind"] in ("action", "revision")
                and event["status"] in ("applied", "reported_complete") and event.get("step") != "delegate"]
-    questions = [event for event in graph["events"] if event["kind"] == "question"]
+    questions = [event for event in graph["events"] if event["kind"] == "question" and not retired(event)]
     revised = {edge["to_event_id"] for edge in active if edge["relation"] == "revises"}
     return {"events": len(graph["events"]), "relations": len(active),
             "events_by_kind": dict(Counter(event["kind"] for event in graph["events"])),
@@ -119,7 +120,12 @@ def status_labels(graph: dict) -> dict[str, str]:
     labels = {}
     for event in graph["events"]:
         status = event["status"]
-        if event.get("step") == "delegate":
+        if retired(event):
+            # Set aside by `refresh`: under today's rules its message is no request of the person's (harness text, a
+            # control command, a sub-agent's brief, an answer to the agent's own question).
+            labels[event["id"]] = tr("요청 아님 · 지금 규칙으로는 사람의 요청이 아님",
+                                     "not a request · not the person's request under the current rules")
+        elif event.get("step") == "delegate":
             # Handing work over is no change to check: it reads as what the other agent did with it.
             count = handed.get(event["id"], 0)
             labels[event["id"]] = tr("위임함 · ", "delegated · ") + (

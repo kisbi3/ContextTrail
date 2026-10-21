@@ -41,6 +41,16 @@ def _timestamp(value: str | None) -> float | None:
     return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
 
 
+def derive(graph: dict, source_of: Callable[[str], dict | None]) -> dict[str, int]:
+    """What every publish reads again over the whole graph by code, from the records its events cite: who wrote each
+    event and what step it is, a forked session's first request, a sub-agent's work under its delegation, a caller's
+    copy of a sub-agent's report. Returns the links each step added."""
+    fill_authoring(graph, source_of)
+    fill_steps(graph, source_of)
+    return {"fork_links": link_forks(graph, source_of), "delegation_links": link_delegations(graph, source_of),
+            "folded_reports": fold_delegate_reports(graph, source_of)}
+
+
 def in_journal(session_id: str | None, lineage: dict | None, recorded_at: str | None,
                sessions: dict | set, since: float | None, tails: dict | None = None) -> bool:
     """Whether notes account for a record: it belongs to a noted session (or one of its sub-agents) and was
@@ -468,10 +478,16 @@ class Store:
         return result
 
     def publish(self, graph: dict, unit_ids: list[str], processed: dict[str, str], evidence: dict[str, dict],
-                *, expected_version: int) -> dict:
+                *, expected_version: int, refreshed: bool = False) -> dict:
+        """Store `graph` as the next version, after the code-derived fields are read again over the whole graph
+        (`derive`). A `refreshed` graph (`contexttrail refresh`) keeps the time of its last analysis and says when it
+        was refreshed."""
         graph = copy.deepcopy(graph)
         graph["version"] = expected_version + 1
-        graph["analyzed_at"] = now()
+        if refreshed:
+            graph["refreshed_at"] = now()
+        else:
+            graph["analyzed_at"] = now()
         with self.connection() as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
@@ -489,12 +505,7 @@ class Store:
                         if focus != stored.get("focus"):
                             db.execute("UPDATE evidence_items SET data=? WHERE id=?",
                                        (dumps({**stored, "focus": focus}), item_id))
-                source_of = self._source_of(db, graph, evidence)
-                fill_authoring(graph, source_of)
-                fill_steps(graph, source_of)
-                link_forks(graph, source_of)
-                link_delegations(graph, source_of)
-                fold_delegate_reports(graph, source_of)
+                derive(graph, self._source_of(db, graph, evidence))
                 db.execute("INSERT INTO graph_versions VALUES (?,?,?)", (graph["version"], pack_text(dumps(graph)), now()))
                 for unit_id in unit_ids:
                     db.execute("UPDATE work_units SET status='integrated',updated_at=? WHERE id=?", (now(), unit_id))
@@ -505,6 +516,14 @@ class Store:
             except BaseException:
                 db.rollback()
                 raise
+        return graph
+
+    def derived(self, graph: dict) -> dict:
+        """A copy of `graph` with what `publish` derives by code (`derive`), read off the records as stored now;
+        nothing is written. What `contexttrail refresh` compares with the stored graph before it publishes."""
+        graph = copy.deepcopy(graph)
+        with self.connection() as db:
+            derive(graph, self._source_of(db, graph, {}))
         return graph
 
     @staticmethod
@@ -572,12 +591,14 @@ class Store:
         with self.connection() as db, db:
             db.execute("INSERT INTO analysis_runs VALUES (?,?,NULL,'scanning',?,'{}')", (run_id, now(), dumps(manifest)))
 
-    def finish_run(self, run_id: str, status: str, details: dict) -> None:
+    def finish_run(self, run_id: str, status: str, details: dict, *, check: bool = True) -> None:
+        """Record how a run ended; an analysis (`check`) is also the screens' last check, a refresh is not."""
         stamp = now()
         with self.connection() as db, db:
             db.execute("UPDATE analysis_runs SET finished_at=?,status=?,details=? WHERE id=?",
                        (stamp, status, dumps(details), run_id))
-        self.set_meta("last_check", {"at": stamp, "status": status, **details})
+        if check:
+            self.set_meta("last_check", {"at": stamp, "status": status, **details})
 
     def mark_interrupted_runs(self) -> None:
         # Called only while holding the cross-process analysis lock.

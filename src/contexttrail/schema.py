@@ -1449,7 +1449,8 @@ def link_forks(graph: dict, source_of: Callable[[str], dict | None]) -> int:
     under the parent's last request before the fork point, as a structural `follows` of origin `fork`, like a
     dialog turn. Run when a graph is published, once per forked session, when the parent's request is in the
     graph; returns how many links were added."""
-    users = [event for event in graph["events"] if event.get("actor") == "user" and event.get("kind") == "question"]
+    users = [event for event in graph["events"]
+             if event.get("actor") == "user" and event.get("kind") == "question" and not retired(event)]
     by_session: dict[str, list[dict]] = {}
     for event in users:
         for session in event.get("session_ids") or []:
@@ -1640,11 +1641,18 @@ def event_times(events: list[dict]) -> dict[str, tuple[float, int]]:
     return times
 
 
+def retired(event: dict) -> bool:
+    """An event code set aside because today's rules read its records otherwise (`refresh.retire_requests`: a user
+    event resting only on messages the person did not type). It keeps its relations and is drawn as what it is, never
+    as a request. A question the person withdrew carries no `invalidation` and stays a request."""
+    return event.get("status") == "withdrawn" and bool(event.get("invalidation"))
+
+
 def is_request(event: dict) -> bool:
     """A person's message that starts a turn: a request (`question`), or a goal or proposal of the person's in graphs
     written before requests were made by code. A choice the person made among the agent's options (a user `decision`)
-    answers inside the turn it belongs to (`docs/plans/REQUEST_ANSWERS.md` §2)."""
-    return event.get("actor") == "user" and event["kind"] != "decision"
+    answers inside the turn it belongs to (`docs/plans/REQUEST_ANSWERS.md` §2). A retired event is none (`retired`)."""
+    return event.get("actor") == "user" and event["kind"] != "decision" and not retired(event)
 
 
 def folded_view(graph: dict) -> dict:
@@ -1717,7 +1725,8 @@ def story_view(graph: dict) -> dict:
     the stored graph is unchanged, and the detail, `find`, `show` and the agents read the whole graph."""
     from .i18n import tr
     from .render import status_labels, status_tones
-    events = graph["events"]
+    # A retired event (`retired`) is no part of the story: not a box, not folded into one, not counted as unplaced.
+    events = [event for event in graph["events"] if not retired(event)]
     by_id = {event["id"]: event for event in events}
     when = event_times(events)
     active = [edge for edge in graph["edges"] if edge["active"] and edge["from_event_id"] in by_id
@@ -1910,7 +1919,7 @@ def story_view(graph: dict) -> dict:
     tones = {**whole, **{key: "plain" for key in gathered if whole.get(key) != "fail"}}
     labels = status_labels(graph)
     view_events = []
-    for number, event in enumerate(events, 1):
+    for number, event in enumerate(graph["events"], 1):
         key = event["id"]
         if key in shown:
             view_events.append({**event, "number": number, **(
@@ -1919,7 +1928,7 @@ def story_view(graph: dict) -> dict:
                 **({"gathered": True} if key in gathered else {})})
     edges = [edge for edge in graph["edges"] if edge["from_event_id"] in shown and edge["to_event_id"] in shown]
     return {**graph, "events": view_events, "edges": edges, "view": STORY_VIEW, "tones": tones, "labels": labels,
-            "homes": {key: value for key, value in homes.items() if value}, "hidden": len(events) - len(view_events),
+            "homes": {key: value for key, value in homes.items() if value}, "hidden": len(graph["events"]) - len(view_events),
             "unplaced": sum(1 for key in by_id if key not in shown and homes.get(key) is None)}
 
 

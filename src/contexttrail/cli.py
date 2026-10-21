@@ -30,6 +30,7 @@ from .freshness import summary as freshness_summary
 from .git_context import Scope
 from . import i18n
 from .i18n import tr
+from .refresh import refresh, summary_lines as refresh_lines
 from .render import detail_context, event_detail, export_text, terminal_graph
 from .runners import CLIRunner
 from .runners.cli_runner import DEFAULT_MODELS, EFFORTS
@@ -176,6 +177,15 @@ def parser() -> argparse.ArgumentParser:
                                                 "How far the graph lags the transcripts: unanalyzed records and changes since the last scan; no AI calls"))
     sub.add_argument("folder", nargs="?", default=".")
     sub.add_argument("--json", action="store_true")
+    sub = commands.add_parser("refresh", help=tr("예전 규칙으로 만든 그래프를 지금 규칙대로 다시 읽기: 작성자·단계·위임 연결, 사람의 요청이 아닌 요청. "
+                                                 "scan만 하고 AI 호출 없음",
+                                                 "Bring a graph built under older rules up to the current ones: authoring, steps, "
+                                                 "delegation links, requests that were not the person's. Scans only; no AI calls"))
+    sub.add_argument("folder", nargs="?", default=".")
+    sub.add_argument("--json", action="store_true")
+    sub.add_argument("--codex-home", type=Path)
+    sub.add_argument("--claude-home", type=Path)
+    sub.add_argument("--opencode-home", type=Path)
     sub = commands.add_parser("auto-update", help=tr("프로젝트별 자동 갱신: 켜기·끄기·상태. 인자 없이 부르면 훅용(설정된 프로젝트에서만 백그라운드 분석 시작, 항상 종료 코드 0)",
                                                      "Per-project automatic analysis: enable, disable, status. Without flags it is the hook entry point (starts a background analysis only where enabled; always exits 0)"))
     sub.add_argument("--folder", help=tr("프로젝트 폴더; 없으면 stdin JSON의 cwd, 그것도 없으면 현재 폴더(--enable/--disable/--status)",
@@ -631,6 +641,20 @@ def _context(args) -> int:
     return 0
 
 
+def _refresh(args, scope: Scope, store: Store) -> int:
+    """`contexttrail refresh`: the saved graph read again under today's rules, by code (`refresh.refresh`)."""
+    config, _ = _options(args, store, persist=False)
+    engine = Engine(scope, store, config)
+    if sys.stderr.isatty():
+        def shown(done: int, total: int) -> None:
+            print("\r" + tr(f"기록 파일 읽는 중 {done}/{total}", f"reading transcript files {done}/{total}"),
+                  end="" if done < total else "\n", file=sys.stderr, flush=True)
+        engine.scan_progress = shown
+    result = refresh(engine)
+    print(dumps(result, pretty=True) if args.json else "\n".join(refresh_lines(result)))
+    return 0
+
+
 def _status(args) -> int:
     scope = Scope.resolve(args.folder)
     store = _reading_store(scope)
@@ -860,8 +884,12 @@ def main(argv: list[str] | None = None) -> int:
                             scope=scope).run()
             return 0 if result["status"] in {"complete", "noop"} else 1
         scope = Scope.resolve(args.folder)
+        if args.command == "refresh" and not (scope.state_dir / "state.sqlite").is_file():
+            return _no_state(scope, args.json)  # nothing to refresh, and no state is made for it
         store = Store(scope.state_dir, scope.id)
         _screen_language(getattr(args, "output_language", None), store)
+        if args.command == "refresh":
+            return _refresh(args, scope, store)
         if args.command == "ops":
             calls = store.llm_calls(args.run_id)
             summary = summarize_calls(calls)

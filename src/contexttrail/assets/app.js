@@ -115,7 +115,7 @@ async function load() {
   for(const item of (graph.open_items||[]))$("limits").append(el("p","["+item.status+"] "+item.text));
   if(payload.last_check.error)$("limits").append(el("p",payload.last_check.error));
   // Opened without a selection, the page starts at the latest request (the graph is in time order).
-  const requests=graph.events.filter(e=>e.actor==="user"&&e.kind!=="decision");
+  const requests=graph.events.filter(e=>e.actor==="user"&&e.kind!=="decision"&&!(e.status==="withdrawn"&&e.invalidation));
   const start=requests.length?requests[requests.length-1].id:(graph.events.length?graph.events[graph.events.length-1].id:null);
   if(selected&&graph.events.some(e=>e.id===selected))await select(selected);else if(start)await select(start);
   return true;

@@ -24,7 +24,7 @@ from .model import IMAGE_NOTE, Snapshot, SourceRecord, is_queued_message, is_use
 from .routing import ROUTING_VERSION, RunnerPool, TaskValidationError
 from .runners.cli_runner import EFFORTS
 from .schema import (EDIT_TOOL_NAMES, EvidenceValidator, docs_only, draft_delta, edited_files, record_evidence,
-                     refresh_matched, validate_shape)
+                     refresh_matched, retired, validate_shape)
 from .sources import collect_logs
 from .sources.local import ScanCache, scan_cache_key
 from .store import Store, in_journal
@@ -1067,7 +1067,7 @@ def match_existing_duplicates(output: dict, graph: dict, saved: dict[str, dict])
     # not made a request a second time.
     theirs: dict[str, set[str]] = {}
     for event in graph["events"]:
-        if event.get("actor") == "user":
+        if event.get("actor") == "user" and not retired(event):
             for evidence_id in event.get("evidence_ids", []):
                 if evidence_id in saved:
                     theirs.setdefault(saved[evidence_id]["source_id"], set()).add(event["id"])
@@ -1170,7 +1170,8 @@ def link_request_turns(graph: dict, base: dict, pool: dict[str, SourceRecord], u
         requests_added += 1
     # The person's answer to the agent's question is a choice only when it is one of the options the agent offered;
     # then it is the person's decision. A free answer stays in the records and the story (no event of its own).
-    cited_by_user = {source_id for event in graph["events"] if event.get("actor") == "user" for source_id in sources(event)}
+    cited_by_user = {source_id for event in graph["events"] if event.get("actor") == "user" and not retired(event)
+                     for source_id in sources(event)}
     ordered = list(pool.values())
     for record in ordered:
         replies = question_reply(record) if record.source_id in assigned else None
