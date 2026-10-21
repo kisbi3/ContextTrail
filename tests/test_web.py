@@ -206,7 +206,7 @@ def test_serve_prints_its_link_at_once_and_stops_on_sigterm(tmp_path):
         signal.signal(signal.SIGHUP, previous)
     env = {**os.environ, "CONTEXTTRAIL_LANGUAGE": "en"}
     errors = (tmp_path / "serve.err").open("wb")
-    process = subprocess.Popen([sys.executable, "-m", "contexttrail", "serve", str(folder), "--port", "0"],
+    process = subprocess.Popen([sys.executable, "-X", "faulthandler", "-m", "contexttrail", "serve", str(folder), "--port", "0"],
                                stdout=subprocess.PIPE, stderr=errors, env=env)
     try:
         import select, time
@@ -220,7 +220,11 @@ def test_serve_prints_its_link_at_once_and_stops_on_sigterm(tmp_path):
                     break
                 output += chunk
         lines = output.decode("utf-8", "replace").splitlines()
-        # Fails only on macOS CI so far; say what the server did instead of a bare `assert False`.
+        # Fails only on macOS CI so far (still running, nothing printed): a server that never printed its link
+        # is aborted, so faulthandler writes where it waits to stderr.
+        if not any("Access URL" in line for line in lines) and process.poll() is None:
+            process.send_signal(signal.SIGABRT)
+            process.wait(timeout=10)
         assert any("Access URL" in line and "#token=" in line for line in lines), (
             f"exit {process.poll()}, stdout {output[-2000:]!r}, stderr {(tmp_path / 'serve.err').read_bytes()[-4000:]!r}")
         process.send_signal(signal.SIGTERM)
