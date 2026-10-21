@@ -165,11 +165,16 @@ async function select(id, {scroll=true}={}) {
   renderDetail(data);
 }
 // Going to an event from a link, a search or the list: a step the story view folded into a box shows every step,
-// as the terminal does.
+// as the terminal does. If that drawing fails, the button goes back to the picture still on the page (as the view
+// button's does) and the caller reports the error.
 async function jump(id) {
   if(view==="story"&&!boxes.has(id)&&events.has(id)){
+    const before=view, thisDraw=drawing+1;  // the drawing this jump starts
     view="all";viewLabel();
-    if(await draw()){saveView();notice(L.switched);}
+    let drew;
+    try{drew=await draw();}
+    catch(error){if(thisDraw===drawing){view=shown||before;viewLabel();}throw error;}
+    if(drew){saveView();notice(L.switched);}
   }
   await select(id);
 }

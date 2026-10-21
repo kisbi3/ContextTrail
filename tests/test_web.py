@@ -306,6 +306,37 @@ def test_every_step_is_the_terminal_flow_drawn_under_the_pages_whitelist(story_v
     assert request(obj,'GET','/graph.svg?view=all')[1]==data  # drawn once per version and view
 
 
+JUMP_STUBS = """
+let view="story", drawing=0, shown="story", boxes=new Map(), events=new Map([["folded",{}]]), selected=null, saved=0;
+const labels=[], L={switched:"switched"};
+function viewLabel(){labels.push(view);}
+function saveView(){saved++;}
+function notice(){}
+async function select(id){selected=id;}
+async function draw(){++drawing;if(FAIL)throw new Error("bad drawing");shown=view;return true;}
+"""
+
+
+def run_jump(fail):
+    import shutil, subprocess
+    from importlib.resources import files
+    node=shutil.which('node')
+    if node is None:
+        pytest.skip('node is not installed')
+    script=files('contexttrail').joinpath('assets/app.js').read_text()
+    jump=re.search(r"^async function jump\(id\) \{.*?^\}$",script,re.M|re.S).group(0)
+    program=(f"const FAIL={'true' if fail else 'false'};"+JUMP_STUBS+jump+
+             '\njump("folded").then(()=>null,e=>e.message).then(error=>'
+             'console.log(JSON.stringify({error,view,labels,selected,saved})));')
+    out=subprocess.run([node,'-e',program],capture_output=True,text=True,timeout=20,check=True).stdout
+    return json.loads(out)
+
+
+def test_a_jump_whose_drawing_fails_leaves_the_button_on_the_view_still_shown():
+    assert run_jump(fail=True)=={'error':'bad drawing','view':'story','labels':['all','story'],'selected':None,'saved':0}
+    assert run_jump(fail=False)=={'error':None,'view':'all','labels':['all'],'selected':'folded','saved':1}
+
+
 def test_the_every_step_svg_cuts_no_text_and_keeps_lines_apart_from_wide_glyphs():
     import xml.etree.ElementTree as ET
     from contexttrail.diagram import flow_svg
