@@ -1905,7 +1905,9 @@ def story_view(graph: dict) -> dict:
 
     # A gathered box is drawn plain, as the owner's picture has it (`docs/DECISIONS.md` 2026-10-21): it stands for
     # work no story box took, not for a finding to check, so `!` passes it by. Its label keeps the event's status.
-    tones = {**status_tones(graph), **dict.fromkeys(gathered, "plain")}
+    whole = status_tones(graph)
+    # ...unless its own step failed and nothing came of it: a failure stays marked (✗, red, a stop for `!`).
+    tones = {**whole, **{key: "plain" for key in gathered if whole.get(key) != "fail"}}
     labels = status_labels(graph)
     view_events = []
     for number, event in enumerate(events, 1):

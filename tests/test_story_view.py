@@ -267,3 +267,11 @@ def test_work_with_no_session_is_its_own_box_unless_a_relation_joins_it():
     assert all(e.get("gathered") for e in view["events"][1:])
     view = view_of(link("one", "two", "produces"))
     assert [e["id"] for e in view["events"]] == ["ask", "two"] and view["homes"] == {"one": "two"}
+
+
+def test_a_gathered_box_whose_own_step_failed_stays_a_failure():
+    events = [event("ask", "question", "asked", "10:00", actor="user"),
+              event("edit", "action", "applied", "10:01", basis="tool_record", authoring=SUB, session_ids=["sub"]),
+              event("broke", "outcome", "observed_failure", "10:02", basis="tool_record", authoring=SUB, session_ids=["sub"])]
+    view = story_view({"version": 1, "events": events, "edges": []})
+    assert "broke" in {e["id"] for e in view["events"]} and view["tones"]["broke"] == "fail"
