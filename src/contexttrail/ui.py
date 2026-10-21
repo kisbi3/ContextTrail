@@ -674,8 +674,10 @@ class FlowPanels:
             self.select(beside[0])
 
     def _flagged(self) -> None:
-        """Jump to the next event that needs a look (! or ✗), wrapping around."""
-        flagged = [event["id"] for event in self.graph["events"] if self.tones[event["id"]] in ("warn", "fail")]
+        """Jump to the next event that needs a look (! or ✗), wrapping around. The story view's own tones decide
+        there, so a box it drew plain (one gathered from work no box took) is passed by."""
+        tones = self.graph.get("tones") or self.tones
+        flagged = [event["id"] for event in self.graph["events"] if tones[event["id"]] in ("warn", "fail")]
         if not flagged:
             self.message = tr("확인이 필요한 사건이 없습니다", "No event needs a look")
             return

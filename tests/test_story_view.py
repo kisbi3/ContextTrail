@@ -192,4 +192,78 @@ def test_a_gathered_box_names_its_agent_in_its_line_not_its_header():
     assert drawn["folded_agents"] == [{"agent": "plots", "said": "그림 완성 (위임 연결 없음)"}]
     assert drawn["folded_work"] == {"count": 1, "last": "commit", "failed": 0, "passed": 0}
     text = "\n".join(flow_diagram(view, 100).lines())
-    assert "[04] 결과 ! ─" in text and "하위 plots" not in text and "↳ plots: 그림 완성 (위임 연결 없음)" in text
+    assert "[04] 결과 ─" in text and "하위 plots" not in text and "↳ plots: 그림 완성 (위임 연결 없음)" in text
+
+
+def test_a_gathered_box_is_drawn_plain_and_the_flag_key_passes_it_by():
+    """As the owner's picture has it: work no box took is a grey box with no mark, not a finding to check."""
+    from contexttrail.diagram import SVG_TONE, story_svg
+    events = [event("ask", "question", "asked", "10:00", actor="user"),
+              event("broke", "outcome", "observed_failure", "10:01", basis="tool_record"),
+              event("draw", "action", "applied", "10:02", basis="tool_record", authoring=SUB, session_ids=["sub"]),
+              event("drawn", "outcome", "reported_complete", "10:03", authoring=SUB, session_ids=["sub"])]
+    graph = {"version": 1, "events": events, "edges": []}
+    view = story_view(graph)
+    assert view["events"][-1]["gathered"] and view["tones"]["drawn"] == "plain"
+    assert view["labels"]["drawn"] == "완료 보고·미검증"  # the detail keeps the event's own status
+    diagram = flow_diagram(view, 100)
+    top, x, _, _ = diagram.boxes["drawn"]
+    assert diagram.rows[top][x].style == "" and "[04] 결과 ─" in diagram.lines()[top]
+    out = story_svg(view)
+    box = out[out.index('data-event-id="drawn"'):]
+    assert f'stroke="{SVG_TONE["plain"]}" stroke-width="1"/>' in box[:box.index("</g>")]
+    assert 'font-size="11" font-weight="700">✗</text>' in out and 'font-weight="700">!</text>' not in out
+    panels = FlowPanels(graph, lambda _: None)
+    panels.select("ask")
+    panels.handle("!")
+    assert panels.current == "broke"
+    panels.handle("!")
+    assert panels.current == "broke"  # never the gathered box
+
+
+def test_left_work_moves_with_its_delegation_and_is_never_split_between_boxes():
+    def graph(*edges):
+        events = [event("ask", "question", "asked", "10:00", actor="user"),
+                  event("edit", "action", "applied", "10:01", basis="tool_record"),
+                  # A delegation in a session with no request (its caller's turn not analysed) and its agent's work.
+                  event("hand", "action", "applied", "10:02", basis="tool_record", step="delegate",
+                        delegated_to="plots", session_ids=["caller"]),
+                  event("draw", "action", "applied", "10:03", basis="tool_record", authoring=SUB,
+                        delegated_by="hand", session_ids=["sub"]),
+                  event("drawn", "outcome", "reported_complete", "10:04", authoring=SUB, delegated_by="hand",
+                        session_ids=["sub"])]
+        return {"version": 1, "events": events, "edges": [link("ask", "edit", "answers"), *edges]}
+
+    # A relation of one of the agent's steps does not pull that step away from the rest of its agent's work.
+    view = story_view(graph(link("edit", "draw", "motivates")))
+    assert view["homes"] == {"edit": "ask", "hand": "drawn", "draw": "drawn"}
+    assert view["events"][-1]["folded_agents"] == [{"agent": "plots", "said": "drawn"}]  # handed: no suffix
+    # The delegation's own relation moves its whole group into that box.
+    view = story_view(graph(link("edit", "hand", "motivates")))
+    assert view["homes"] == {"edit": "ask", "hand": "ask", "draw": "ask", "drawn": "ask"}
+    assert [e["id"] for e in view["events"]] == ["ask"]
+    assert view["events"][0]["folded_agents"] == [{"agent": "plots", "said": "drawn"}]
+
+
+def test_a_sub_agent_with_no_delegation_says_so_in_any_box():
+    events = [event("ask", "question", "asked", "10:00", actor="user"),
+              event("plan", "decision", "adopted", "10:01"),
+              event("drawn", "outcome", "reported_complete", "10:02", authoring=SUB, session_ids=["sub"])]
+    view = story_view({"version": 1, "events": events, "edges": [link("plan", "drawn", "motivates")]})
+    plan = next(e for e in view["events"] if e["id"] == "plan")
+    assert not plan.get("gathered") and view["homes"]["drawn"] == "plan"
+    assert plan["folded_agents"] == [{"agent": "plots", "said": "drawn (위임 연결 없음)"}]
+
+
+def test_work_with_no_session_is_its_own_box_unless_a_relation_joins_it():
+    def view_of(*edges):
+        events = [event("ask", "question", "asked", "10:00", actor="user"),
+                  event("one", "action", "applied", "10:01", basis="tool_record", session_ids=[]),
+                  event("two", "action", "applied", "10:02", basis="tool_record", session_ids=[])]
+        return story_view({"version": 1, "events": events, "edges": list(edges)})
+
+    view = view_of()  # time alone is no relation
+    assert [e["id"] for e in view["events"]] == ["ask", "one", "two"] and view["homes"] == {}
+    assert all(e.get("gathered") for e in view["events"][1:])
+    view = view_of(link("one", "two", "produces"))
+    assert [e["id"] for e in view["events"]] == ["ask", "two"] and view["homes"] == {"one": "two"}
