@@ -259,7 +259,7 @@ def scan_sources(state: StudioState) -> StudioState:
         session.update(tr("입력 변화 확인 중", "Checking for input changes"))
         snapshot = session.engine.scan()
         session.snapshot = snapshot
-        session.engine.store.ingest(snapshot.records)
+        session.engine.store.ingest(snapshot.records, providers=snapshot.providers)
         session.engine.store.acknowledge_environment_context(snapshot.records)
         session.engine.store.acknowledge_journaled(snapshot.records)
         return {"snapshot_id": snapshot.id, "selected_records": len(snapshot.records),
@@ -297,7 +297,7 @@ def scan_sources(state: StudioState) -> StudioState:
             if frozen_snapshot is not None:
                 engine.scan = lambda: frozen_snapshot
             snapshot = engine.scan()
-            store.ingest(snapshot.records)
+            store.ingest(snapshot.records, providers=snapshot.providers)
             store.acknowledge_environment_context(snapshot.records)
             store.acknowledge_journaled(snapshot.records)
             run_id = "run_" + uuid.uuid4().hex
@@ -311,7 +311,7 @@ def scan_sources(state: StudioState) -> StudioState:
         return {"run_id": run_id, "snapshot_id": snapshot.id, "output_dir": str(scope.folder),
                 "selected_records": len(snapshot.records), "limitations": snapshot.limitations}
     engine, store, snapshot = _context(state)
-    store.ingest(snapshot.records)
+    store.ingest(snapshot.records, providers=snapshot.providers)
     run_id = "run_" + uuid.uuid4().hex
     store.start_run(run_id, {"scope_id": engine.scope.id, "mode": "studio_synthetic"})
     return {"run_id": run_id, "snapshot_id": snapshot.id,

@@ -229,9 +229,11 @@ class Store:
             return db.execute("SELECT COUNT(*) FROM source_records WHERE available=1 "
                               "AND (processed_hash IS NULL OR processed_hash != content_hash)").fetchone()[0]
 
-    def ingest(self, records: list[SourceRecord], *, partial: bool = False) -> tuple[set[str], set[str]]:
+    def ingest(self, records: list[SourceRecord], *, partial: bool = False,
+               providers: tuple[str, ...] | None = None) -> tuple[set[str], set[str]]:
         """Store the records a scan read. A full scan marks every stored record it did not see as unavailable;
-        a `partial` one (`contexttrail note`, which reads only its own session) leaves the others alone."""
+        a `partial` one (`contexttrail note`, which reads only its own session) leaves the others alone, and a scan
+        of some tools (`providers`, from `--sources`) marks only those tools' unseen records."""
         previous = self.sources()
         identity_fields = ("provider", "session_id", "native_record_id", "parent_record_id", "recorded_at")
         hashes = {record.source_id: record.content_hash for record in records}  # a digest per call; take it once
@@ -244,7 +246,8 @@ class Store:
         changed = {r.source_id for r in records if r.source_id in previous
                    and previous[r.source_id]["content_hash"] != hashes[r.source_id] and r.source_id not in migrations}
         present = {r.source_id for r in records}
-        missing = set() if partial else {i for i, row in previous.items() if row["available"] and i not in present}
+        missing = set() if partial else {i for i, row in previous.items() if row["available"] and i not in present
+                                         and (providers is None or row["metadata"].get("provider") in providers)}
         # Only rows that differ are written, so a re-scan of an unchanged history is a short transaction.
         stored = {i: (row["content_hash"], row["metadata"], row["available"]) for i, row in previous.items()}
         written, sessions = [], {}

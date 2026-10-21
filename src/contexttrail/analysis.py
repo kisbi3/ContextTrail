@@ -2033,7 +2033,8 @@ class Engine:
                                                    sources=self.config.sources, previous=self.store.get_meta(INDEX_KEY)))
         mark_steps(logs.records)
         return Snapshot(logs.records + artifacts.records, list(dict.fromkeys(logs.limitations + artifacts.limitations)),
-                        logs.files, logs.sources)
+                        logs.files, logs.sources,
+                        providers=tuple(self.config.sources) + ("git",) if self.config.sources else None)
 
     def resolve_language(self, snapshot: Snapshot, *, save: bool = False) -> str:
         """The output language: as configured, else as saved for the project, else detected. A detected language is
@@ -2054,7 +2055,7 @@ class Engine:
     def preview_plan(self, snapshot: Snapshot) -> dict:
         """What `analyze` would plan now, without a model call (for `scan` and an agent's question)."""
         with self.store.analyze_lock():
-            self.store.ingest(snapshot.records)
+            self.store.ingest(snapshot.records, providers=snapshot.providers)
             self.store.acknowledge_environment_context(snapshot.records)
             self.store.acknowledge_journaled(snapshot.records)
             units, _, _ = self._plan_units(snapshot, [])

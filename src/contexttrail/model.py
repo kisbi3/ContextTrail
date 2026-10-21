@@ -203,6 +203,9 @@ class Snapshot:
     files: list[dict[str, Any]] = field(default_factory=list)
     # Per tool, where a scan looked and what it found there (`sources.local.source_summary`); empty elsewhere.
     sources: list[dict[str, Any]] = field(default_factory=list)
+    # The tools a scan read when it read only some (`--sources`, plus Git); None when it read every tool. Storing it
+    # leaves the other tools' records as they were instead of marking them unavailable (`Store.ingest`).
+    providers: tuple[str, ...] | None = None
 
     @property
     def id(self) -> str:

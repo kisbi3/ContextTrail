@@ -100,7 +100,7 @@ symbolic links (`/app` is not `/app-backup`). Nothing is matched by keywords. Co
   point. A linked directory below one of those (`sessions/2026`, `projects/app`) is followed when it resolves inside
   the tool's home or inside the transcript directory's own target; one leading elsewhere is not entered, is counted
   in `sources[].dirs_skipped_symlink` and named in the limitations (the run then reads `partial`). Each directory is
-  read once, so a link back up the tree does not loop. Build an archive by copying files, by linking a home or a
+  read once within that transcript directory, so a link back up the tree does not loop (a directory reached from both `sessions/` and `archived_sessions/` is examined from each; its records are counted once). Build an archive by copying files, by linking a home or a
   transcript directory, or by linking subdirectories to places inside the home, not by linking each file.
 - A scan that finds transcript files but none recorded in the folder still exits 0 with zero records; read
   `records` and `sources[].files_with_records`.

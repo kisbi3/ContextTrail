@@ -459,3 +459,18 @@ def test_a_full_scan_after_a_sources_scan_still_reuses_the_other_tools_files(tmp
     assert main(["scan", str(folder), *flags]) == 0
     codex = {entry["provider"]: entry for entry in output(capsys)["sources"]}["codex"]
     assert (codex["files_examined"], codex["files_read"]) == (2, 1)  # the other project's file is not read again
+
+
+def test_a_scan_of_some_tools_leaves_the_others_records_waiting(tmp_path, capsys):
+    """A one-off `scan --sources codex` reads Codex alone; the other tools' stored records are not marked lost."""
+    folder, flags, homes = project(tmp_path)
+    assert main(["scan", str(folder), *flags]) == 0
+    capsys.readouterr()
+    assert main(["status", str(folder), "--json"]) == 0
+    before = output(capsys)
+    assert before["pending"]["records"] > 0
+    assert main(["scan", str(folder), *flags, "--sources", "codex"]) == 0
+    capsys.readouterr()
+    assert main(["status", str(folder), "--json"]) == 0
+    after = output(capsys)
+    assert after["pending"]["records"] == before["pending"]["records"] and after["unavailable_unprocessed"] == 0
