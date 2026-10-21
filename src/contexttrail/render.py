@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import html
 import re
-from collections import Counter, deque
+from collections import Counter
 from datetime import datetime
 from typing import Any, Callable
 
 from .i18n import Labels, tr
 from .schema import retired
-from .util import FlowError, cell_slice, dumps, ellipsis, merge_focus, safe_text
+from .util import FlowError, dumps, ellipsis, merge_focus, safe_text
 
 # Screen labels follow the screen language at lookup time (`i18n.Labels`), so a module that
 # imports them keeps working whichever language the process chooses later.
@@ -48,11 +48,19 @@ PROVIDER = {"codex": "Codex", "claude": "Claude Code", "opencode": "opencode", "
 # One glyph per tone so a terminal list reads at a glance, with ASCII fallbacks.
 MARK = {"ok": "✓", "warn": "!", "fail": "✗", "plain": "·"}
 ASCII_MARK = {"ok": "v", "warn": "!", "fail": "x", "plain": "-"}
-# Detour lanes past this count would overlap if wrapped, so extras are reported
-# as a count instead of drawn on top of each other. Verified: wrapping made the
-# 11th detour reuse lane 0.
-MAX_DETOUR_LANES = 24
-DETOUR_LANE_PITCH = 18
+# A run's end state in the screen language (`last_check.status`, from `analysis_runs`), in the TUI and the browser.
+RUN_STATE = Labels({"complete": "완료", "partial": "일부 완료", "failed": "실패", "noop": "새 기록 없음",
+                    "no_data": "기록 없음", "cancelled": "취소됨", "call_limit": "호출 상한", "running": "실행 중"},
+                   {"complete": "complete", "partial": "partial", "failed": "failed", "noop": "nothing new",
+                    "no_data": "no records", "cancelled": "cancelled", "call_limit": "call cap reached",
+                    "running": "running"})
+# What an event rests on, and how a relation was found, as the browser's detail names them.
+BASIS = Labels({"explicit_statement": "말로 밝힘", "tool_record": "도구 기록", "git_artifact": "Git 기록",
+                "inference": "추정"},
+               {"explicit_statement": "stated", "tool_record": "tool record", "git_artifact": "Git record",
+                "inference": "inferred"})
+LINK_BASIS = Labels({"explicit": "명시", "inferred": "추정", "structural": "구조"},
+                    {"explicit": "stated", "inferred": "inferred", "structural": "structure"})
 
 
 def verification_links(graph: dict) -> tuple[dict[str, list[dict]], set[str]]:
@@ -499,105 +507,6 @@ def terminal_graph(graph: dict, *, ascii_only: bool = False,
     if not result:
         result = [(tr("아직 저장된 사건이 없습니다.", "No events saved yet."), None)]
     return result
-
-
-def _positions(graph: dict) -> tuple[dict[str, tuple[int, int]], int, int]:
-    events = graph["events"]
-    outgoing = {e["id"]: [] for e in events}
-    degree = {e["id"]: 0 for e in events}
-    for edge in graph["edges"]:
-        if edge["active"]:
-            outgoing[edge["from_event_id"]].append(edge["to_event_id"])
-            degree[edge["to_event_id"]] += 1
-    rank, queue = {key: 0 for key in degree}, deque(k for k in degree if degree[k] == 0)
-    visited = set()
-    while queue:
-        node = queue.popleft()
-        visited.add(node)
-        for child in outgoing[node]:
-            rank[child] = max(rank[child], rank[node] + 1)
-            degree[child] -= 1
-            if degree[child] == 0:
-                queue.append(child)
-    # Cycles remain visible, with original edges. No DAG restriction is imposed on stored data.
-    last = max(rank.values(), default=0)
-    for event in events:
-        if event["id"] not in visited:
-            last += 1
-            rank[event["id"]] = last
-    layers: dict[int, list[str]] = {}
-    for event in events:
-        layers.setdefault(rank[event["id"]], []).append(event["id"])
-    positions = {key: (32 + column * 330, 32 + layer * 164)
-                 for layer, keys in layers.items() for column, key in enumerate(keys)}
-    width = max((x + 310 for x, _ in positions.values()), default=600) + 32
-    height = max((y + 108 for _, y in positions.values()), default=180) + 32
-    return positions, width, height
-
-
-def svg(graph: dict) -> str:
-    # Same safe subset as the terminal path; intentionally not a general Mermaid engine.
-    parse_safe_mermaid(mermaid(graph))
-    positions, width, height = _positions(graph)
-    detours = [e for e in graph["edges"] if e["active"] and
-               positions[e["to_event_id"]][1] - positions[e["from_event_id"]][1] != 164]
-    gutter_start = width + 12
-    drawn_detours = detours[:MAX_DETOUR_LANES]
-    if detours:
-        width += 120 + len(drawn_detours) * DETOUR_LANE_PITCH
-    detour_index = 0
-    undrawn = 0
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="{tr("프로젝트 흐름", "Project flow")}" font-family="Noto Sans CJK KR, Noto Sans KR, Malgun Gothic, Apple SD Gothic Neo, sans-serif">',
-           '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#778593"/></marker></defs>']
-    for edge in graph["edges"]:
-        if not edge["active"]:
-            continue
-        x1, y1 = positions[edge["from_event_id"]]
-        x2, y2 = positions[edge["to_event_id"]]
-        x1, y1, x2 = x1 + 145, y1 + 108, x2 + 145
-        dashed = ' stroke-dasharray="5 5"' if edge["basis"] == "inferred" else ""
-        if y2 - y1 == 56:
-            midpoint = (y1 + y2) / 2
-            path = f"M{x1} {y1} C{x1} {midpoint} {x2} {midpoint} {x2} {y2 - 5}"
-            label_x, label_y = (x1 + x2) / 2 + 9, midpoint
-        else:
-            # Skipping an intermediate rank must NOT draw through an unrelated node.
-            # Route long/backward edges outside all boxes, retaining the exact target.
-            if detour_index >= MAX_DETOUR_LANES:
-                # Lanes are finite. Overlapping paths read as one wrong line, which
-                # is worse than a stated omission, so count the rest instead.
-                undrawn += 1
-                continue
-            lane = gutter_start + detour_index * DETOUR_LANE_PITCH
-            detour_index += 1
-            top, bottom = y1 + 20, y2 - 20
-            path = f"M{x1} {y1} V{top} H{lane} V{bottom} H{x2} V{y2 - 5}"
-            label_x, label_y = lane + 5, (top + bottom) / 2
-        label = RELATION[edge["relation"]] + (tr("·추정", "·inferred") if edge["basis"] == "inferred" else "")
-        out += [f'<path d="{path}" fill="none" stroke="#778593" stroke-width="1.7"{dashed} marker-end="url(#arrow)"/>',
-                f'<text x="{label_x}" y="{label_y}" fill="#667788" font-size="11">{html.escape(label)}</text>']
-    statuses = status_labels(graph)
-    for number, event in enumerate(graph["events"], 1):
-        x, y = positions[event["id"]]
-        status = statuses[event["id"]]
-        title = safe_text(event["title"], multiline=False)
-        first, second = cell_slice(title, 0, 31), cell_slice(title, 31, 31)
-        if len(title) > len(first + second):
-            second = ellipsis(second, 28) + "…"
-        out.append(f'<g data-event-id="{html.escape(event["id"], quote=True)}" tabindex="0" role="button" aria-label="{html.escape(title, quote=True)}" transform="translate({x},{y})">')
-        out.append('<rect width="290" height="108" rx="9" fill="#ffffff" stroke="#ced7df"/>')
-        out.append(f'<text x="16" y="23" fill="#7b8995" font-size="11">{number:02d} · {html.escape(event["kind"])}</text>')
-        out.append(f'<text x="16" y="47" fill="#203343" font-size="14" font-weight="600">{html.escape(first)}</text>')
-        out.append(f'<text x="16" y="67" fill="#203343" font-size="14" font-weight="600">{html.escape(second)}</text>')
-        out.append(f'<text x="16" y="92" fill="#617686" font-size="11">{html.escape(status)}</text></g>')
-    if not graph["events"]:
-        out.append(f'<text x="32" y="70" fill="#617686" font-size="18">{tr("저장된 사건이 없습니다.", "No saved events.")}</text>')
-    if undrawn:
-        note = tr(f"긴 연결 {undrawn}개는 선이 겹쳐 생략했습니다. 전체 목록은 text 출력이나 브라우저 보기를 사용하세요.",
-                  f"{undrawn} long links were left out because their lines would overlap; "
-                  f"use the text output or the browser view for the full list.")
-        out.append(f'<text x="32" y="{height - 14}" fill="#8a97a4" font-size="11">{html.escape(note)}</text>')
-    return "\n".join(out) + "</svg>"
 
 
 def _md(text: Any) -> str:

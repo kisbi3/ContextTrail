@@ -26,7 +26,8 @@ from typing import Any
 from wcwidth import wcswidth, wcwidth
 
 from .i18n import tr
-from .render import ASCII_MARK, MARK, RELATION, _when, delegate_label, kind_label, status_labels, status_tones
+from .render import (ASCII_MARK, MARK, RELATION, _when, delegate_label, kind_label, status_labels, status_tones,
+                     terminal_graph)
 from .schema import STORY_VIEW, event_times
 from .util import cell_slice, safe_text
 
@@ -937,4 +938,121 @@ def story_svg(view: dict) -> str:
             'font-family="Noto Sans CJK KR, Noto Sans KR, Malgun Gothic, Apple SD Gothic Neo, sans-serif">'
             '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">'
             '<path d="M0 0 L8 4 L0 8 z" fill="#778593"/></marker></defs>')
+    return head + "\n".join(body) + "</svg>"
+
+
+# Every step in the browser (`flow_svg`): the terminal's flow at this many cells, each cell this wide and each row
+# this tall (Menlo's advance at 14 px), so the page reads like the screen it twins.
+FLOW_SVG_CELLS = 120
+FLOW_SVG_WIDER = 60  # a fork with many sides gets a grid this much wider (twice at most) before the text list
+CELL_W, CELL_H, CELL_FONT, CELL_PAD = 8.4, 18, 14, 12
+# Cell styles (`Diagram.put`) in the page's colours: the terminal's for a light background.
+FLOW_INK = {"": "#203343", "plain": "#203343", "title": "#14283a", "heading": "#2f7f8f", "frame": "#2f7f8f",
+            "dim": "#7f8d99", "ok": "#2e7d4f", "warn": "#a56f12", "fail": "#b8382f", "sub": "#8e4fb0",
+            "llm": "#2f62c0"}
+FLOW_BOLD = {"title", "heading", "warn", "fail"}
+NBSP = "\u00a0"
+
+
+def _cell_runs(row: list[Cell]) -> list[tuple[int, str, str]]:
+    """A row's text as runs of one style: (first cell, text, style); a wide glyph's right half (an empty cell) is
+    left to its left half."""
+    runs: list[tuple[int, str, str]] = []
+    for x, cell in enumerate(row):
+        if cell.char == "":
+            continue
+        if runs and runs[-1][2] == cell.style:
+            runs[-1] = (runs[-1][0], runs[-1][1] + cell.char, cell.style)
+        else:
+            runs.append((x, cell.char, cell.style))
+    return runs
+
+
+def _pieces(text: str) -> list[str]:
+    """Text cut where line glyphs (box drawing, arrowheads: U+2500–U+25FF) meet other text: `──답변──▶` →
+    `──`, `답변`, `──▶`."""
+    pieces: list[str] = []
+    last = None
+    for char in text:
+        kind = 0x2500 <= ord(char) <= 0x25FF
+        if pieces and kind == last:
+            pieces[-1] += char
+        else:
+            pieces.append(char)
+        last = kind
+    return pieces
+
+
+def flow_svg(graph: dict, cells: int = FLOW_SVG_CELLS) -> str:
+    """Every step as the browser draws it: `flow_diagram`'s cell grid (the terminal's boxes and arrows, the same
+    lanes, notes and wrapping, nothing cut) as SVG text on a fixed grid. Each run of one style starts at its own
+    cell and fills exactly its cells (`textLength`; in a run holding a wide glyph, the text flows as the font sets
+    it and each stretch of line glyphs starts at its cell), so a border lines up below Hangul whatever the font's
+    advance. Each box is a `<g data-event-id>` holding a white rect (drawn under the text, which the page lets
+    clicks pass through) with the box's number, title and status as its label, and the events a fork's narrow sides
+    folded into it (`data-folds`), so the page lights it for them. A graph no grid fits (`flow_diagram` gives None)
+    is drawn as the terminal's branching text list, one clickable row per event. Only the elements the page imports
+    (svg, defs, marker, path, g, rect, text), every text escaped."""
+    import html
+    diagram = None
+    if graph["events"]:
+        for size in (cells, cells + FLOW_SVG_WIDER, cells + 2 * FLOW_SVG_WIDER):
+            diagram = flow_diagram(graph, size)
+            if diagram is not None:
+                cells = size
+                break
+    labels = graph.get("labels") or status_labels(graph)
+    number = {event["id"]: event.get("number", n) for n, event in enumerate(graph["events"], 1)}
+    titles = {event["id"]: safe_text(event["title"], multiline=False) for event in graph["events"]}
+    body: list[str] = []
+    if diagram is None:
+        # The text list stands in (or says there is nothing): one row per line, an event's row clickable.
+        rows = terminal_graph(graph) if graph["events"] else [(tr("저장된 사건이 없습니다.", "No saved events."), None)]
+        diagram = Diagram(max(cells, max((wcswidth(text) for text, _ in rows), default=0)))
+        for y, (text, key) in enumerate(rows):
+            diagram.put(y, 0, safe_text(text, multiline=False), "", key)
+            if key:
+                diagram.boxes.setdefault(key, (y, 0, 1, diagram.width))
+        cells = diagram.width
+    width = int(cells * CELL_W + 2 * CELL_PAD)
+    height = int(len(diagram.rows) * CELL_H + 2 * CELL_PAD)
+    # Where a fork's narrow sides fold a checked result or a sub-agent into its step's box, that box lights for it.
+    folds: dict[str, list[str]] = {}
+    for key, main in diagram.beside.items():
+        if key not in diagram.boxes and main in diagram.boxes:
+            folds.setdefault(main, []).append(key)
+    for key, (top, left, rows_high, wide) in diagram.boxes.items():
+        # The rect's edges run through the middle of the border cells, where a box-drawing glyph draws its line.
+        x, y = CELL_PAD + (left + 0.5) * CELL_W, CELL_PAD + (top + 0.5) * CELL_H
+        label = f"{number.get(key, 0):02d} · {titles.get(key, key)} · {safe_text(labels.get(key, ''), multiline=False)}"
+        body.append(f'<g data-event-id="{html.escape(key, quote=True)}" tabindex="0" role="button" '
+                    f'aria-label="{html.escape(label, quote=True)}"'
+                    + (f' data-folds="{html.escape(" ".join(folds[key]), quote=True)}"' if key in folds else "")
+                    + f'><rect x="{x:.1f}" y="{y:.1f}" '
+                    f'width="{max(1, wide - 1) * CELL_W:.1f}" height="{max(0.6, rows_high - 1) * CELL_H:.1f}" '
+                    f'rx="3" fill="#ffffff"/></g>')
+    for row_index, row in enumerate(diagram.rows):
+        baseline = CELL_PAD + row_index * CELL_H + CELL_H - 5
+        for start, text, style in _cell_runs(row):
+            ink = f'fill="{FLOW_INK.get(style, FLOW_INK[""])}"' + (' font-weight="700"' if style in FLOW_BOLD else "")
+            # A Hangul glyph is narrower than its two cells in most fonts: text holding one flows as the font sets
+            # it, and every line glyph after it starts at its own cell and fills its cells, so lines and corners
+            # meet; text with no wide glyph fills its cells exactly.
+            at = start
+            for piece in _pieces(text) if any(wcwidth(char) == 2 for char in text) else [text]:
+                cells_of = wcswidth(piece)
+                lead = len(piece) - len(piece.lstrip(" "))
+                inked = piece.strip(" ")
+                if inked:
+                    exact = len(inked) > 1 and wcswidth(inked) == len(inked)
+                    stretch = f' textLength="{wcswidth(inked) * CELL_W:.1f}" lengthAdjust="spacing"' if exact else ""
+                    shown = html.escape(inked.replace(" ", NBSP), quote=False)  # inner spaces kept, without xml:space
+                    body.append(f'<text x="{CELL_PAD + (at + lead) * CELL_W:.1f}" y="{baseline}" {ink}{stretch}>'
+                                f'{shown}</text>')
+                at += cells_of
+    head = (f'<svg xmlns="http://www.w3.org/2000/svg" class="flow" width="{width}" height="{height}" '
+            f'viewBox="0 0 {width} {height}" role="img" '
+            f'aria-label="{html.escape(tr("프로젝트 흐름 · 모든 단계", "Project flow · every step"), quote=True)}" '
+            f'font-family="Menlo, Consolas, DejaVu Sans Mono, D2Coding, Noto Sans Mono CJK KR, monospace" '
+            f'font-size="{CELL_FONT}">')
     return head + "\n".join(body) + "</svg>"

@@ -262,3 +262,146 @@ def test_the_page_learns_the_latest_version_and_an_event_reads_only_its_sources(
     monkeypatch.setattr(obj.store,'sources',lambda: (_ for _ in ()).throw(AssertionError('whole table read')))
     event=obj.store.graph()['events'][0]['id']
     assert request(obj,'GET','/events/'+event)[0]==200
+
+
+@pytest.fixture
+def story_viewer(laboratory):
+    """A viewer over the demo story: two requests, a proposal, two edits each checked by a test run, the report."""
+    from dataclasses import replace
+    from contexttrail.demo import story_steps, step_text
+    _,store,engine,records,make=laboratory
+    for n, step in enumerate(story_steps()):
+        text = step_text(step, CASES)
+        if step['role'] == 'tool_call':
+            text = f"Tool: {step['tool']}\n{text}"
+        record = make(text, key=f's{n}', role=step['role'], provider=step['session'], session=f"demo-{step['session']}")
+        records.append(replace(record, recorded_at=f'2026-09-22T10:{n:02d}:00Z', tool_call_id=step.get('call')))
+    engine.analyze(FixtureRunner)
+    obj=LocalViewer(store,None,port=0).start()
+    yield obj
+    obj.close()
+
+
+ALLOWED_SVG = {'svg','defs','marker','path','g','rect','text'}  # the page's own whitelist (app.js)
+
+
+def test_every_step_is_the_terminal_flow_drawn_under_the_pages_whitelist(story_viewer):
+    import xml.etree.ElementTree as ET
+    from contexttrail.schema import folded_view
+    obj=story_viewer
+    status,data,headers=request(obj,'GET','/graph.svg?view=all')
+    assert status==200 and headers['Content-Type'].startswith('image/svg+xml')
+    document=ET.fromstring(data)
+    assert {node.tag.split('}')[1] for node in document.iter()}<=ALLOWED_SVG
+    assert not any(name.startswith('on') or name in ('href','style') for node in document.iter() for name in node.attrib)
+    assert document.attrib['class']=='flow'
+    boxes=[node for node in document.iter() if 'data-event-id' in node.attrib]
+    drawn={node.attrib['data-event-id'] for node in boxes}
+    folded={key for node in boxes for key in node.attrib.get('data-folds','').split()}
+    graph=folded_view(obj.store.graph())
+    assert {event['id'] for event in graph['events']}<=drawn|folded  # every step has its box, or lights the one it folded into
+    assert all(node.attrib.get('tabindex')=='0' and node[0].tag.endswith('rect') for node in boxes)
+    script=request(obj,'GET','/app.js',auth=False)[1].decode()
+    assert '"/graph.svg?view=all"' in script
+    assert request(obj,'GET','/graph.svg?view=all')[1]==data  # drawn once per version and view
+
+
+def test_the_every_step_svg_cuts_no_text_and_keeps_lines_apart_from_wide_glyphs():
+    import xml.etree.ElementTree as ET
+    from contexttrail.diagram import flow_svg
+    title=("결합을 추가적으로 수정하기 위해서는 완전히 더 세부적으로 쪼개야 할 것 같단 말이지? 그렇다면 모델도 "
+           "sol -> luna로 바꿀 필요가 있어 보이는데 <b>&</b> " + "x"*150)
+    events=[{"id":"q","kind":"question","status":"asked","title":title,"summary":"","actor":"user",
+             "basis":"explicit_statement","evidence_ids":[],"session_ids":["s"],"recorded_at":"2026-09-22T10:00:00Z"},
+            {"id":"d","kind":"decision","status":"adopted","title":"나눈다","summary":"이유가 있다. 둘째 문장.","actor":"assistant",
+             "basis":"explicit_statement","evidence_ids":[],"session_ids":["s"],"recorded_at":"2026-09-22T10:01:00Z"}]
+    edges=[{"id":"e1","from_event_id":"q","to_event_id":"d","relation":"answers","basis":"explicit","active":True,"evidence_ids":[]}]
+    out=flow_svg({"version":1,"events":events,"edges":edges})
+    document=ET.fromstring(out)
+    texts=[node.text or '' for node in document.iter() if node.tag.endswith('text')]
+    joined=''.join(c for c in ''.join(texts) if c not in ' \u00a0' and not '\u2500'<=c<='\u25ff')  # borders out
+    assert title.replace(' ','') in joined and '…' not in joined  # wrapped over lines, never cut
+    assert '<b>' not in out and '&lt;b&gt;' in out
+    wide=lambda text: any('가'<=c<='힣' for c in text)
+    line=lambda text: any('─'<=c<='◿' for c in text)
+    assert not any(wide(text) and line(text) for text in texts)  # a border after Hangul starts at its own cell
+    widths={round(float(node.attrib['textLength'])/len(node.text)) for node in document.iter()
+            if node.tag.endswith('text') and 'textLength' in node.attrib}
+    assert widths=={8}  # narrow text fills exactly its cells (8.4 px each)
+
+
+def test_the_page_lists_requests_with_their_times_and_the_turn_of_each_event(story_viewer):
+    from contexttrail.schema import folded_view
+    obj=story_viewer
+    payload=json.loads(request(obj,'GET','/graph')[1])
+    graph=payload['graph']
+    numbers={event['id']:n for n,event in enumerate(graph['events'],1)}
+    requests=payload['requests']
+    assert len(requests)==2 and all(set(item)=={'id','number','title','at'} for item in requests)
+    assert [item['number'] for item in requests]==sorted(numbers[item['id']] for item in requests)
+    assert requests[0]['at']=='2026-09-22T10:00:00Z'
+    assert all(payload['turn_of'][item['id']]==n for n,item in enumerate(requests))
+    later=[key for key,n in payload['turn_of'].items() if n==1]
+    assert all(numbers[key]>=requests[1]['number'] for key in later)
+    assert payload['run_state'] and payload['run_state']!=graph['analysis_status']  # in the screen language
+    assert [event['id'] for event in graph['events']]==[event['id'] for event in folded_view(obj.store.graph())['events']]
+
+
+def test_the_detail_puts_the_events_own_evidence_first_and_groups_its_relations(story_viewer):
+    from contexttrail import i18n
+    obj=story_viewer
+    graph=json.loads(request(obj,'GET','/graph')[1])['graph']
+    change=next(e for e in graph['events'] if e['kind']=='action' and any(
+        edge['active'] and edge['relation']=='verifies' and edge['from_event_id']==e['id'] for edge in graph['edges']))
+    data=json.loads(request(obj,'GET','/events/'+change['id'])[1])
+    event=data['event']
+    assert event['number']==[e['id'] for e in graph['events']].index(change['id'])+1
+    assert event['kind_label']=='변경' and event['basis_label']=='도구 기록' and event['status_tone'] in ('ok','warn','fail','plain')
+    own=[item['own'] for item in data['evidence']]
+    assert own and own==sorted(own,reverse=True)  # its own evidence before its relations'
+    assert all(item['role_label'] in ('도구 호출','도구 결과','사용자 발화','어시스턴트 응답') for item in data['evidence'])
+    groups=[item['group'] for item in data['relations']]
+    assert 'checks' in groups and groups==sorted(groups,key=['checks','links','structure'].index)
+    check=next(item for item in data['relations'] if item['group']=='checks')
+    assert check['other_title'] and check['other_status'] and check['relation_label']=='검증' and check['direction']=='out'
+    turn=[item for item in data['relations'] if item.get('origin')=='dialog_turn']
+    assert all(item['group']=='structure' and item['origin_label']=='대화 순서' for item in turn)
+    i18n.set_language('en')
+    data=json.loads(request(obj,'GET','/events/'+change['id'])[1])
+    labels=[data['event'][key] for key in ('kind_label','actor_label','basis_label','status_label')]
+    labels+=[item[key] for item in data['relations'] for key in ('relation_label','basis_label','origin_label','other_status')]
+    labels+=[item[key] for item in data['evidence'] for key in ('role_label','provider_label')]
+    assert not any(re.search('[가-힣]',label) for label in labels)
+    assert 'explicit_statement' not in labels and 'tool_record' not in labels and 'tool_call' not in labels
+
+
+def test_limitations_are_grouped_by_their_head_the_largest_first():
+    from contexttrail.webview import limitation_groups
+    messages=["Codex unparsed record type world_state, 1 records not sent to analysis (10/18/a.jsonl#6c): holds it",
+              "Codex unparsed record type world_state, 5 records not sent to analysis (10/18/b.jsonl#7d): holds it",
+              "Claude unsupported record types 2be9.jsonl: attachment:date",
+              "Claude unsupported record types 3cf0.jsonl: attachment:date",
+              "Claude unsupported record types 4d01.jsonl: attachment:date",
+              "No verifies edges: the run named no file",
+              "A sentence the analysis wrote, with no head at all.",
+              "A long sentence before its colon is no head, since it says what happened in many words: here",
+              "A sentence the analysis wrote, with no head at all."]
+    groups=limitation_groups(messages)
+    assert [(g['head'],g['count']) for g in groups]==[
+        ("Claude unsupported record types …",3),
+        ("Codex unparsed record type world_state, N records not sent to analysis",2),
+        ("No verifies edges",1), (None,2)]
+    assert groups[-1]['items'][0]=="A sentence the analysis wrote, with no head at all."  # a repeat listed once
+    assert sum(g['count'] for g in groups)==len(set(messages))
+
+
+def test_the_page_has_request_navigation_and_search_in_both_languages(viewer):
+    from contexttrail import i18n
+    obj,_,_=viewer
+    page=request(obj,'GET','/',auth=False)[1].decode()
+    assert all(f'id="{name}"' in page for name in ('prev','next','latest','turn','search','matches','notice'))
+    script=request(obj,'GET','/app.js',auth=False)[1].decode()
+    assert 'textContent=' in script and 'innerHTML' not in script  # every string is set as text
+    i18n.set_language('en')
+    page=request(obj,'GET','/',auth=False)[1].decode()
+    assert not re.search('[가-힣]',page)

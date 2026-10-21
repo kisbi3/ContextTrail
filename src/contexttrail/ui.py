@@ -13,9 +13,9 @@ from typing import Callable
 from wcwidth import wcswidth
 
 from .diagram import HEAVY, Diagram, _wrap, flow_diagram, request_turns
-from .i18n import Labels, language, tr
+from .i18n import language, tr
 from .schema import folded_view, story_view
-from .render import (ASCII_MARK, MARK, event_detail, linked_events, status_labels, status_tones,
+from .render import (ASCII_MARK, MARK, RUN_STATE, event_detail, linked_events, status_labels, status_tones,
                      terminal_graph)
 from .agent_view import reference
 from .analysis import plan_choices_text, plan_text
@@ -148,12 +148,6 @@ WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0) or curses.REPORT_MOUSE_POSITI
 CLICK = curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
 
 # The footer lists the common panel keys; `?` shows every key (`help_sections` plus the screen's own).
-# A run's end state in the screen language (`last_check.status`, from `analysis_runs`).
-RUN_STATE = Labels({"complete": "완료", "partial": "일부 완료", "failed": "실패", "noop": "새 기록 없음",
-                    "no_data": "기록 없음", "cancelled": "취소됨", "call_limit": "호출 상한", "running": "실행 중"},
-                   {"complete": "complete", "partial": "partial", "failed": "failed", "noop": "nothing new",
-                    "no_data": "no records", "cancelled": "cancelled", "call_limit": "call cap reached",
-                    "running": "running"})
 
 
 def keys(first: str = "") -> str:

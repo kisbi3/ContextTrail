@@ -42,7 +42,7 @@ Keyring-only 인증은 미지원이다. read-only 인증 파일에서 credential
 
 Loopback bind, 프로세스별 랜덤 접근 토큰, Authorization header, 정확한 Host/Origin 검사, POST+사용자 확인+별도 action header를 요구한다. URL token은 fragment로 전달하여 서버 요청 로그에 남기지 않는다. 토큰은 브라우저 sessionStorage에 저장된다. 생성 주소를 공유한 사람은 비공개 근거를 볼 수 있으므로 비밀정보로 취급한다.
 
-JS/CSS는 패키지에 포함하고 외부 CDN·폰트를 요청하지 않는다. 원문은 textContent로 표시한다. SVG는 host-generated escaped markup에 추가 요소 whitelist를 적용한다(핵심 보기 SVG `diagram.story_svg`도 같은 요소만 쓰고 모든 글자를 escape하며, `/graph.svg?view=story` 외의 값은 전체 보기다). CSP·no-store·no-referrer를 설정한다. 일반 browser extension, 같은 계정의 공격적 소프트웨어, 사용자가 의도적으로 전달한 토큰까지 통제하지는 않는다.
+JS/CSS는 패키지에 포함하고 외부 CDN·폰트를 요청하지 않는다. 원문은 textContent로 표시한다. SVG는 host-generated escaped markup에 추가 요소 whitelist를 적용한다(핵심 보기 SVG `diagram.story_svg`와 모든 단계 SVG `diagram.flow_svg`도 같은 요소만 쓰고 모든 글자를 escape하며, `/graph.svg?view=story` 외의 값은 모든 단계다). 상세·요청 이동·검색·한계 목록의 글자는 모두 textContent로 넣는다. CSP·no-store·no-referrer를 설정한다. 일반 browser extension, 같은 계정의 공격적 소프트웨어, 사용자가 의도적으로 전달한 토큰까지 통제하지는 않는다.
 
 GET/F5는 분석하지 않는다. explicit POST 요청만 분석하며 기존 scope lock을 사용한다. 실제 SSH 터널은 사용자가 구성하며 자동 공개 서버나 다중 사용자 로그인 서비스를 만들지 않는다.
 

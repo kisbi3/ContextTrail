@@ -428,7 +428,7 @@ Select a graph node to inspect event/relationship/evidence levels, preserved sou
 
 The page opens on the **story view**, as the terminal does: one column of boxes for the requests, decisions, goals, changes of course, findings and failures nothing came of, each with its title, a line per sub-agent handed work there (what it last said) and a line for its own folded steps, its status the border's colour and a mark after its kind. The button above the graph switches to every step and back; the selected-event panel always shows the whole record.
 
-No external CDNs or web fonts are used. The browser graph is a custom SVG layout generated from a safe internal Mermaid subset (the story view is its own one-column layout, under the same element whitelist). **This is not a full Mermaid engine bundle.** Layout and actual browser rendering for complex graphs are pending further validation.
+No external CDNs or web fonts are used. The page opens on the story view (one column of boxes); the button above it switches to every step, drawn as the same boxes and arrows the terminal shows, on a fixed character grid. Buttons above the graph move between your requests (◀ ▶, latest, with each request's date), a search box finds events by words of their title or summary, and the detail shows an event's own evidence first, its relations as links you can click. Both drawings are SVG made by ContextTrail itself and checked against an element whitelist in the page; this is not a Mermaid engine.
 
 ---
 
@@ -604,7 +604,7 @@ src/contexttrail/
   schema.py          JSON contract, evidence validation, GraphDelta application
   git_context.py     scope/worktree, pinned Git evidence
   store.py           SQLite, lock, ledger, atomic publish
-  render.py          Mermaid subset, character graph, SVG, export
+  render.py          Mermaid subset, character graph, labels, export
   ui.py              curses TUI
   webview.py         loopback detail server
   prompts/           SPEC-based analysis instructions
