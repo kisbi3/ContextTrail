@@ -18,7 +18,7 @@ from .render import export_text
 from .runners import CLIRunner
 from .schema import KINDS, RELATIONS, STATUSES, folded_view
 from .store import Store
-from .util import FlowError, digest, dumps, ident, private_dir
+from .util import FlowError, digest, dumps, ident, mask_record, private_dir
 
 
 def error_kinds(message: str) -> set[str]:
@@ -211,6 +211,8 @@ def fixture_records(data: dict) -> list[SourceRecord]:
             raise FlowError(tr('fixture role이 지원 범위 밖입니다.', 'The fixture role is not supported.'))
         if record.provider not in {'codex', 'claude', 'opencode', 'git'} or not isinstance(record.locator, dict):
             raise FlowError(tr('fixture provider/locator가 잘못되었습니다.', 'The fixture provider/locator is invalid.'))
+        # Masked as every reader's records are (`model.segment_record`), so a fixture holding a key does not send it.
+        record = mask_record(record)
         # The eval loader never reads paths in locator or executes log commands.
         # Disable revision-file capabilities: a fixture cannot grant filesystem access.
         record.locator = {'kind': 'frozen_fixture', 'original_locator': record.locator}

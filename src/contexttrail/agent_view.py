@@ -13,7 +13,7 @@ from typing import Callable
 from .render import (ACTOR, PROVIDER, RELATION, ROLE, agents_label, analysis_label, evidence_excerpt, kind_label,
                      readable_quote, status_labels)
 from .i18n import tr
-from .util import FlowError, mask_secrets, safe_text
+from .util import FlowError, safe_text
 
 REF = re.compile(r"^(?:contexttrail:)?(ev_[0-9a-f]{4,})(?:@v(\d+))?$")
 
@@ -151,8 +151,7 @@ def event_record(graph: dict, event_id: str, evidence: Callable[[str], dict | No
             "status": event["status"], "status_label": labels[event_id], "actor": event.get("actor"),
             "occurred_at": event.get("occurred_at") or event.get("recorded_at"),
             "authoring": event.get("authoring", []), "analysis": event.get("analysis"),
-            "summary": mask_secrets(event["summary"]),  # `--json` too, for a summary an earlier version stored
-            "out_of_order": event_id in graph.get("out_of_order_events", []),
+            "summary": event["summary"], "out_of_order": event_id in graph.get("out_of_order_events", []),
             "links": links, "open_items": open_items, "evidence": quotes}
 
 
@@ -206,7 +205,7 @@ def show_text(result: dict) -> list[str]:
         lines.append("  " + out_of_order_note())
     lines += ["", tr("무슨 일이 있었나", "What happened")]
     # Quoted like the evidence, so a line of it cannot pose as the tool's own text.
-    lines += ["  > " + _clean(part) for part in safe_text(mask_secrets(event["summary"])).splitlines() if part.strip()]
+    lines += ["  > " + _clean(part) for part in safe_text(event["summary"]).splitlines() if part.strip()]
     if event["links"]:
         lines += ["", tr("연결된 사건", "Linked events")]
         for link in event["links"]:

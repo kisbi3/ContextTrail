@@ -15,7 +15,7 @@ from typing import Any, Callable, Iterator
 from .i18n import tr
 from .model import SourceRecord, empty_graph
 from .schema import fill_authoring, fill_steps, fold_delegate_reports, link_delegations, link_forks
-from .util import FlowError, dumps, merge_focus, now, private_dir
+from .util import FlowError, dumps, mask_data, mask_evidence, merge_focus, now, private_dir
 
 # Conservative floor for SQLite's per-statement bound variable limit (999).
 _SQL_VARIABLES = 900
@@ -171,14 +171,26 @@ class Store:
                        (key, dumps(value)))
 
     def graph(self, version: int | None = None) -> dict:
+        """A published graph version (the newest by default). Its strings come back masked (`util.mask_data`): a
+        version stored before records were masked at reading may hold a credential in a title, summary or rationale,
+        and every reader (screens, exports, session memory, the model's context) reads it through here. Publishing
+        a graph built on it stores the masked text; IDs are never masked. A version never changes, so the masked
+        text of the last one read is kept (`_shown`) and the next read of it only parses it."""
         with self.connection() as db:
             if version is None:
-                row = db.execute("SELECT graph FROM graph_versions ORDER BY version DESC LIMIT 1").fetchone()
+                key = db.execute("SELECT version, created_at FROM graph_versions ORDER BY version DESC LIMIT 1").fetchone()
             else:
-                row = db.execute("SELECT graph FROM graph_versions WHERE version=?", (version,)).fetchone()
-            if version is not None and row is None:
-                raise FlowError(tr("요청한 그래프 버전이 없습니다.", "The requested graph version does not exist."))
-            return unpack_graph(row[0]) if row else empty_graph(self.scope_id)
+                key = db.execute("SELECT version, created_at FROM graph_versions WHERE version=?", (version,)).fetchone()
+            if key is None:
+                if version is not None:
+                    raise FlowError(tr("요청한 그래프 버전이 없습니다.", "The requested graph version does not exist."))
+                return empty_graph(self.scope_id)
+            key = tuple(key)
+            shown = getattr(self, "_shown", None)
+            if shown is None or shown[0] != key:
+                row = db.execute("SELECT graph FROM graph_versions WHERE version=?", (key[0],)).fetchone()
+                shown = self._shown = (key, json.dumps(mask_data(unpack_graph(row[0])), ensure_ascii=False))
+        return json.loads(shown[1])
 
     def sources(self) -> dict[str, dict]:
         with self.connection() as db:
@@ -423,12 +435,13 @@ class Store:
                  dumps(result) if result is not None else None, now()))
 
     def evidence(self, evidence_id: str) -> dict | None:
+        """An evidence item, masked as it is given out (`util.mask_evidence`; the stored row keeps its text)."""
         with self.connection() as db:
             row = db.execute("SELECT data FROM evidence_items WHERE id=?", (evidence_id,)).fetchone()
-            return json.loads(row[0]) if row else None
+            return mask_evidence(json.loads(row[0])) if row else None
 
     def evidence_many(self, ids: list[str]) -> dict[str, dict]:
-        """Fetch many evidence items in one query.
+        """Fetch many evidence items in one query, each masked like `evidence`.
 
         A Harness is built twice per work unit and collects every evidence id in
         the graph, so calling `evidence` per id meant thousands of connection
@@ -451,7 +464,7 @@ class Store:
                     # treat a missing key as "no evidence" keep doing so.
                     item = json.loads(row[1])
                     if item:
-                        result[row[0]] = item
+                        result[row[0]] = mask_evidence(item)
         return result
 
     def publish(self, graph: dict, unit_ids: list[str], processed: dict[str, str], evidence: dict[str, dict],

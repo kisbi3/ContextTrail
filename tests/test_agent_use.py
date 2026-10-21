@@ -355,18 +355,3 @@ def test_show_marks_everything_written_from_past_records_as_data_before_it():
     injected = next(n for n, line in enumerate(lines) if "SYSTEM:" in line)
     assert note < injected and lines[injected].startswith("  > ")
 
-
-def test_credential_shaped_values_are_hidden_wherever_quotes_are_read_but_kept_in_the_store():
-    from contexttrail.util import SECRET_HIDDEN, mask_secrets
-    key = "sk-proj-" + "A1b2C3d4" * 6
-    assert mask_secrets(f"OPENAI_API_KEY={key}") == f"OPENAI_API_KEY={SECRET_HIDDEN}"
-    assert mask_secrets("max_tokens=128000 and token count 12") == "max_tokens=128000 and token count 12"
-    quote = f"probe: OPENAI_API_KEY={key}"
-    graph = {"version": 2, "edges": [], "open_items": [],
-             "events": [{"id": "ev_5ec4e7aa", "kind": "outcome", "status": "observed_failure", "actor": "assistant",
-                         "title": "Leaked key", "summary": f"The probe printed {key}.", "evidence_ids": ["evi_1"],
-                         "recorded_at": "2026-10-01T00:00:00Z"}]}
-    item = {"quote": quote, "source": {"role": "tool_result"}, "start_line": 1, "end_line": 1}
-    text = "\n".join(show_text(show("ev_5ec4", graph, lambda key: item, lambda version: graph)))
-    assert key not in text and SECRET_HIDDEN in text
-    assert item["quote"] == quote  # the evidence itself is unchanged
