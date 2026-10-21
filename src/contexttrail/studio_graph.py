@@ -59,11 +59,12 @@ class StudioCodexRunner(CLIRunner):
     def __init__(self):
         super().__init__("codex")
 
-    def run(self, task: dict, schema: dict, cancel: threading.Event) -> dict:
-        # A child of the running Studio node, with the exact request and response.
+    def run(self, task: dict, schema: dict, cancel: threading.Event, thread=None) -> dict:
+        # A child of the running Studio node, with the exact request and response. `thread` is the task's Runner
+        # conversation (`CLIRunner.thread`), which the harness passes whenever the runner keeps one.
         @traceable(name="Codex structured response", run_type="llm")
         def call(request: dict, response_schema: dict) -> dict:
-            return super(StudioCodexRunner, self).run(request, response_schema, cancel)
+            return super(StudioCodexRunner, self).run(request, response_schema, cancel, thread=thread)
 
         return call(task, schema)
 
@@ -408,8 +409,8 @@ def prepare_extract_input(state: StudioState) -> StudioState:
     unit = state["planned_units"][state["unit_index"]]
     if state.get("mode") == "cli" and engine.config.extract_workers > 1:
         return {"extract_input": {"unit_id": unit["id"], "mode": "parallel_batch",
-                                  "note": tr("배치의 정확한 요청은 각 worker의 Build extract request trace에서 확인합니다.",
-                                             "The exact request of a batch is in each worker's Build extract request trace.")}}
+                                  "note": tr("배치의 정확한 요청은 각 단위의 ContextTrail story 호출 trace(--langsmith-content)에서 확인합니다.",
+                                             "The exact request of each unit in a batch is in its ContextTrail story call trace (--langsmith-content).")}}
     pool = {r.source_id: r for r in snapshot.records}
     cancel = _cli_session(state).cancel if state.get("mode") == "cli" else threading.Event()
     prepared = engine._prepare_extraction(unit, pool, store.graph(), snapshot.id,

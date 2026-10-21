@@ -1,27 +1,28 @@
 # 분석 호출과 로컬 평가
 
-이 버전은 구현·Mock 검증된 개발 alpha다. 실제 계정의 모델 접근권한·CLI sandbox 호환성과 의미 품질은 아직 실측하지 않았다. 모델 이름을 가상의 최신 ID로 하드코딩하지 않으며, 사용자가 설치된 CLI에서 접근 가능한 ID를 선택한다.
+개발 alpha다. 실제 Codex·Claude CLI로 픽스처와 실제 프로젝트를 측정한 기록은 `docs/plans/PERFORMANCE_PLAN.md`와 `docs/plans/PIPELINE_V2.md` §8에 있고, 의미 품질은 아직 사람이 확인한 단위가 적다(README의 "What has been measured"). 모델은 ContextTrail의 기본 이름(Codex `gpt-luna`, Claude `haiku`)이나 사용자가 고른 이름으로 지정하며, 버전이 없는 Codex 이름은 설치된 Codex의 목록에서 그 계열의 최신 모델로 바꾼다.
 
 ## 1. 프로젝트 범위 선별은 AI보다 먼저
 
-`project analyze .`는 현재 폴더를 `Scope.resolve()`로 정규화한다. Git이 있으면 공통 Git 디렉터리와 확인된 worktree를 연결하며 하위 폴더 지정은 유지한다. Codex의 `sessions`와 `archived_sessions` 아래 JSONL을 재귀 탐색한다. 날짜 폴더나 파일명의 프로젝트 문자열은 귀속 근거가 아니다.
+`contexttrail analyze .`는 현재 폴더를 `Scope.resolve()`로 정규화한다. Git이 있으면 공통 Git 디렉터리와 확인된 worktree를 연결하며 하위 폴더 지정은 유지한다. Codex의 `sessions`와 `archived_sessions` 아래 JSONL을 재귀 탐색한다. 날짜 폴더나 파일명의 프로젝트 문자열은 귀속 근거가 아니다.
 
 `parse_codex()`는 `session_meta.cwd`를 초기 경로로 사용하고 `turn_context.cwd`로 갱신한다. 개별 메시지의 명시 경로, 도구 인자의 `workdir`/`cwd`가 있으면 레코드 수준에서 반영한다. 상대 workdir은 알려진 절대 경로에 대해서만 해석한다. 도구 결과는 대응하는 call ID의 경로를 따른다. 확인 가능한 경로가 없으면 이름·본문 키워드로 추측하지 않는다. `Scope.includes()`는 경로 구성요소를 비교하므로 `/app`과 `/app-backup`을 혼동하지 않는다.
 
-세션이 다른 경로에서 시작했더라도 중간에 분석 대상 디렉터리의 작업을 했다면 그 레코드는 선택할 수 있다. 첫 metadata만 보고 세션 전체를 버리는 최적화는 하지 않는다. 초기 스캔은 계정 폴더의 여러 파일을 로컬에서 읽을 수 있으나, 범위 밖 본문을 LLM 분류 입력으로 보내지 않는다.
+Claude Code 기록은 행마다 적힌 `cwd`로, opencode 세션은 `session.directory`로(bash 호출의 `workdir`이 있으면 그 호출은 그 경로로) 같은 규칙에 따라 귀속한다. 세션이 다른 경로에서 시작했더라도 중간에 분석 대상 디렉터리의 작업을 했다면 그 레코드는 선택할 수 있다. 첫 metadata만 보고 세션 전체를 버리는 최적화는 하지 않는다. 초기 스캔은 계정 폴더의 여러 파일을 로컬에서 읽을 수 있으나, 범위 밖 본문을 LLM 분류 입력으로 보내지 않는다.
 
 ```bash
-project scan /path/to/project
+contexttrail scan /path/to/project
 # runner_calls: 0
-# codex_selection: examined / selected / excluded / unattributed
+# codex_selection: files_examined / files_with_selected_records / unattributed_records / transcript_files_reused
+# sources: 도구마다 읽은 위치, 출처(flag/saved/environment/default), 파일·기록 수
 ```
 
-**한계:** 이것은 기록된 경로의 구조적 귀속 판정이다. 한 메시지 안의 다른 프로젝트 언급을 의미적으로 지워 주는 기능은 아니다. shell 문자열 내부의 `cd`나 임의 절대 파일 경로를 실행·해석해 프로젝트 전체 귀속을 추측하지 않는다. 기록에 없는 경로 이동, 삭제된 worktree, 별도 clone의 연결은 보장하지 않는다. 최초 전체 파일 탐색 I/O를 제거하는 전역 색인은 아직 구현하지 않았다.
+**한계:** 이것은 기록된 경로의 구조적 귀속 판정이다. 한 메시지 안의 다른 프로젝트 언급을 의미적으로 지워 주는 기능은 아니다. shell 문자열 내부의 `cd`나 임의 절대 파일 경로를 실행·해석해 프로젝트 전체 귀속을 추측하지 않는다. 기록에 없는 경로 이동, 삭제된 worktree, 별도 clone의 연결은 보장하지 않는다. 첫 스캔은 각 도구 폴더의 기록 파일을 모두 읽는다. 그 뒤로는 이 프로젝트의 기록이 없던 파일 중 크기와 수정 시각이 그대로인 것은 다시 읽지 않는다(`ScanCache`, `scan`의 `transcript_files_reused`).
 
 ## 2. 분석 호출: 단위마다 한 번 (2026-10-20부터)
 
 ```bash
-project analyze . --runner codex --model gpt-sol --extract-effort high --workers 2 --max-calls 50
+contexttrail analyze . --runner codex --model gpt-sol --extract-effort high --workers 2 --max-calls 50
 ```
 
 단계별 모델(추출·통합·재검토)로 나누던 v1 파이프라인은 지웠다(`docs/plans/PIPELINE_V2.md`). 이제 작업 단위마다 모델 호출은 **이야기 호출 하나**다.
@@ -33,14 +34,14 @@ project analyze . --runner codex --model gpt-sol --extract-effort high --workers
 
 `--model`은 Runner 모델이고, `--extract-model`·`--extract-effort`는 이야기 호출의 모델과 추론 수준이다(이름은 예전 추출 호출에서 이어 왔다). 아무것도 주지 않으면 CLI 자체 기본값이 아니라 ContextTrail의 Runner 기본 모델(Codex `gpt-luna`는 설치된 Codex의 최신 Luna로 바꿔서, Claude `haiku`)을 이름으로 지정한다. 옵션은 프로젝트 상태에 보존한다. 이용 불가능한 모델이나 인증·한도 오류에서 다른 모델/공급자로 몰래 전환하지 않는다. Codex에서는 `gpt-sol`이 더 정확하지만 토큰당 가격이 Luna의 약 20배다(`docs/DECISIONS.md` 2026-10-20).
 
-`--workers`는 여러 단위의 이야기 호출을 같은 기준 그래프로 나란히 보내고, 게시는 입력 계획 순서로 직렬 수행한다. 기본 worker는 1, 허용 범위는 1~8이다. 실행당 기본 host call 상한은 30, eval은 20이다. 처리할 작업 단위 수(`--units N` 또는 확인 창에서 입력)를 정하면 상한은 단위당 3회(`CALLS_PER_UNIT`: 이야기 호출, 수리, 읽을 수 없는 답의 재요청)이고, `--max-calls`를 주면 그 값이 우선한다. 둘 다 그 실행에만 적용하고 저장하지 않는다. 완료되지 않은 단위는 다음 사용자의 명시적 실행에서 이어서 처리한다. 자동 rate-limit 회피나 다른 계정 전환은 없다.
+`--workers`는 여러 단위의 이야기 호출을 같은 기준 그래프로 나란히 보내고, 게시는 입력 계획 순서로 직렬 수행한다. 기본 worker는 1, 허용 범위는 1~8이다. 실행당 기본 host call 상한은 30, eval은 20이다. 처리할 작업 단위 수(`--units N` 또는 확인 창에서 입력)를 정하면 상한은 단위당 3회(`CALLS_PER_UNIT`: 이야기 호출, 수리, 읽을 수 없는 답의 재요청)이고, `--max-calls`를 주면 그 값이 우선한다. 둘 다 그 실행에만 적용하고 저장하지 않는다. 아직 보내지 않은 단위는 다음 명시적 실행에서 이어서 처리한다. 검사에 떨어져 건너뛴 단위는 기록이나 설정이 바뀌기 전에는 다시 보내지 않는다(`unit_failures`). 같은 입력으로 다시 보내려면 `--retry-failed`를 준다. 자동 rate-limit 회피나 다른 계정 전환은 없다.
 
 ## 3. LLM Ops
 
 ```bash
-project ops /path/to/project
-project ops /path/to/project --run-id run_...
-project ops /path/to/project --details
+contexttrail ops /path/to/project
+contexttrail ops /path/to/project --run-id run_...
+contexttrail ops /path/to/project --details
 ```
 
 SQLite `llm_calls`에 role/model 요청값/worker/run/unit/attempt, prompt·schema·input hash, 근거·repair round, routing 이유, 결과 상태와 제공된 usage를 기록한다. 원문 전체나 인증 토큰, 비공개 내부 추론을 기본 trace에 저장하지 않는다. 실제 모델명이 보고되지 않으면 unknown이며 요청 alias를 실제 모델명으로 간주하지 않는다.
@@ -53,27 +54,27 @@ SQLite `llm_calls`에 role/model 요청값/worker/run/unit/attempt, prompt·sche
 
 ```bash
 # 합성 데이터, 외부 LLM 호출 없음
-project eval --fixture demo --runner mock --workers 2 --output /tmp/pf-eval-offline
+contexttrail eval --fixture demo --runner mock --workers 2 --output /tmp/pf-eval-offline
 
 # 설치·인증된 CLI로 작은 동일 합성 사례를 실제 평가
-project eval --fixture demo --runner codex --model gpt-luna \
+contexttrail eval --fixture demo --runner codex --model gpt-luna \
   --workers 2 --max-calls 20 --yes --output /tmp/pf-eval-live
 ```
 
 Live는 자료 전송·해당 계정 사용량을 수반하므로 명시적 `--yes`가 필요하다. Mock은 demo에만 쓸 수 있다. 실제 프로젝트에 Mock을 붙여 의미 분석에 성공한 것처럼 표시하지 않는다.
 
-각 실험은 새/빈 디렉터리의 별도 DB, 동일 frozen fixture, 초기 graph version 0에서 시작한다. `fixture.json`, `report.json`, `calls.json`, `flow.json`, `review.md`, `state/state.sqlite`가 남는다. 성공한 첫 실행 후 같은 입력을 다시 열어 no-op을 검사하며, 실패한 live trial을 자동으로 재시도하지 않는다.
+각 실험은 새/빈 디렉터리의 별도 DB, 동일 frozen fixture, 초기 graph version 0에서 시작한다. `fixture.json`, `report.json`, `calls.json`, `flow.json`, `review.md`, 호출마다 나란히 보는 `review.html`과 그 바탕인 호출별 검증 전 원래 응답(`call-review/`, 통과·거절 모두)과 그 실험의 상태 DB가 남는다. 성공한 첫 실행 후 같은 입력을 다시 열어 no-op을 검사하며, 실패한 live trial을 자동으로 재시도하지 않는다.
 
 A/B는 같은 fixture에 대해 서로 다른 **빈 output 경로**를 지정한다. 출력의 `source_snapshot_id`·`fixture_digest`·`initial_graph_version`을 비교한다. 모델별 호출/문자량/usage와 사람이 정의한 기대 사건/상태/근거/관계를 함께 확인한다. 정답 fixture의 일부 검사에 통과했다는 사실은 일반적 의미 정확도나 비용 절감의 실측이 아니다.
 
 ### 자신의 실제 기록으로 작은 fixture 만들기
 
-소스 ZIP의 helper는 먼저 프로젝트 경로로 선별하고, 명시한 세션의 작은 구간만 내보낸다. production DB나 원본 기록을 수정하지 않는다.
+소스 트리의 `scripts/make_eval_fixture.py`는 먼저 프로젝트 경로로 선별하고, 명시한 세션의 작은 구간만 내보낸다. production DB나 원본 기록을 수정하지 않는다.
 
 ```bash
 python scripts/make_eval_fixture.py /path/to/project \
   --session SESSION_ID --start 0 --max-records 20 --output /tmp/my-fixture.json
-project eval --fixture /tmp/my-fixture.json --runner codex \
+contexttrail eval --fixture /tmp/my-fixture.json --runner codex \
   --max-calls 20 --yes --output /tmp/pf-real-eval
 ```
 
@@ -81,4 +82,4 @@ fixture는 민감한 원문을 포함한다. 내용을 직접 보고 앞뒤 맥�
 
 ## 5. 검증되지 않은 것
 
-실제 Codex·Claude 계정별 모델 접근, 독립 CLI의 병렬 계정 제한, 실제 출력의 모델/usage metadata, 위험 규칙의 누락률은 live 평가가 필요하다. 이야기 호출의 측정은 `docs/plans/PIPELINE_V2.md` §8에 있다(두 프로젝트, Haiku·Luna·Sol). 이번 버전은 구조와 안전성 회귀를 검증했으며 이러한 성과를 실측했다고 주장하지 않는다.
+이야기 호출의 측정은 `docs/plans/PIPELINE_V2.md` §8에 있다(두 프로젝트, Haiku·Luna·Sol: 단위당 시간·입력 토큰·비용, 요청의 답과 변경의 검사 연결 수, 같은 코드의 반복 실행 편차). 아직 재지 않은 것: 큰 프로젝트를 처음부터 끝까지 분석한 결과를 사람이 확인한 것, 독립 CLI를 나란히 돌릴 때의 계정 제한, 계정마다 쓸 수 있는 모델의 차이, Linux bubblewrap 안의 Claude Runner.

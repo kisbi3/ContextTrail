@@ -263,3 +263,28 @@ def test_delta_attributes_a_change_to_the_candidate_that_resolves_to_it():
     validator.apply_delta(delta, base, state["snapshot_id"], state["run_id"], candidates)
     assert swapped[0]["candidate_ids"] == sorted(swapped[1])
     assert any(n["mode"] == "attribution_candidates_from_resolutions" for n in validator.normalizations)
+
+
+def test_studio_live_mode_passes_the_runner_conversation_to_the_codex_cli(tmp_path, monkeypatch):
+    # The real Studio runner, with only the CLI call itself answered by the fixture: the harness hands every call
+    # the task's conversation (`thread`), which the Studio runner must accept and pass on.
+    folder, codex, claude = create_demo(tmp_path / "source")
+    monkeypatch.setenv("CONTEXTTRAIL_STUDIO_SCOPE", str(folder))
+    monkeypatch.setenv("CONTEXTTRAIL_STUDIO_CODEX_HOME", str(codex))
+    monkeypatch.setenv("CONTEXTTRAIL_STUDIO_CLAUDE_HOME", str(claude))
+    threads = []
+
+    class Conversation:
+        def close(self):
+            pass
+
+    def answer(self, task, schema, cancel, thread=None):
+        threads.append(thread)
+        return FixtureRunner().run(task, schema, cancel)
+
+    monkeypatch.setattr(studio_graph.CLIRunner, "thread", lambda self: Conversation())
+    monkeypatch.setattr(studio_graph.CLIRunner, "run", answer)
+    monkeypatch.setattr(studio_graph.CLIRunner, "preflight", lambda self: None, raising=False)
+    result = graph.invoke({"mode": "live", "confirm_live": True, "max_units": 1})["result"]
+    assert result["completed_units"] == 1 and result["runner_calls"] == 1
+    assert threads and all(isinstance(thread, Conversation) for thread in threads)

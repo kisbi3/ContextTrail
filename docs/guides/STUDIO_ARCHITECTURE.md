@@ -2,38 +2,62 @@
 
 ## 실행 모드
 
-`contexttrail_analysis`는 하나의 LangGraph 실행 그래프다. 터미널의 `project analyze`, `project eval`도 이 그래프를 직접 실행한다. 기본 Studio 입력 `{}`은 합성 기록과 Mock Runner를 사용한다. `{"mode":"eval","confirm_live":true}`는 `CONTEXTTRAIL_STUDIO_EVAL_FIXTURE`에 고정된 작은 평가 JSON을 실제 Codex로 처리해 임시 상태에 게시한다. `{"mode":"live","confirm_live":true}`는 `CONTEXTTRAIL_STUDIO_SCOPE`에 고정된 실제 프로젝트를 읽고 Codex CLI를 호출해 기존 프로젝트의 ContextTrail SQLite 상태에 게시한다. Claude 기록은 입력으로 수집하지만 Claude 모델은 호출하지 않는다. 이 문서는 현재 실행 코드를 설명한다.
+`contexttrail_analysis`는 하나의 LangGraph 실행 그래프다(`langgraph.json` → `studio_graph.py:graph`). 터미널의 `contexttrail analyze`, `contexttrail eval`도 이 그래프를 직접 실행한다(모드 `cli`). Studio에서 쓸 수 있는 모드는 다음과 같다.
 
-Studio의 상자와 화살표는 이 LangGraph의 실제 실행 단계다. LangSmith trace는 그 실행에서 발생한 노드와 모델 요청·응답을 기록한다. 터미널에서 별도로 실행한 `project analyze` 호출을 Studio 그래프가 자동으로 가져오거나 재생하지는 않는다.
+- **기본 입력 `{}`:** 합성 기록과 Mock Runner를 쓴다.
+- **`{"mode":"eval","confirm_live":true}`:** `CONTEXTTRAIL_STUDIO_EVAL_FIXTURE`에 고정된 작은 평가 JSON을 실제 Codex로 처리하고, 결과를 임시 상태에 게시한다.
+- **`{"mode":"live","confirm_live":true}`:** `CONTEXTTRAIL_STUDIO_SCOPE`에 고정된 실제 프로젝트를 읽고 Codex CLI를 호출한 뒤, 그 프로젝트의 ContextTrail SQLite 상태에 게시한다.
+
+Studio의 실제 모드는 Codex Runner만 쓴다. Claude Code·opencode 기록은 입력으로 수집하지만 Claude 모델은 호출하지 않는다. 터미널의 `analyze`는 `--runner claude`도 쓸 수 있다. 이 문서는 현재 실행 코드를 설명한다(2026-10-20부터 단위마다 모델 호출이 하나인 파이프라인, `docs/plans/PIPELINE_V2.md`).
+
+Studio의 상자와 화살표는 이 LangGraph의 실제 실행 단계다. LangSmith trace에는 그 실행의 노드와 모델 요청·응답이 남는다. 터미널에서 따로 실행한 `contexttrail analyze`를 Studio 그래프가 자동으로 가져오거나 재생하지는 않는다.
 
 | 단계 | 실행 주체 | 실제 동작 |
 | --- | --- | --- |
-| `prepare_run` | 호스트 | 합성 fixture 생성 또는 서버 고정 프로젝트·평가 fixture와 실행 상한 확인 |
-| `scan_sources` | 호스트 | scope lock, 실제 로그·Git 수집, source ingest, run ledger 시작 |
-| `classify_steps` | 호스트 | 도구 호출을 코드로 edit/read/commit/test/vcs/run으로 분류한 개수만 상태에 기록(내용 없음, 모델 호출 없음) |
-| `plan_work_units` | 호스트 | 실제 `Engine._plan_units`; 기존 처리 단위 재사용·무효화 포함 |
-| `select_unit` | 호스트 | 처리할 단위의 source ID 선택 |
-| `prepare_extract_input` | 호스트 | 실제 `Harness.context`와 `build_task`로 첫 추출 요청을 구성. `request`·`response_schema`·새 원문/주변 문맥 목록과 기존 사건 선택 이유를 상태에 표시. 검증된 추출 재사용 시 요청 없음 |
-| `extract_model_and_validate` | Codex 또는 Mock + 호스트 | 실제 `Engine._extract_unit`; 구조화 후보 추출과 근거 검증. CLI의 worker가 2개 이상이면 첫 노드 방문에서 같은 graph snapshot을 기준으로 배치를 병렬 추출하고 뒤 방문에서는 준비된 결과를 소비 |
-| `validate_candidates` | 호스트 | 최종 추출 후보를 원문·줄 범위·출처와 다시 대조. 사건마다 제목·종류·상태·근거 인용을 `candidate_audit`에 표시 |
-| `prepare_integrate_input` | 호스트 | 추출 후보의 제목·요약·기존 사건 참조를 검색 단서로 사용하고 최신 저장 그래프를 기준으로 통합 요청을 구성. `request`·`response_schema`·기존 사건 선택 이유를 표시하고 후보가 없으면 모델 호출 생략을 표시 |
-| `integrate_model_and_validate` | Codex 또는 Mock + 호스트 | 실제 `Engine._integrate_unit`; 기존 그래프와 후보 통합·검증 |
-| `summarize_graph_changes` | 호스트 | 모델의 `GraphDelta`와 게시 전 추가·수정 사건 및 관계를 `graph_change_audit`에 표시 |
-| `publish_result` | 호스트 | source hash·graph version 검증 뒤 원자적 게시 |
-| `advance_unit`, `finish_run` | 호스트 | 다음 단위 또는 run 완료·부분 완료 기록 |
+| `prepare_run` | 호스트 | 합성 모드에서는 fixture를 만들고, 실제 모드에서는 서버에 고정된 프로젝트·평가 fixture와 실행 상한(`max_units` 1~10, `max_calls` 1~50)을 확인한다. CLI 모드에서는 중단된 run을 정리하고 run ledger를 시작한다 |
+| `scan_sources` | 호스트 | 로그·Git을 수집해 source를 ingest한다. Studio의 실제 모드에서는 여기서 scope lock을 잡고 run ledger를 시작한다(CLI에서는 lock을 `run_engine`이 그래프 실행 전에 잡는다) |
+| `classify_steps` | 호스트 | 도구 호출을 코드로 edit/read/commit/test/vcs/run 등으로 분류하고, 그 개수만 상태에 남긴다(내용 없음, 모델 호출 없음) |
+| `plan_work_units` | 호스트 | 실제 `Engine._plan_units`를 실행한다. 저장된 단위의 재사용·무효화, 실패한 단위의 보류(`_hold_back_failed`)도 포함한다 |
+| `select_unit` | 호스트 | 처리할 단위의 source ID를 고른다 |
+| `prepare_extract_input` | 호스트 | `Engine._prepare_extraction`과 `Engine.story_input`으로 이야기 요청을 만든다. 상태에는 Runner가 첫 시도에 받는 그대로의 `request`(짧은 ID 포함)와 `response_schema`(`light.STORY_SCHEMA`), 새 기록, 기존 사건, 문맥 선택 이유를 남긴다. 저장된 추출이 같은 라우팅 서명을 가지면 요청을 만들지 않는다(`request`가 null). 다만 모델 노드는 문맥 digest까지 같을 때만 그 추출을 재사용하므로, 문맥이 바뀌었으면 여기 표시되지 않은 새 이야기 호출이 나간다 |
+| `extract_model_and_validate` | Codex 또는 Mock + 호스트 | 실제 `Engine._extract_unit`. 이야기 호출 한 번(답이 검사에 떨어지면 수리 한 번, 읽을 수 없는 답은 재요청 한 번)을 보내고, `light.story_extraction`이 답을 후보 사건·관계로 바꿔 근거를 검증한다. CLI의 worker가 2개 이상이면 첫 방문에서 같은 그래프를 기준으로 배치를 나란히 추출하고, 뒤 방문은 준비된 결과를 쓴다 |
+| `validate_candidates` | 호스트 | 최종 후보를 원문·줄 범위·출처와 다시 대조한다. 사건마다 제목·종류·상태·근거 인용을 `candidate_audit`에 남긴다 |
+| `publish_draft` | 호스트 | 모델 호출 없이 코드가 후보를 최신 그래프에 대한 변경으로 만들어 검사와 함께 적용한다(`Engine._integrate_unit`: `schema.draft_delta` → `apply_delta`) |
+| `link_request_turns` | 호스트 | 모델 호출 없음. 사람의 메시지마다 요청 사건을 두고, 새 사건을 그 대화 차례에 잇는다(`follows`, `dialog_turn`) |
+| `summarize_graph_changes` | 호스트 | 게시 전 추가·수정된 사건과 관계, 무효가 된 관계를 `graph_change_audit`에 남긴다 |
+| `publish_result` | 호스트 | 기준 graph version이 그대로인지 확인한 뒤, 코드가 정하는 필드(`store.derive`)를 그래프 전체에서 다시 읽고 원자적으로 게시한다. 내용 해시가 그대로인 기록만 처리됨으로 표시한다. 새 사건에 분석 모델을 적고, 단위 요약·인용되지 않은 보고 블록·순서 밖 분석 표시를 남긴다 |
+| `advance_unit`, `finish_run` | 호스트 | 다음 단위로 넘어가거나 run의 완료·부분 완료를 기록한다 |
 
-실제 Codex 실행에서 `Codex structured response` 하위 trace는 각 호출의 task, schema, 구조화 응답을 담는다. 모델 노드 안에는 `build_extract_request`/`build_integrate_request`, `validate_*_contract`, `validate_*_claims`, 필요할 때 `read_requested_evidence`와 `prepare_repair_request`가 실제 수행 작업의 하위 trace로 기록된다. `prepare_extract_input.request`는 해당 단위 첫 추출 호출의 정확한 요청이며, 후속 근거 읽기·수리 호출은 각 호출의 하위 trace에서 확인한다. `candidate_audit`에서 후보의 원문 인용을 보고, `graph_change_audit`에서 게시 직전의 그래프 변경을 본다. 조건부 통합 후 의미 검토는 실제 `route_semantic_review`와 선택적 `semantic_review_model_validate` 노드로 표시된다. 합성 실행의 `Synthetic model response (Mock, no LLM)`은 실제 모델 호출이 아니다. 모델의 비공개 내부 사고 과정은 어느 trace에도 없다.
+`prepare_extract_input`부터 `publish_result`까지는 단위 수준 노드다. 이야기 답이 수리 뒤에도 검사에 떨어지면 단위는 실패하지 않고, 코드가 찾은 작업만 남는다. 단위가 실패하는 경우는 셋이다. 그 작업까지 검사를 통과하지 못한 경우, 초안이 검사에 떨어진 경우, 요청이 입력 예산을 넘은 경우다. CLI 실행(터미널의 `analyze`, `eval`)에서는 그런 단위를 `unit_failures`에 기록하고 건너뛰며, 남은 노드는 지나가고 다음 단위로 간다(`_skippable`). Studio의 합성·eval·live 모드에서는 이런 실패도 run을 멈춘다. Runner 오류, 호출 한도, 취소, 알 수 없는 예외는 어느 모드에서나 run을 멈춘다.
+
+Studio의 실제 Codex 실행에서는 `Codex structured response` 하위 trace에 각 호출의 task, schema, 구조화 응답이 남는다. `prepare_extract_input.request`는 그 단위의 첫 이야기 호출이 받는 정확한 요청이다. 수리 호출은 같은 Runner 대화를 이어서 보낸다. `candidate_audit`에서는 후보의 원문 인용을, `graph_change_audit`에서는 게시 직전의 그래프 변경을 본다. 합성 실행의 `Synthetic model response (Mock, no LLM)`은 실제 모델 호출이 아니다. 모델의 비공개 내부 사고 과정은 어느 trace에도 없다.
 
 ## 실제 프로젝트 실행
 
-서버를 로컬 주소에 바인딩하고 프로젝트 또는 평가 fixture 경로를 **서버 환경변수**에 고정한다. Studio 입력에는 파일 경로를 넣지 않는다. 실제 Codex 분석은 `mode=eval` 또는 `mode=live`와 `confirm_live=true`가 필요하다. 기본 `max_units=1`, `max_calls=10`이고 허용 상한은 각각 10과 50이다. 이 한도는 해당 Studio 실행 전체에 적용된다. 프로젝트 모드에서 남은 단위가 있으면 저장된 그래프 상태는 `partial`이고, 다시 실행하면 다음 미처리 단위를 계획한다. 평가 모드는 매번 새 임시 상태로 시작한다.
+서버는 로컬 주소에 바인딩한다. 프로젝트나 평가 fixture 경로는 **서버 환경변수**에 고정하고, Studio 입력에는 파일 경로를 넣지 않는다. 기록 위치가 기본값과 다르면 `CONTEXTTRAIL_STUDIO_CODEX_HOME`, `CONTEXTTRAIL_STUDIO_CLAUDE_HOME`, `CONTEXTTRAIL_STUDIO_OPENCODE_HOME`을 쓴다.
 
-실제 모드는 scope lock을 잡아 터미널의 같은 scope 분석과 충돌하지 않게 한다. 서버 프로세스가 단계 사이에 재시작되면 메모리에 둔 실행 세션이 사라진다. 이 경우 이전 실행을 재개하지 말고 새 Studio 실행을 시작한다. SQLite에 게시된 완료 단위는 증분 계획이 재사용한다.
+실제 Codex 분석에는 `mode=eval` 또는 `mode=live`와 `confirm_live=true`가 필요하다. 기본값은 `max_units=1`, `max_calls=10`이고 허용 상한은 각각 10과 50이며, 이 한도는 그 Studio 실행 전체에 걸린다. 프로젝트 모드에서 남은 단위가 있으면 저장된 그래프는 `partial`로 남고, 다시 실행하면 다음 미처리 단위를 계획한다. 평가 모드는 매번 새 임시 상태에서 시작한다.
 
-Studio 서버에는 사용자 인증이 없고, 실제 분석 입력과 근거가 LangSmith로 전달될 수 있다. 개발용 로컬 서버에서만 실행한다. 민감한 원문을 자동으로 가리지 않는다.
+```bash
+python -m pip install -e '.[dev,studio]'
+dotenv -f /path/to/private/.env run -- env -u OPENAI_API_KEY \
+  CONTEXTTRAIL_STUDIO_SCOPE=/path/to/project \
+  LANGSMITH_TRACING=true LANGSMITH_PROJECT=contexttrail-dev \
+  langgraph dev --no-browser --host 127.0.0.1 --port 2025
+```
+
+실제 모드는 scope lock을 잡아 터미널의 같은 scope 분석과 겹치지 않는다. 단계 사이에 서버 프로세스가 재시작되면 메모리에 둔 실행 세션이 사라지므로, 이전 실행을 재개하지 말고 새 Studio 실행을 시작한다. SQLite에 게시된 완료 단위는 증분 계획이 재사용한다.
+
+Studio 서버에는 사용자 인증이 없고, 실제 분석 입력과 근거가 LangSmith로 전달될 수 있다. 개발용 로컬 서버에서만 실행한다. 원문 중 알려진 형식의 비밀 값만 읽을 때 가려지고(`[secret hidden]`), 그 밖의 민감한 원문은 가려지지 않는다.
 
 ## 터미널과 Studio에서 보이는 범위
 
-두 경로는 같은 실행 그래프와 `Engine`의 수집·분할·추출·통합·검증, `Store`의 게시 함수를 사용한다. 터미널 경로는 설정된 worker 수(1~8)로 배치 추출하고 Studio의 실제 모드는 한 번에 한 단위씩 처리한다. 추가 근거 요청과 응답 수리 반복은 모델 노드 내부에서 실행되어 별도 Studio 상자로 나타나지 않지만, 각각 하위 trace에 표시된다. worker가 2개 이상인 CLI 실행에서는 배치 요청을 각 worker에서 만들므로 `prepare_extract_input`에 단일 요청을 표시하지 않고, 개별 `build_extract_request` trace를 확인해야 한다. 검증 전 실패로 인한 재검토도 추출 노드 내부에서 이루어질 수 있다.
+두 경로는 같은 실행 그래프를 쓴다. `Engine`의 수집·분할·이야기 호출·검증과 `Store`의 게시 함수도 같다. 터미널 경로는 설정된 worker 수(1~8)로 배치 추출하고, Studio의 실제 모드는 한 번에 한 단위씩 처리한다. 수리 호출은 모델 노드 안에서 실행되므로 별도 Studio 상자로는 나타나지 않는다. worker가 2개 이상인 CLI 실행에서는 각 worker가 배치 요청을 만들기 때문에 `prepare_extract_input`에 요청 하나를 따로 보여 주지 않는다. 단위마다의 정확한 요청은 `--langsmith-content`로 보낸 `ContextTrail story` 호출 trace에서 본다.
 
-터미널 실행을 나중에 Studio UI의 과거 실행으로 가져오지는 않는다. 터미널에서 `--langsmith --langsmith-content`를 명시한 새 실행은 같은 그래프의 노드 trace를 LangSmith에 보낸다. `--langsmith`만 주면 같은 노드·단계·모델 호출 트리를 보내되, 모든 상태와 입출력은 개수·상태·ID만 남긴 메타데이터로 줄여 보낸다. 기본 터미널 실행에서는 외부 trace를 보내지 않는다. 추출 계약 검증 복구는 현재 실제 별도 LangGraph 노드가 아니라 추출 모델 노드 내부 동작이다.
+터미널 실행을 나중에 Studio UI의 과거 실행으로 가져오지는 않는다. 터미널에서 `--langsmith`로 실행하면 trace가 LangSmith로 간다.
+
+- **`--langsmith --langsmith-content`:** 같은 그래프의 노드 trace와 호출마다의 `ContextTrail <stage>` 기록을 보낸다.
+- **`--langsmith`만:** 같은 노드·단계·모델 호출 트리를 보내되, 모든 상태와 입출력은 개수·상태·ID만 남긴 메타데이터로 줄인다.
+- **기본 터미널 실행:** 외부로 trace를 보내지 않는다.
+
+두 옵션은 개발자용이며 명령 도움말에 나오지 않는다(`docs/guides/LLM_OPS.md`).
