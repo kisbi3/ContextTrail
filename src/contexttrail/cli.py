@@ -384,6 +384,7 @@ def _graph(args) -> int:
         lookup = evidence.get
     else:
         scope = _scope(args, folder)
+        _state_in_state_dir(args, scope)
         store = Store(scope.state_dir, scope.id)
         _screen_language(None, store)
         graph = store.graph()
@@ -555,10 +556,18 @@ def _no_state_dir(args, what: str) -> None:
                             f"{what} cannot be used with --state-dir: hooks find the state by the session's folder."))
 
 
+def _state_in_state_dir(args, scope: Scope) -> None:
+    """A `--state-dir` without a state, for a command that only reads one: a mistyped directory, not a new project
+    (only `scan` and `analyze` start a state there)."""
+    if getattr(args, "state_dir", None) is not None and not (scope.state_dir / "state.sqlite").is_file():
+        raise FlowError(tr(f"--state-dir에 ContextTrail 상태가 없습니다: {scope.state_dir}",
+                           f"There is no ContextTrail state in --state-dir: {scope.state_dir}"))
+
+
 def _given_previous(args, scope: Scope) -> list[str]:
     """This command's `--previous-path`s, checked (a refused one is a usage error, before any state is made)."""
     try:
-        return [str(scope.previous_path(value)) for value in getattr(args, "previous_paths", None) or []]
+        return [str(path) for value in getattr(args, "previous_paths", None) or [] for path in scope.previous_path(value)]
     except FlowError as exc:
         raise UsageError(str(exc)) from None
 
@@ -679,8 +688,9 @@ def _note(args) -> int:
         if args.enable or args.disable:
             raise
         store = None
-    if store is not None:
-        scope = scope.with_previous(store.previous_paths())
+    # Read-only (a sandbox's `.git`): the saved list is read without writing, as the queued note reads its settings.
+    scope = scope.with_previous(store.previous_paths() if store is not None else
+                                [p for p in journal.ReadOnlyMeta(scope).get_meta("previous_paths", []) or [] if isinstance(p, str)])
     if args.enable or args.disable:
         (journal.enable if args.enable else journal.disable)(store)
         print(tr(f"note를 {'켰' if args.enable else '껐'}습니다: {safe_text(scope.folder)}",
@@ -1049,6 +1059,8 @@ def main(argv: list[str] | None = None) -> int:
         scope = _scope(args, args.folder)
         if args.command == "refresh" and not (scope.state_dir / "state.sqlite").is_file():
             return _no_state(scope, args.json)  # nothing to refresh, and no state is made for it
+        if args.command not in ("scan", "analyze"):
+            _state_in_state_dir(args, scope)
         given = _given_previous(args, scope)
         store = Store(scope.state_dir, scope.id)
         scope, previous = _previous(args, scope, store, given)
@@ -1143,7 +1155,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.yes or store.get_meta(key, False):
                 store.set_meta(key, True)
                 return True
-            if ask(tr(f"현재 범위의 기록·코드를 {name}에 전송? [y/n]", f"Send this scope's records and code to {name}? [y/n]"), "yn") == "y":
+            also = (" " + _previous_line(previous)) if previous else ""
+            if ask(tr(f"현재 범위의 기록·코드를 {name}에 전송?{also} [y/n]", f"Send this scope's records and code to {name}?{also} [y/n]"), "yn") == "y":
                 store.set_meta(key, True)
                 return True
             return False

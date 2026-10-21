@@ -2016,7 +2016,7 @@ class Engine:
 
     def scan(self) -> Snapshot:
         proven = [Path(p) for p in self.store.get_meta("known_worktree_roots", [])]
-        source_scope = dataclasses.replace(self.scope, roots=list(dict.fromkeys(self.scope.roots + proven)))
+        source_scope = self.scope.with_roots(proven)
         # Transcript files that gave this project nothing last time and have not changed are not read again.
         saved, key = self.store.get_meta(SCAN_CACHE_META, {}) or {}, scan_cache_key(source_scope)
         cache = ScanCache(key, saved.get("files", {}) if saved.get("key") == key else {})
@@ -2032,9 +2032,13 @@ class Engine:
                                                    claude_home=self.config.claude_home, opencode_home=self.config.opencode_home,
                                                    sources=self.config.sources, previous=self.store.get_meta(INDEX_KEY)))
         mark_steps(logs.records)
+        providers = tuple(self.config.sources) + ("git",) if self.config.sources else None
+        if sorted(map(str, self.scope.previous)) != sorted(self.store.previous_paths()):
+            # Read with a one-off list of the folder's earlier locations (`scan --previous-path`, or
+            # `--no-previous-paths`): what this attribution did not find is not gone, so nothing is marked unavailable.
+            providers = ()
         return Snapshot(logs.records + artifacts.records, list(dict.fromkeys(logs.limitations + artifacts.limitations)),
-                        logs.files, logs.sources,
-                        providers=tuple(self.config.sources) + ("git",) if self.config.sources else None)
+                        logs.files, logs.sources, providers=providers)
 
     def resolve_language(self, snapshot: Snapshot, *, save: bool = False) -> str:
         """The output language: as configured, else as saved for the project, else detected. A detected language is

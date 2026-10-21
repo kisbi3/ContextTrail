@@ -77,19 +77,32 @@ class Scope:
         return self.worktree_for(cwd) is not None
 
     def with_previous(self, paths) -> "Scope":
-        """This scope with these earlier locations (`previous`); a scope of its own, so no answer is reused."""
-        return replace(self, previous=tuple(dict.fromkeys(Path(p) for p in paths)))
+        """This scope with these earlier locations (`previous`); a scope of its own, so no answer is reused. A worktree
+        a copied `.git` still lists at an earlier location is that location now: it leaves the roots, so Git is not
+        run there and its records take the folder's own worktree."""
+        previous = tuple(dict.fromkeys(Path(p) for p in paths))
+        roots = [root for root in self.roots if not any(within(root, p) for p in previous)]
+        return replace(self, previous=previous, roots=roots or [self.root or self.folder])
 
-    def previous_path(self, value: str | Path) -> Path:
-        """An earlier location of the folder as given (`--previous-path`): resolved (it need not exist), refused when
-        it holds the folder or lies in it or in another of its worktrees, which are this project already."""
-        path = Path(value).expanduser().resolve()
-        for root in [self.folder, *self.roots]:
-            current = root / self.relative if self.root and root != self.folder else root
-            if within(path, current) or within(current, path):
+    def with_roots(self, more) -> "Scope":
+        """This scope with more worktree roots (those an earlier scan proved, `known_worktree_roots`), except the
+        ones at an earlier location of the folder (`with_previous`)."""
+        extra = [Path(p) for p in more if not any(within(Path(p), earlier) for earlier in self.previous)]
+        return replace(self, roots=list(dict.fromkeys(self.roots + extra)))
+
+    def previous_path(self, value: str | Path) -> list[Path]:
+        """An earlier location of the folder as given (`--previous-path`), as written (absolute) and resolved, so a
+        path given through a symbolic link matches under either spelling, also once the link is gone. It need not
+        exist. Refused when it holds the folder or lies in it, or lies in another of its worktrees."""
+        written = Path(os.path.abspath(Path(value).expanduser()))
+        spellings = list(dict.fromkeys([written, written.resolve()]))
+        for path in spellings:
+            refused = within(path, self.folder) or within(self.folder, path) or any(
+                within(path, root / self.relative if self.root else root) for root in self.roots)
+            if refused:
                 raise FlowError(tr(f"--previous-path가 프로젝트 폴더를 담거나 그 안에 있습니다: {path}",
                                    f"--previous-path holds the project folder or lies within it: {path}"))
-        return path
+        return spellings
 
     @classmethod
     def resolve(cls, folder: str | Path, state_dir: Path | None = None) -> "Scope":
@@ -102,14 +115,15 @@ class Scope:
         return scope if state_dir is None else replace(scope, state_dir=scope.own_state_dir(state_dir))
 
     def own_state_dir(self, value: Path) -> Path:
-        """A state directory given outside the checkout: absolute, and not in the project, whose files would then be
-        read as its changes. Created (0700) by the store when something is written, not here."""
+        """A state directory given outside the checkout: absolute, and neither in the project (its files would be read
+        as the project's changes) nor holding it. Created (0700) by the store when something is written, not here."""
         path = Path(value).expanduser()
         if not path.is_absolute():
             raise FlowError(tr(f"--state-dir는 절대 경로여야 합니다: {value}", f"--state-dir must be an absolute path: {value}"))
         path = Path(os.path.abspath(path))
-        if any(within(path, root) for root in self.roots):
-            raise FlowError(tr(f"--state-dir가 프로젝트 안에 있습니다: {path}", f"--state-dir lies within the project: {path}"))
+        if any(within(path, root) or within(root, path) for root in [self.folder, *self.roots]):
+            raise FlowError(tr(f"--state-dir가 프로젝트 안에 있거나 프로젝트를 담습니다: {path}",
+                               f"--state-dir lies within the project or holds it: {path}"))
         return path
 
     @classmethod

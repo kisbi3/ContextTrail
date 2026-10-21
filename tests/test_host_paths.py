@@ -96,10 +96,16 @@ def test_a_previous_path_given_through_a_link_is_kept_as_its_target(tmp_path, ca
     link = tmp_path / "link-original"
     link.symlink_to(real)
     flags = sessions(tmp_path, link / "work")  # recorded under the link's spelling
-    result = scanned(capsys, str(folder), *flags, "--previous-path", str(link))
-    assert result["previous_paths"] == [str(real.resolve())] and result["records"]["claude"] == 1
-    moved = Scope.resolve(folder).with_previous([real.resolve()])
+    assert main(["analyze", str(folder), *flags, "--previous-path", str(link), "--no-tui", "--json"]) == 77
+    capsys.readouterr()
+    scope = Scope.resolve(folder)
+    # Kept as written and as its target, so either spelling matches, also once the link is gone.
+    assert set(Store(scope.state_dir, scope.id).previous_paths()) == {str(link), str(real.resolve())}
+    moved = scope.with_previous(Store(scope.state_dir, scope.id).previous_paths())
     assert moved.includes(str(real / "work")) and moved.includes(str(link / "work"))
+    assert scanned(capsys, str(folder), *flags)["records"]["claude"] == 1
+    link.unlink()
+    assert scanned(capsys, str(folder), *flags)["records"]["claude"] == 1
 
 
 def test_a_subfolder_scope_takes_the_same_subfolder_of_a_previous_path(tmp_path):
@@ -108,10 +114,51 @@ def test_a_subfolder_scope_takes_the_same_subfolder_of_a_previous_path(tmp_path)
     (repo / "analysis").mkdir()
     scope = Scope.resolve(repo / "analysis")
     old_root = tmp_path / "old-repo"
-    moved = scope.with_previous([scope.previous_path(old_root)])
+    moved = scope.with_previous(scope.previous_path(old_root))
     assert moved.worktree_for(str(old_root / "analysis" / "plots")) == scope.worktree_for(str(repo / "analysis"))
     assert not moved.includes(str(old_root / "other"))
     assert not moved.includes(str(old_root))
+
+
+def test_a_copied_repository_whose_worktree_lies_in_the_original_takes_the_original(tmp_path, capsys, monkeypatch):
+    """A copy of a repository with an in-tree linked worktree (Claude Code's .claude/worktrees) still lists that
+    worktree at the original: the original is accepted as a previous path, Git is not run in it, and its records
+    take the copy's own worktree."""
+    from contexttrail import git_context
+    original = tmp_path / "original"
+    git_init(original)
+    (original / "a.txt").write_text("a\n")
+    subprocess.run(["git", "-C", str(original), "add", "a.txt"], check=True)
+    subprocess.run(["git", "-C", str(original), "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "a"],
+                   check=True)
+    subprocess.run(["git", "-C", str(original), "worktree", "add", "-q", ".claude/worktrees/w1", "-b", "w1"], check=True)
+    folder = tmp_path / "copy"
+    subprocess.run(["cp", "-R", str(original), str(folder)], check=True)
+    flags = sessions(tmp_path, original / ".claude" / "worktrees" / "w1")
+    asked = []
+    real = git_context.git
+    monkeypatch.setattr(git_context, "git", lambda path, *args, **kw: asked.append(Path(path)) or real(path, *args, **kw))
+    result = scanned(capsys, str(folder), *flags, "--previous-path", str(original), "--state-dir", str(tmp_path / "state"))
+    assert result["records"]["claude"] == 1 and result["worktrees"] == [str(folder.resolve())]
+    assert not any(str(path.resolve()).startswith(str(original.resolve())) for path in asked)
+    scope = Scope.resolve(folder)
+    moved = scope.with_previous(scope.previous_path(original))
+    assert moved.worktree_for(str(original / ".claude" / "worktrees" / "w1")) == moved.worktree_for(str(folder))
+
+
+def test_a_one_off_previous_path_leaves_what_the_saved_list_found_available(tmp_path, capsys):
+    folder, original = tmp_path / "copy", tmp_path / "original"
+    folder.mkdir()
+    flags = sessions(tmp_path, original)
+    assert main(["analyze", str(folder), *flags, "--previous-path", str(original), "--no-tui", "--json"]) == 77
+    capsys.readouterr()
+    assert main(["status", str(folder), "--json"]) == 0
+    before = json.loads(capsys.readouterr().out)["pending"]["records"]
+    assert before > 0
+    scanned(capsys, str(folder), *flags, "--no-previous-paths")  # a look without them
+    assert main(["status", str(folder), "--json"]) == 0
+    after = json.loads(capsys.readouterr().out)
+    assert after["pending"]["records"] == before and not after["unavailable_unprocessed"]
 
 
 def test_nothing_is_read_with_git_at_a_previous_path(tmp_path, capsys, monkeypatch):
@@ -159,7 +206,22 @@ def test_a_state_dir_must_be_absolute_and_outside_the_project(tmp_path, capsys, 
     monkeypatch.chdir(tmp_path)
     assert main(["scan", str(folder), "--state-dir", "relative/state"]) == contract.EXIT_USAGE
     assert main(["scan", str(folder), "--state-dir", str(folder / "state")]) == contract.EXIT_USAGE
+    mode = stat.S_IMODE(tmp_path.stat().st_mode)
+    assert main(["scan", str(folder), "--state-dir", str(tmp_path)]) == contract.EXIT_USAGE  # holds the project
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == mode
     assert not (tmp_path / "relative").exists() and not (folder / "state").exists()
+
+
+def test_a_mistyped_state_dir_makes_no_new_state_for_a_read(tmp_path, capsys):
+    folder, typo = tmp_path / "copy", tmp_path / "typo" / "state"
+    folder.mkdir()
+    out = tmp_path / "out.json"
+    for argv in (["export", str(folder), "--format", "json", "--output", str(out)], ["ops", str(folder)],
+                 ["graph", str(folder)], ["view", str(folder), "--no-tui"], ["show", "ev_x", str(folder)]):
+        assert main([*argv, "--state-dir", str(typo)]) == 1, argv
+    assert main(["status", str(folder), "--json", "--state-dir", str(typo)]) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "none"
+    assert not typo.exists() and not out.exists()
 
 
 def test_two_projects_cannot_share_one_state_dir(tmp_path, capsys):

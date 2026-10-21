@@ -218,7 +218,7 @@ def session_records(scope: Scope, store: Store | None, session_id: str, *, codex
                                                           claude_home or saved.get("claude_home"),
                                                           opencode_home or saved.get("opencode_home"))
     proven = [Path(p) for p in meta.get_meta("known_worktree_roots", []) or []]
-    scope = dataclasses.replace(scope, roots=list(dict.fromkeys(scope.roots + proven)))
+    scope = scope.with_roots(proven)
     found: dict[str, SourceRecord] = {}
     for path, provider in jsonl_files(codex_home, claude_home):
         if session_id not in path.name or "subagents" in path.parts:

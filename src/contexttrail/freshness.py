@@ -352,7 +352,7 @@ def _scan_seeds(store: Store, scope: Scope) -> dict[str, dict[str, Any]]:
     saved = store.get_meta(SCAN_CACHE_META) or {}
     proven = [Path(p) for p in store.get_meta("known_worktree_roots", []) or []]
     try:
-        key = scan_cache_key(dataclasses.replace(scope, roots=list(dict.fromkeys(scope.roots + proven))))
+        key = scan_cache_key(scope.with_roots(proven))
     except Exception:
         return {}
     if saved.get("key") != key:

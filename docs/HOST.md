@@ -90,8 +90,11 @@ the state.
 `--state-dir DIR` puts the state (database, locks, the export list, the scan cache) in `DIR` instead, so nothing is
 written into the checkout. It is accepted by every command that reads or writes a project's state (`analyze`,
 `view`, `scan`, `serve`, `refresh`, `status`, `find`, `show`, `graph`, `export`, `ops`, the `context` preview).
-`DIR` must be absolute (else exit 64) and outside the project's worktrees (else 64); it is created `0700` when
-something is written, and a read command finds no state there without creating one. The value is the state's
+`DIR` must be absolute (else exit 64), and neither inside the project's worktrees nor holding them (else 64). Only
+`scan` and `analyze` start a state there (the directory is created `0700`); every other command given a `DIR` with
+no state in it exits 1 without creating anything (`status --json` and `find --json` answer `"state": "none"`), so a
+mistyped `DIR` is not taken for a new project. Write exports outside `DIR` (or under `DIR/exports/`): the state
+files are protected. The value is the state's
 location, so it is never saved: give it to every command, or the command reads (and `scan`/`analyze` create) the
 state with the checkout. The scope ID is the folder's as usual: a `DIR` already holding another folder's state is
 refused (exit 1). The tools' hooks find a state by the session's folder, so `note`, `auto-update` and
@@ -108,11 +111,14 @@ symbolic links (`/app` is not `/app-backup`). Nothing is matched by keywords. Co
 - `--previous-path PATH` (repeatable; `scan`, `analyze`, `view`, `serve`) names where the folder was before it was
   moved or copied. A record whose working directory is under `PATH` (under `PATH/<relative>` when the folder is a
   subfolder of its checkout) belongs to the project, with the folder's own worktree, as if it had never moved.
-  `PATH` need not exist; it is resolved first, so one given through a symbolic link is kept as its target and keeps
-  matching under either spelling. Nothing is read from it (no Git) or written to it. A `PATH` that holds the folder
-  or lies in it (or in another worktree of it) is refused (exit 64). `analyze` saves the list in the project's state
+  `PATH` need not exist; it is kept as written (made absolute) and as its resolved target, so one given through a
+  symbolic link matches under either spelling, also after the link is gone. Nothing is read from it (no Git) or
+  written to it: a worktree that a copied `.git` still lists inside `PATH` (an in-tree worktree such as
+  `.claude/worktrees/…`) is dropped from the worktrees, and its records take the folder's own worktree. A `PATH` that
+  holds the folder or lies in it (or in another worktree of it) is refused (exit 64). `analyze` saves the list in the project's state
   (like the homes, after its checks), and every later command, screen, note and automatic analysis uses it;
-  `--previous-path` on `scan`, `view` or `serve` adds to the saved list for that command only. `--no-previous-paths`
+  `--previous-path` on `scan`, `view` or `serve` adds to the saved list for that command only, and such a one-off
+  list marks nothing unavailable: records the saved list finds stay pending. `--no-previous-paths`
   leaves the saved list out (with `analyze`, clears it; with `--previous-path`, replaces it). `scan` and
   `status --json` report the list in use (`previous_paths`), and the consent screen names it. Adding a path changes
   what is attributed, so the scan cache is read again once.
