@@ -347,10 +347,10 @@ def test_only_analyze_saves_settings_and_a_refused_value_is_never_saved(tmp_path
     monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'xdg'))
     scope = Scope.resolve(folder)
     assert main(['view', str(folder), '--no-tui', '--language', 'en', '--runner', 'codex']) == 0
-    assert main(['scan', str(folder), '--codex-home', str(tmp_path / 'typo')]) == 1  # a mistyped home is refused
+    assert main(['scan', str(folder), '--codex-home', str(tmp_path / 'typo')]) == 64  # a mistyped home is a usage error
     store = Store(scope.state_dir, scope.id)
     assert not (store.get_meta('options') or {})  # a look and a preview change nothing the project's analyses read
-    assert main(['scan', str(folder), '--history-limit', '0']) == 1
-    assert main(['analyze', str(folder), '--history-limit', '0', '--runner', 'codex', '--no-tui']) == 1
+    assert main(['scan', str(folder), '--history-limit', '0']) == 64
+    assert main(['analyze', str(folder), '--history-limit', '0', '--runner', 'codex', '--no-tui']) == 64
     assert 'history_limit' not in (store.get_meta('options') or {})  # refused before it could be saved
     assert main(['scan', str(folder)]) == 0  # so the project still opens

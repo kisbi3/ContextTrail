@@ -251,6 +251,23 @@ def _zstd_chunks(source: io.BufferedIOBase | io.BytesIO) -> Iterator[bytes]:
         raise FlowError(f"zstd could not decompress it ({type(exc).__name__})") from None
 
 
+def zstd_backend() -> str | None:
+    """Which decompressor `_zstd_chunks` would use here, in its order: `compression.zstd` (Python 3.14), the
+    `zstandard` package, the `zstd` command; None when there is none (a `.jsonl.zst` is then named in the
+    limitations, not read). For `contexttrail capabilities`."""
+    try:
+        from compression import zstd  # type: ignore[import-not-found]  # noqa: F401
+        return "compression.zstd"
+    except ImportError:
+        pass
+    try:
+        import zstandard  # type: ignore[import-not-found]  # noqa: F401
+        return "zstandard"
+    except ImportError:
+        pass
+    return "zstd-command" if shutil.which("zstd") else None
+
+
 def decompress_zstd(data: bytes, limit: int = 0) -> bytes:
     """A zstd file's content (`_zstd_chunks`). More than `limit` bytes (when given) is refused (`TooLarge`), so a
     small file cannot unpack into a huge one in memory. Every failure is a FlowError naming why."""
@@ -1265,6 +1282,25 @@ def read_claude_appended(path: Path, scope: Scope, state: dict[str, Any]) -> tup
     return Snapshot(_segments(reader.result), warnings, []), {**after, **reader.state(), "paths": answers.answers}
 
 
+# The three tools whose transcripts are read; `--sources` names a subset.
+SOURCES = ("codex", "claude", "opencode")
+
+
+def parse_sources(text: str) -> tuple[str, ...]:
+    """`codex,claude` → ("codex", "claude"), in `SOURCES` order; an unknown or empty name is refused."""
+    names = [name.strip().lower() for name in (text or "").split(",") if name.strip()]
+    unknown = [name for name in names if name not in SOURCES]
+    if not names or unknown:
+        raise ValueError(f"expected a comma-separated list of {', '.join(SOURCES)}"
+                         + (f"; unknown: {', '.join(unknown)}" if unknown else ""))
+    return tuple(name for name in SOURCES if name in names)
+
+
+def reads(sources, provider: str) -> bool:
+    """Whether a source is read: every one when no list was given."""
+    return sources is None or provider in sources
+
+
 def source_homes(codex_home: Path | None = None, claude_home: Path | None = None,
                  opencode_home: Path | None = None) -> tuple[Path, Path, Path]:
     """The three tools' directories: as given, else from each tool's own environment variable, else its default."""
@@ -1273,12 +1309,14 @@ def source_homes(codex_home: Path | None = None, claude_home: Path | None = None
     return codex_home, claude_home, opencode_data_dir(opencode_home)
 
 
-def jsonl_files(codex_home: Path, claude_home: Path) -> list[tuple[Path, str]]:
-    """Every transcript file with its provider, in collection order; symlinks and escapes are skipped."""
+def jsonl_files(codex_home: Path, claude_home: Path, *, sources=None,
+                skipped: list[tuple[Path, str]] | None = None) -> list[tuple[Path, str]]:
+    """Every transcript file with its provider, in collection order (of `sources` only, when given); symlinks and
+    escapes are skipped, and listed in `skipped` when the caller passes one."""
     found: list[tuple[Path, str]] = []
     for directory, provider in ((codex_home / "archived_sessions", "codex"), (codex_home / "sessions", "codex"),
                                 (claude_home / "projects", "claude")):
-        if not directory.is_dir():
+        if not reads(sources, provider) or not directory.is_dir():
             continue
         paths = sorted(directory.rglob("*.jsonl"))
         plain = set(paths)
@@ -1288,6 +1326,8 @@ def jsonl_files(codex_home: Path, claude_home: Path) -> list[tuple[Path, str]]:
         for path in paths:
             if not path.is_symlink() and within(path, directory):
                 found.append((path, provider))
+            elif skipped is not None:
+                skipped.append((path, provider))
     return found
 
 
@@ -1426,14 +1466,16 @@ def _stat(path: Path) -> tuple[int, int] | None:
 
 def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: Path | None = None,
                  opencode_home: Path | None = None, cache: ScanCache | None = None,
-                 progress=None) -> Snapshot:
-    """Every in-scope record of the three tools: Codex and Claude Code JSONL files, the opencode database. With a
-    `cache`, a transcript file an earlier scan found no records in, and that has not changed since, is not read:
-    its limitations and manifest are replayed (marked `reused`), and the cache keeps what this scan found."""
+                 progress=None, sources=None) -> Snapshot:
+    """Every in-scope record of the three tools (of `sources` only, when given): Codex and Claude Code JSONL files,
+    the opencode database. With a `cache`, a transcript file an earlier scan found no records in, and that has not
+    changed since, is not read: its limitations and manifest are replayed (marked `reused`), and the cache keeps
+    what this scan found. Each manifest names its `provider`; `Snapshot.sources` says, per tool, where it looked
+    and what it found there (`source_summary`)."""
     codex_home, claude_home, opencode_home = source_homes(codex_home, claude_home, opencode_home)
     result, warnings, files = {}, [], []
     claude_dir = claude_home / "projects"
-    claude_links = _claude_subagent_links(claude_dir) if claude_dir.is_dir() else {}
+    claude_links = _claude_subagent_links(claude_dir) if reads(sources, "claude") and claude_dir.is_dir() else {}
     def merge(snapshot: Snapshot) -> None:
         warnings.extend(snapshot.limitations)
         files.extend(snapshot.files)
@@ -1442,7 +1484,8 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
             if previous and previous.content_hash != record.content_hash:
                 warnings.append(f"different content under the same native ID: {record.source_id}; the copy found later was kept.")
             result[record.source_id] = record
-    transcripts = jsonl_files(codex_home, claude_home)
+    linked: list[tuple[Path, str]] = []
+    transcripts = jsonl_files(codex_home, claude_home, sources=sources, skipped=linked)
     for done, (path, provider) in enumerate(transcripts, 1):
         if progress is not None and (done % 25 == 0 or done == len(transcripts)):
             progress(done, len(transcripts))  # counts only, never a path or content
@@ -1451,7 +1494,8 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
             entry = cache.entries.get(str(path))
             if (entry and (entry.get("bytes"), entry.get("mtime_ns")) == before
                     and not any(scope.includes(asked) for asked in entry.get("paths", []))):
-                merge(Snapshot([], list(entry["limitations"]), [{**manifest, "reused": True} for manifest in entry["files"]]))
+                merge(Snapshot([], list(entry["limitations"]),
+                               [{**manifest, "provider": provider, "reused": True} for manifest in entry["files"]]))
                 cache.fresh[str(path)] = entry
                 cache.reused += 1
                 continue
@@ -1460,6 +1504,8 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
             snapshot = parse_claude(path, asked, subagent_link=claude_links.get(str(path)))
         else:
             snapshot = parse_codex(path, asked)
+        for manifest in snapshot.files:
+            manifest["provider"] = provider
         merge(snapshot)
         # Kept only for a result the file settles (`ScanCache`): read whole or to the cap, by its own content.
         settled = (snapshot.files and not any(manifest.get("unlinked_subagent") or manifest.get("partial") == "error"
@@ -1469,10 +1515,38 @@ def collect_logs(scope: Scope, *, codex_home: Path | None = None, claude_home: P
             cache.fresh[str(path)] = {"bytes": before[0], "mtime_ns": before[1], "limitations": list(snapshot.limitations),
                                       "files": [{k: v for k, v in manifest.items() if k != "reused"} for manifest in snapshot.files],
                                       "paths": sorted(asked.paths)}
-    for path in opencode_databases(opencode_home):
-        merge(parse_opencode(path, scope))
+    databases = opencode_databases(opencode_home) if reads(sources, "opencode") else []
+    for path in databases:
+        snapshot = parse_opencode(path, scope)
+        for manifest in snapshot.files:
+            manifest["provider"] = "opencode"
+        merge(snapshot)
     _drop_forked_copies(result)
     _link_called_tools(result)
     ordered = sorted(result.values(), key=lambda r: (r.recorded_at or "", r.provider, r.session_id or "",
                                                     r.locator.get("line", 0), r.locator.get("fragment_index", 0), r.source_id))
-    return Snapshot(ordered, list(dict.fromkeys(warnings)), files)
+    summary = source_summary(ordered, files, homes={"codex": codex_home, "claude": claude_home, "opencode": opencode_home},
+                             sources=sources, linked=linked, databases=databases)
+    return Snapshot(ordered, list(dict.fromkeys(warnings)), files, summary)
+
+
+def source_summary(records: list[SourceRecord], files: list[dict], *, homes: dict[str, Path], sources,
+                   linked: list[tuple[Path, str]], databases: list[Path]) -> list[dict[str, Any]]:
+    """Per tool, what a scan read: its home and whether it exists, whether `--sources` let it be read, the transcript
+    files (or databases) examined, read (not replayed from the scan cache), giving this project records, the files
+    skipped as symbolic links, and the records kept. Counts only; built from what the scan already holds."""
+    summary = []
+    for provider in SOURCES:
+        mine = [manifest for manifest in files if manifest.get("provider") == provider]
+        kept = [record for record in records if record.provider == provider]
+        entry: dict[str, Any] = {
+            "provider": provider, "home": str(homes[provider]), "exists": homes[provider].is_dir(),
+            "read": reads(sources, provider),
+            "files_examined": len(mine), "files_read": sum(not manifest.get("reused") for manifest in mine),
+            "files_with_records": len({record.locator.get("path") for record in kept if record.locator.get("path")}),
+            "files_skipped_symlink": sum(kind == provider for _, kind in linked),
+            "records": len(kept)}
+        if provider == "opencode":
+            entry["databases"] = [str(path) for path in databases]
+        summary.append(entry)
+    return summary

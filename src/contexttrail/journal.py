@@ -41,7 +41,7 @@ from .sources.local import (COMPRESSED_SUFFIX, MAX_FILE_BYTES, decompress_zstd, 
                             parse_codex, source_homes)
 from .sources.opencode import opencode_databases, parse_opencode
 from .store import ReadOnlyStore, Store, in_journal
-from .util import FlowError, ident, now, private_dir, safe_text
+from .util import FlowError, Refused, ident, now, private_dir, safe_text
 
 # A person's request is made into an event by code from the transcript (`link_request_turns`), so the
 # agent notes what it decided, proposed, changed and observed.
@@ -414,7 +414,7 @@ def write(scope: Scope, store: Store, session_id: str, *, kind: str, title: str,
           **homes: Path | None) -> dict[str, Any]:
     """Check one note against the session's records and publish it; nothing is stored when a check fails."""
     if not enabled(store):
-        raise FlowError("notes are off for this project; the person turns them on with `contexttrail note --enable` "
+        raise Refused("notes are off for this project; the person turns them on with `contexttrail note --enable` "
                         "in the project folder. Nothing was stored.")
     records, citations, status = prepare(scope, store, session_id, kind=kind, quotes=quotes, status=status,
                                          relations=relations, **homes)
@@ -511,7 +511,7 @@ def queue(scope: Scope, session_id: str, *, kind: str, title: str, summary: str,
     """Check what the transcript alone can check, then queue the note for the end-of-turn hook to store."""
     on = enabled_readonly(scope)
     if on is False:
-        raise FlowError("notes are off for this project; the person turns them on with `contexttrail note --enable` "
+        raise Refused("notes are off for this project; the person turns them on with `contexttrail note --enable` "
                         "in the project folder. Nothing was stored.")
     if on is None:
         # Queued, it would be stored only if notes turn out to be on, and dropped without a word otherwise.

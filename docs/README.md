@@ -7,6 +7,7 @@ GitHub에 공개하는 사용자 문서와 검증 기록을 정리했다. 실제
 | 제품 목표와 범위 | [PRD](PRD.md) |
 | 분석·저장 계약 | [SPEC](SPEC.md) |
 | 실행·자료 보안 | [SECURITY](SECURITY.md) |
+| 프로그램에서 부를 때의 계약(JSON 스키마, 종료 코드, 읽는 위치; 영어) | [HOST](HOST.md) |
 | 기술 참고 | [REFERENCES](REFERENCES.md) |
 
 ## 사용과 개발

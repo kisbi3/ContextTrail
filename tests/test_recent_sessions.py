@@ -295,5 +295,5 @@ def test_scan_previews_the_recent_sessions_without_a_model(tmp_path, capsys):
     assert [s["id"] for s in out["plan"]["selection"]["sessions"]] == ["sess1", "sess2"]
     assert out["plan_text"].startswith("최근 세션 먼저: 2개 세션")
     # Combined with --session it is refused rather than guessed at.
-    assert main(["scan", str(folder), *common, "--recent", "2", "--session", "sess1"]) == 1
+    assert main(["scan", str(folder), *common, "--recent", "2", "--session", "sess1"]) == 64
     assert "함께 쓸 수 없습니다" in capsys.readouterr().err

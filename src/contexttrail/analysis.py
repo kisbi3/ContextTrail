@@ -26,10 +26,11 @@ from .runners.cli_runner import EFFORTS
 from .schema import (EDIT_TOOL_NAMES, EvidenceValidator, docs_only, draft_delta, edited_files, record_evidence,
                      refresh_matched, retired, validate_shape)
 from .sources import collect_logs
+from .sources.local import SOURCES
 from .sources.local import ScanCache, scan_cache_key
 from .store import Store, in_journal
-from .util import (BrokenOutput, Cancelled, FlowError, InputBudgetExceeded, digest, dumps, ident, input_tokens,
-                   mask_secrets)
+from .util import (BrokenOutput, Cancelled, FlowError, InputBudgetExceeded, UsageError, digest, dumps, ident,
+                   input_tokens, mask_secrets)
 
 
 @dataclass
@@ -37,6 +38,8 @@ class AnalysisConfig:
     codex_home: Path | None = None
     claude_home: Path | None = None
     opencode_home: Path | None = None
+    # The tools whose transcripts are read (`--sources`, saved by `analyze`); None reads all three.
+    sources: tuple[str, ...] | None = None
     history_limit: int = 50
     unit_chars: int = 60_000
     record_chars: int = 48_000
@@ -76,50 +79,53 @@ class AnalysisConfig:
     langsmith_project: str | None = None
 
     def validate(self) -> None:
+        if self.sources is not None and (not self.sources or any(name not in SOURCES for name in self.sources)):
+            raise UsageError(tr(f"--sources는 {', '.join(SOURCES)} 중에서 고릅니다: {self.sources!r}",
+                                f"--sources names some of {', '.join(SOURCES)}: {self.sources!r}"))
         if not 1 <= self.extract_workers <= 8:
-            raise FlowError(tr("extract_workers는 1~8이어야 합니다. 처음에는 1~2를 권장합니다.",
+            raise UsageError(tr("extract_workers는 1~8이어야 합니다. 처음에는 1~2를 권장합니다.",
                                "extract_workers must be between 1 and 8; 1 or 2 is recommended at first."))
         if self.max_calls < 1:
-            raise FlowError(tr("max_calls는 양수여야 합니다.", "max_calls must be a positive number."))
+            raise UsageError(tr("max_calls는 양수여야 합니다.", "max_calls must be a positive number."))
         if self.max_units is not None and self.max_units < 1:
-            raise FlowError(tr("처리할 작업 단위 수는 1 이상이어야 합니다.", "The number of work units to process must be at least 1."))
+            raise UsageError(tr("처리할 작업 단위 수는 1 이상이어야 합니다.", "The number of work units to process must be at least 1."))
         if self.recent is not None and self.recent < 1:
-            raise FlowError(tr("--recent는 1 이상이어야 합니다.", "--recent must be at least 1."))
+            raise UsageError(tr("--recent는 1 이상이어야 합니다.", "--recent must be at least 1."))
         if self.since is not None and _record_timestamp(self.since) is None:
-            raise FlowError(tr(f"--since 시각을 읽을 수 없습니다: {self.since!r}", f"Cannot read the --since time: {self.since!r}"))
+            raise UsageError(tr(f"--since 시각을 읽을 수 없습니다: {self.since!r}", f"Cannot read the --since time: {self.since!r}"))
         if self.recent is not None or self.since is not None:
             if self.session:
-                raise FlowError(tr("--session과 --recent/--since는 함께 쓸 수 없습니다: 세션을 직접 고르거나 최근 세션을 고르세요.",
+                raise UsageError(tr("--session과 --recent/--since는 함께 쓸 수 없습니다: 세션을 직접 고르거나 최근 세션을 고르세요.",
                                    "--session cannot be combined with --recent/--since: name the session or take the recent ones."))
             if self.audit:
-                raise FlowError(tr("--audit은 note가 있는 세션을 읽고 --recent/--since는 note가 없는 세션을 고릅니다. 감사할 세션은 --session으로 고르세요.",
+                raise UsageError(tr("--audit은 note가 있는 세션을 읽고 --recent/--since는 note가 없는 세션을 고릅니다. 감사할 세션은 --session으로 고르세요.",
                                    "--audit reads the sessions that have notes, and --recent/--since pick sessions without them; "
                                    "choose the session to audit with --session."))
             if self.trigger == "hook":
-                raise FlowError(tr("자동 갱신은 오래된 것부터 처리합니다: --recent/--since를 쓸 수 없습니다.",
+                raise UsageError(tr("자동 갱신은 오래된 것부터 처리합니다: --recent/--since를 쓸 수 없습니다.",
                                    "Automatic analysis goes oldest first: --recent/--since cannot be used."))
         if self.extract_model is not None and (not self.extract_model.strip() or any(ord(c) < 32 for c in self.extract_model)):
-            raise FlowError(tr("모델 식별자는 비어 있거나 제어 문자를 포함할 수 없습니다.",
+            raise UsageError(tr("모델 식별자는 비어 있거나 제어 문자를 포함할 수 없습니다.",
                                "A model identifier cannot be empty or contain control characters."))
         if self.extract_effort not in EFFORTS:
-            raise FlowError(tr("추론 수준은 " + ", ".join(EFFORTS) + " 중 하나여야 합니다.",
+            raise UsageError(tr("추론 수준은 " + ", ".join(EFFORTS) + " 중 하나여야 합니다.",
                              "The reasoning effort must be one of " + ", ".join(EFFORTS) + "."))
         if self.langsmith_include_content and not self.langsmith_enabled:
-            raise FlowError(tr("모델 입력·출력 추적에는 --langsmith도 필요합니다.",
+            raise UsageError(tr("모델 입력·출력 추적에는 --langsmith도 필요합니다.",
                                "Tracing model inputs and outputs also requires --langsmith."))
         if self.langsmith_project is not None and not self.langsmith_enabled:
-            raise FlowError(tr("LangSmith 프로젝트 이름을 지정하려면 --langsmith도 필요합니다.",
+            raise UsageError(tr("LangSmith 프로젝트 이름을 지정하려면 --langsmith도 필요합니다.",
                                "Naming a LangSmith project also requires --langsmith."))
         if self.langsmith_project is not None and (
                 not self.langsmith_project.strip() or any(ord(c) < 32 for c in self.langsmith_project)):
-            raise FlowError(tr("LangSmith 프로젝트 이름이 비어 있거나 제어 문자를 포함합니다.",
+            raise UsageError(tr("LangSmith 프로젝트 이름이 비어 있거나 제어 문자를 포함합니다.",
                                "The LangSmith project name is empty or contains control characters."))
         if min(self.history_limit, self.unit_chars, self.record_chars, self.task_chars, self.unit_records) <= 0:
-            raise FlowError(tr("입력 예산은 양수여야 합니다.", "Input budgets must be positive."))
+            raise UsageError(tr("입력 예산은 양수여야 합니다.", "Input budgets must be positive."))
         if self.audit and self.trigger == "hook":
-            raise FlowError(tr("자동 갱신은 감사(--audit)를 하지 않습니다.", "Automatic updates never run an audit (--audit)."))
+            raise UsageError(tr("자동 갱신은 감사(--audit)를 하지 않습니다.", "Automatic updates never run an audit (--audit)."))
         if self.record_chars > self.unit_chars or self.unit_chars >= self.task_chars:
-            raise FlowError(tr("record_chars ≤ unit_chars < task_chars 조건이 필요합니다.",
+            raise UsageError(tr("record_chars ≤ unit_chars < task_chars 조건이 필요합니다.",
                                "record_chars ≤ unit_chars < task_chars is required."))
 
 
@@ -822,7 +828,7 @@ def since_cutoff(text: str, now_: datetime | None = None) -> str:
         try:
             parsed = datetime.fromisoformat((text or "").strip().replace("Z", "+00:00"))
         except ValueError:
-            raise FlowError(tr(f"--since는 기간(36h, 7d, 2w)이나 날짜(2026-10-01)여야 합니다: {text!r}",
+            raise UsageError(tr(f"--since는 기간(36h, 7d, 2w)이나 날짜(2026-10-01)여야 합니다: {text!r}",
                                f"--since is an age (36h, 7d, 2w) or a date (2026-10-01): {text!r}")) from None
         moment = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -2015,16 +2021,19 @@ class Engine:
         saved, key = self.store.get_meta(SCAN_CACHE_META, {}) or {}, scan_cache_key(source_scope)
         cache = ScanCache(key, saved.get("files", {}) if saved.get("key") == key else {})
         logs = collect_logs(source_scope, codex_home=self.config.codex_home, claude_home=self.config.claude_home,
-                            opencode_home=self.config.opencode_home, cache=cache, progress=self.scan_progress)
+                            opencode_home=self.config.opencode_home, cache=cache, progress=self.scan_progress,
+                            sources=self.config.sources)
         self.store.set_meta(SCAN_CACHE_META, {"key": key, "files": cache.fresh})
         artifacts = collect_git(self.scope, history_limit=self.config.history_limit,
                                 exclude=self.store.get_meta("exports", []))
         self.store.set_meta("known_worktree_roots", [str(p) for p in source_scope.roots])
         # What this scan saw, so `status` and `find` can count what changed since without parsing everything.
         self.store.set_meta(INDEX_KEY, build_index(source_scope, logs, codex_home=self.config.codex_home,
-                                                   claude_home=self.config.claude_home, opencode_home=self.config.opencode_home))
+                                                   claude_home=self.config.claude_home, opencode_home=self.config.opencode_home,
+                                                   sources=self.config.sources))
         mark_steps(logs.records)
-        return Snapshot(logs.records + artifacts.records, list(dict.fromkeys(logs.limitations + artifacts.limitations)), logs.files)
+        return Snapshot(logs.records + artifacts.records, list(dict.fromkeys(logs.limitations + artifacts.limitations)),
+                        logs.files, logs.sources)
 
     def resolve_language(self, snapshot: Snapshot, *, save: bool = False) -> str:
         """The output language: as configured, else as saved for the project, else detected. A detected language is

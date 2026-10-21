@@ -31,7 +31,8 @@ from pathlib import Path
 from typing import Any
 
 from .agent_commands import tool_dirs
-from .freshness import FIND_BUDGET_BYTES, check
+from .contract import EXIT_BUSY, EXIT_OK, EXIT_PARTIAL
+from .freshness import FIND_BUDGET_BYTES, check, saved_sources
 from .git_context import Scope
 from .i18n import tr
 from .store import Store
@@ -44,7 +45,10 @@ RUNNERS = ("codex", "claude")
 DEFAULT_COOLDOWN = 15 * 60
 DEFAULT_MAX_RUNS_PER_DAY = 8
 FAILURE_STOP = 3                  # failed runs in a row after which the hook starts nothing more
-RUN_OK_CODES = {0, 2}             # analyze: complete/noop, or partial (units left, which `--units N` always leaves)
+RUN_OK_CODES = {EXIT_OK, EXIT_PARTIAL}  # analyze: complete/noop, or partial (units left, which `--units N` always leaves)
+# analyze found another run holding the project (a person's analysis started between the hook's check and the
+# child's start): neither a success nor a failure, so it does not count toward `FAILURE_STOP`.
+RUN_NEUTRAL_CODES = {EXIT_BUSY}
 RUNS_KEPT = 16
 SELF_RUN_PREFIXES = ("contexttrail-run-", "projectflow-run-")
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$")
@@ -127,7 +131,7 @@ def decide(scope: Scope, store: Store, *, moment: datetime | None = None) -> tup
         return "daily_cap", None
     if failing(state):
         return "failing", None
-    fresh = check(scope, store, budget_bytes=FIND_BUDGET_BYTES, **_homes(store))
+    fresh = check(scope, store, budget_bytes=FIND_BUDGET_BYTES, sources=saved_sources(store), **_homes(store))
     since = fresh.get("since_scan") or {}
     pending = fresh["pending"]["records"] or since.get("records") or (
         not since.get("parsed", True) and (since.get("files_changed") or since.get("databases_changed")))
@@ -157,14 +161,18 @@ def record_finish(store: Store, exit_code: int, note: str | None = None, moment:
         target = {"started": None}
         runs.append(target)
     target.update(finished=moment.strftime("%Y-%m-%dT%H:%M:%SZ"), exit=int(exit_code), ok=int(exit_code) in RUN_OK_CODES)
+    if int(exit_code) in RUN_NEUTRAL_CODES:
+        target["busy"] = True
     if note:
         target["note"] = note[:120]
     store.set_meta(STATE_KEY, {"starts": state.get("starts", []), "runs": runs[-RUNS_KEPT:]})
 
 
 def failing(state: dict[str, Any]) -> bool:
-    """True after `FAILURE_STOP` finished runs in a row that did not end well."""
-    finished = [r for r in state.get("runs", []) if isinstance(r, dict) and r.get("finished")]
+    """True after `FAILURE_STOP` finished runs in a row that did not end well; a run that found the project busy
+    (`RUN_NEUTRAL_CODES`) is neither and is passed over."""
+    finished = [r for r in state.get("runs", []) if isinstance(r, dict) and r.get("finished")
+                and r.get("exit") not in RUN_NEUTRAL_CODES]
     tail = finished[-FAILURE_STOP:]
     return len(tail) == FAILURE_STOP and not any(r.get("ok") for r in tail)
 
@@ -284,7 +292,9 @@ def describe(store: Store, log_path: Path | None = None) -> list[str]:
     finished = [r for r in state.get("runs", []) if isinstance(r, dict) and r.get("finished")]
     if finished:
         last = finished[-1]
-        verdict = tr("정상", "ok") if last.get("ok") else tr("실패", "failed")
+        verdict = (tr("정상", "ok") if last.get("ok") else
+                   tr("다른 분석이 진행 중이라 건너뜀", "skipped, another analysis was running") if last.get("busy") else
+                   tr("실패", "failed"))
         lines.append(tr(f"마지막 실행 결과: {verdict} (exit {last.get('exit')}, 종료 {last['finished']})",
                         f"Last run: {verdict} (exit {last.get('exit')}, ended {last['finished']})"))
     if failing(state):

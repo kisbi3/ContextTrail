@@ -432,4 +432,4 @@ def test_a_given_data_directory_is_read_alone_and_a_mistyped_home_is_refused(tmp
     assert opencode_databases(empty) == []  # the variable belongs to opencode's own data directory
     assert not collect_logs(scope, codex_home=empty, claude_home=empty, opencode_home=empty).records
     from contexttrail.cli import main
-    assert main(["scan", str(folder), "--codex-home", str(tmp_path / "typo")]) == 1  # refused, not read as empty
+    assert main(["scan", str(folder), "--codex-home", str(tmp_path / "typo")]) == 64  # refused, not read as empty

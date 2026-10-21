@@ -15,7 +15,7 @@ from typing import Any, Callable, Iterator
 from .i18n import tr
 from .model import SourceRecord, empty_graph
 from .schema import fill_authoring, fill_steps, fold_delegate_reports, link_delegations, link_forks
-from .util import FlowError, dumps, mask_data, mask_evidence, merge_focus, now, private_dir
+from .util import Busy, FlowError, dumps, mask_data, mask_evidence, merge_focus, now, private_dir
 
 # Conservative floor for SQLite's per-statement bound variable limit (999).
 _SQL_VARIABLES = 900
@@ -165,7 +165,7 @@ class Store:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
-                raise FlowError(tr("이 scope에서 이미 분석이 진행 중입니다.", "An analysis is already running in this scope.")) from exc
+                raise Busy(tr("이 scope에서 이미 분석이 진행 중입니다.", "An analysis is already running in this scope.")) from exc
             yield
         finally:
             os.close(fd)

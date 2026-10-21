@@ -307,7 +307,7 @@ def test_find_takes_a_lone_folder_as_where_to_look_and_explains_unquoted_words(t
     assert main(["find", str(project)]) == 0
     assert "'" + str(project) not in capsys.readouterr().out  # an overview of that folder, not a search for its path
     assert not (elsewhere / ".contexttrail").exists()
-    assert main(["find", "story", "view"]) == 1
+    assert main(["find", "story", "view"]) == 64  # a usage error
     assert 'find "story view"' in capsys.readouterr().err
 
 

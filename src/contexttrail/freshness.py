@@ -31,7 +31,8 @@ from .git_context import Scope
 from .i18n import tr
 from .model import Snapshot
 from .sources.local import (COMPRESSED_SUFFIX, RESUME_VERSION, jsonl_files, parse_claude, parse_codex,
-                            read_claude_appended, reading_code, resume_current, scan_cache_key, source_homes)
+                            read_claude_appended, reading_code, reads, resume_current, scan_cache_key,
+                            source_homes)
 from .sources.opencode import opencode_databases, parse_opencode, session_times
 from .store import Store, in_journal
 from .util import digest, now
@@ -48,8 +49,9 @@ UNIT_DONE = {"integrated", "superseded"}
 
 
 def build_index(scope: Scope, snapshot: Snapshot, *, codex_home: Path | None, claude_home: Path | None,
-                opencode_home: Path | None) -> dict[str, Any]:
-    """What the scan saw: each transcript file's size and mtime, each in-scope opencode session's update time.
+                opencode_home: Path | None, sources=None) -> dict[str, Any]:
+    """What the scan saw: each transcript file's size and mtime, each in-scope opencode session's update time, of
+    the tools it read (`sources`, kept in the index so a later check compares like with like).
 
     A file's size is the length the parser read (its manifest), so a file that grew during the
     scan still counts as changed next time.
@@ -57,7 +59,7 @@ def build_index(scope: Scope, snapshot: Snapshot, *, codex_home: Path | None, cl
     codex_home, claude_home, opencode_home = source_homes(codex_home, claude_home, opencode_home)
     read = {entry["path"]: entry.get("complete_bytes", entry.get("bytes")) for entry in snapshot.files if entry.get("path")}
     files: dict[str, dict[str, int]] = {}
-    for path, _ in jsonl_files(codex_home, claude_home):
+    for path, _ in jsonl_files(codex_home, claude_home, sources=sources):
         try:
             info = os.stat(path, follow_symlinks=False)
         except OSError:
@@ -65,10 +67,13 @@ def build_index(scope: Scope, snapshot: Snapshot, *, codex_home: Path | None, cl
         size = read.get(str(path))
         files[str(path)] = {"bytes": size if isinstance(size, int) else info.st_size, "mtime_ns": info.st_mtime_ns}
     databases: dict[str, dict[str, Any]] = {}
-    for path in opencode_databases(opencode_home):
+    for path in opencode_databases(opencode_home) if reads(sources, "opencode") else []:
         databases[str(path)] = {"sessions": session_times(path, scope) or {}}
-    return {"version": INDEX_VERSION, "scanned_at": now(), "files": files, "opencode": databases,
-            "homes": {"codex": str(codex_home), "claude": str(claude_home), "opencode": str(opencode_home)}}
+    index = {"version": INDEX_VERSION, "scanned_at": now(), "files": files, "opencode": databases,
+             "homes": {"codex": str(codex_home), "claude": str(claude_home), "opencode": str(opencode_home)}}
+    if sources is not None:
+        index["sources"] = list(sources)
+    return index
 
 
 def stored(store: Store) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, dict]]:
@@ -131,13 +136,14 @@ def cached_since_scan(store: Store, scanned_at: str | None) -> dict[str, Any] | 
 
 
 def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_home: Path | None = None,
-          opencode_home: Path | None = None, budget_bytes: int | None = None) -> dict[str, Any]:
-    """The lag between the graph and the transcripts, as counts.
+          opencode_home: Path | None = None, budget_bytes: int | None = None, sources=None) -> dict[str, Any]:
+    """The lag between the graph and the transcripts (of `sources` only, when given), as counts.
 
     `since_scan.parsed` says whether the changed files were parsed (then `sessions`, `records`,
     `newest_at` and `by_source` are exact) or only counted against the budget.
     """
     started = time.perf_counter()
+    tools = sources  # the tools read; `sources` below is the stored records, as in `stored`
     result, index, sources = stored(store)
     if not index:
         result["took_ms"] = int((time.perf_counter() - started) * 1000)
@@ -148,7 +154,7 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
     stats: dict[str, dict[str, int]] = {}
     infos: dict[str, os.stat_result] = {}
     new_files, changed_bytes, newest_mtime = 0, 0, 0
-    for path, provider in jsonl_files(codex_home, claude_home):
+    for path, provider in jsonl_files(codex_home, claude_home, sources=tools):
         try:
             info = os.stat(path, follow_symlinks=False)
         except OSError:
@@ -166,7 +172,7 @@ def check(scope: Scope, store: Store, *, codex_home: Path | None = None, claude_
     deleted = sum(1 for path in known if not Path(path).exists())
     databases_changed: list[tuple[Path, dict[str, int]]] = []
     database_bytes = 0
-    for path in opencode_databases(opencode_home):
+    for path in opencode_databases(opencode_home) if reads(tools, "opencode") else []:
         before = (index.get("opencode", {}).get(str(path)) or {}).get("sessions", {})
         times = session_times(path, scope)
         if times is None or any(before.get(session) != stamp for session, stamp in times.items()):
@@ -425,10 +431,19 @@ def saved_homes(store: Store) -> dict[str, Path]:
             if options.get(key) or scanned.get(key.removesuffix("_home"))}
 
 
-def check_from_store(scope: Scope, store: Store, *, budget_bytes: int | None = FIND_BUDGET_BYTES) -> dict[str, Any] | None:
-    """The check with `saved_homes`; None when the state cannot be read."""
+def saved_sources(store: Store) -> tuple[str, ...] | None:
+    """The tools a check reads: the project's saved `--sources`, else those the last scan read, else all (None)."""
+    options = store.get_meta("options", {}) or {}
+    value = options.get("sources") or (store.get_meta(INDEX_KEY) or {}).get("sources")
+    return tuple(value) if value else None
+
+
+def check_from_store(scope: Scope, store: Store, *, budget_bytes: int | None = FIND_BUDGET_BYTES,
+                     sources=None) -> dict[str, Any] | None:
+    """The check with `saved_homes` and `sources` (else `saved_sources`); None when the state cannot be read."""
     try:
-        return check(scope, store, budget_bytes=budget_bytes, **saved_homes(store))
+        return check(scope, store, budget_bytes=budget_bytes, sources=sources or saved_sources(store),
+                     **saved_homes(store))
     except Exception:  # a locked or half-written state must not take the read path down
         return None
 

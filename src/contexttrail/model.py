@@ -201,6 +201,8 @@ class Snapshot:
     records: list[SourceRecord]
     limitations: list[str] = field(default_factory=list)
     files: list[dict[str, Any]] = field(default_factory=list)
+    # Per tool, where a scan looked and what it found there (`sources.local.source_summary`); empty elsewhere.
+    sources: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def id(self) -> str:

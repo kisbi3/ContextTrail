@@ -16,6 +16,8 @@ from . import __version__
 from . import auto_update
 from . import journal
 from . import session_context
+from . import contract
+from .contract import EXIT_BUSY, EXIT_INTERRUPTED, EXIT_OK, Parser, error_kind, exit_for, run_exit, schema
 from .agent_commands import OPENCODE_PERMISSION_HINT, install_agent_commands
 from .auto_update import install_hooks
 from .agent_view import find, find_text, show, show_text
@@ -25,19 +27,21 @@ from .diagram import flow_diagram
 from .evaluation import call_timeline, run_eval, summarize_calls
 from .eval_review import render_eval_review
 from .input_preview import preview_eval
-from .freshness import check, check_from_store, saved_homes, status_lines
+from .freshness import check, check_from_store, saved_homes, saved_sources, status_lines
 from .freshness import summary as freshness_summary
 from .git_context import Scope
 from . import i18n
 from .i18n import tr
 from .refresh import refresh, summary_lines as refresh_lines
-from .render import detail_context, event_detail, export_text, terminal_graph
+from .model import empty_graph
+from .render import detail_context, event_detail, export_delta, export_text, terminal_graph
 from .runners import CLIRunner
 from .runners.cli_runner import DEFAULT_MODELS, EFFORTS
 from .schema import STATUSES, folded_view
 from .store import ReadOnlyStore, Store
 from .ui import GraphApp, TerminalApp, legend, token_usage_label
-from .util import FlowError, dumps, mask_data, mask_evidence, safe_text, within
+from .sources.local import SOURCES, parse_sources
+from .util import FlowError, Refused, UsageError, dumps, mask_data, mask_evidence, safe_text, within
 from .webview import LocalViewer
 
 
@@ -69,8 +73,25 @@ def langsmith_options(sub) -> None:
     sub.add_argument("--langsmith-project", help=argparse.SUPPRESS)
 
 
+def _sources(text: str) -> tuple[str, ...]:
+    try:
+        return parse_sources(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+_sources.value_type = "list"  # for `capabilities`
+
+
+def sources_option(sub) -> None:
+    sub.add_argument("--sources", type=_sources, metavar="LIST",
+                     help=tr("읽을 기록 도구만, 쉼표로: " + ",".join(SOURCES) + ". 기본은 셋 다; analyze만 저장",
+                             "Read only these tools' transcripts, comma-separated: " + ",".join(SOURCES)
+                             + ". Default: all three; saved by analyze only"))
+
+
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="contexttrail",
+    root = Parser(prog="contexttrail",
                                    description=tr("Codex·Claude Code 기록의 근거 기반 프로젝트 흐름",
                                                   "Evidence-linked project flow from Codex and Claude Code transcripts"),
                                    epilog=tr("명령 없이 실행하면 현재 폴더(또는 첫 인자로 준 폴더)의 저장 결과를 엽니다(view). "
@@ -93,6 +114,7 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--claude-home", type=Path)
         sub.add_argument("--opencode-home", type=Path, help=tr("opencode 데이터 폴더(opencode.db가 있는 곳); 기본 ~/.local/share/opencode",
                                                                "opencode data directory (where opencode.db is); default ~/.local/share/opencode"))
+        sources_option(sub)
         sub.add_argument("--history-limit", type=int)
         sub.add_argument("--timeout", type=float, help=tr("모델 호출 하나의 제한 시간(초); 기본 600", "Time limit per model call in seconds; default 600"))
         sub.add_argument("--record-chars", type=int)
@@ -132,6 +154,10 @@ def parser() -> argparse.ArgumentParser:
                                  "Analyze only the sessions that ended after this first: an age (36h, 7d, 2w) or a date "
                                  "(2026-10-01, UTC). With --recent, the latest N of them"))
         if command == "analyze":
+            sub.add_argument("--json", action="store_true",
+                             help=tr("실행 결과를 stdout에 JSON 객체 하나로(진행 상황은 stderr); 화면을 열지 않음",
+                                     "Print the run's result as one JSON object on stdout (progress stays on stderr); "
+                                     "opens no screen"))
             sub.add_argument("--retry-failed", action="store_true",
                              help=tr("실패해서 건너뛴 작업 단위를 기록과 설정이 그대로여도 다시 보냄(이번 실행만)",
                                      "Send again the work units skipped after a failure of their own, even though their records and "
@@ -177,6 +203,7 @@ def parser() -> argparse.ArgumentParser:
                                                 "How far the graph lags the transcripts: unanalyzed records and changes since the last scan; no AI calls"))
     sub.add_argument("folder", nargs="?", default=".")
     sub.add_argument("--json", action="store_true")
+    sources_option(sub)
     sub = commands.add_parser("refresh", help=tr("예전 규칙으로 만든 그래프를 지금 규칙대로 다시 읽기: 작성자·단계·위임 연결, 사람의 요청이 아닌 요청. "
                                                  "scan만 하고 AI 호출 없음",
                                                  "Bring a graph built under older rules up to the current ones: authoring, steps, "
@@ -210,6 +237,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("folder", nargs="?", default=None)
     sub.add_argument("--limit", type=int, default=20)
     sub.add_argument("--json", action="store_true")
+    sources_option(sub)
     sub = commands.add_parser("show", help=tr("사건 하나의 설명·연결·원문 근거. AI 호출 없음",
                                               "One event's summary, links and quoted evidence; no AI calls"))
     sub.add_argument("ref", help=tr("사건 ID 앞부분 또는 복사한 참조(contexttrail:ev_…@v12)", "Event ID prefix or a copied reference (contexttrail:ev_…@v12)"))
@@ -252,6 +280,12 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--format", choices=["md", "mmd", "json"], required=True)
     sub.add_argument("--output", type=Path, required=True)
     sub.add_argument("--force", action="store_true")
+    sub.add_argument("--graph-version", type=int, metavar="N",
+                     help=tr("최신 대신 이 그래프 버전을 내보냄", "Export this graph version instead of the latest"))
+    sub.add_argument("--since-version", type=int, metavar="N",
+                     help=tr("버전 N 이후 더해지거나 바뀌거나 무효가 된 사건·관계와 그 근거만(json만). N은 이전 내보내기의 graph.version",
+                             "Only the events and relations added, updated or invalidated since graph version N, with their "
+                             "evidence (json only); N is the graph.version a previous export carried"))
     sub = commands.add_parser("doctor", help=tr("로컬 CLI·격리 capability 진단; 기본 AI 호출 없음",
                                                 "Check the local CLIs and isolation capabilities; no AI calls by default"))
     sub.add_argument("--runner", choices=["codex", "claude"])
@@ -264,6 +298,10 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--no-tui", action="store_true")
     sub.add_argument("--no-mouse", action="store_true", help=tr("터미널 화면에서 마우스를 쓰지 않음", "No mouse on the terminal screen"))
     sub.add_argument("--ascii", action="store_true")
+    commands.add_parser("capabilities", help=tr("이 설치가 제공하는 것(버전, JSON 출력 스키마, 읽을 수 있는 기록, 명령과 옵션, 종료 코드)을 JSON으로. "
+                                                "프로그램이 --help 대신 읽음",
+                                                "What this installation provides, as JSON: version, JSON output schemas, readable "
+                                                "sources, commands and options, exit codes. For programs, instead of --help"))
     return root
 
 
@@ -362,15 +400,16 @@ def _options(args, store: Store, *, persist: bool) -> tuple[AnalysisConfig, dict
     must not change what every later analysis of the project reads, and a value the checks refuse is never saved."""
     saved = store.get_meta("options", {}) or {}
     options = dict(saved)
-    for key in ("runner", "model", "codex_home", "claude_home", "opencode_home", "history_limit", "timeout", "record_chars", "unit_chars",
-                "extract_model", "extract_effort", "extract_workers", "output_language"):
+    for key in ("runner", "model", "codex_home", "claude_home", "opencode_home", "sources", "history_limit", "timeout",
+                "record_chars", "unit_chars", "extract_model", "extract_effort", "extract_workers", "output_language"):
         value = getattr(args, key, None)
         if isinstance(value, Path) and not value.expanduser().is_dir():
             # A mistyped directory would read no transcript of that tool, silently.
             flag = "--" + key.replace("_", "-")
-            raise FlowError(tr(f"{flag}: 폴더가 없습니다: {value}", f"{flag}: no such directory: {value}"))
+            raise UsageError(tr(f"{flag}: 폴더가 없습니다: {value}", f"{flag}: no such directory: {value}"))
         if value is not None:
-            options[key] = str(value.expanduser().resolve()) if isinstance(value, Path) else value
+            options[key] = (str(value.expanduser().resolve()) if isinstance(value, Path) else
+                            list(value) if isinstance(value, tuple) else value)
     for key in RETIRED_OPTIONS:
         options.pop(key, None)  # settings of the analysis calls that are gone; read nowhere
     detect_again = options.get("output_language") == "auto"
@@ -384,6 +423,8 @@ def _options(args, store: Store, *, persist: bool) -> tuple[AnalysisConfig, dict
     for key in ("codex_home", "claude_home", "opencode_home"):
         if key in values:
             values[key] = Path(values[key])
+    if values.get("sources") is not None:
+        values["sources"] = tuple(values["sources"])
     if getattr(args, "max_calls", None) is not None:
         values["max_calls"], values["calls_fixed"] = args.max_calls, True
     values["max_units"] = getattr(args, "max_units", None)
@@ -412,11 +453,25 @@ def _session(value: str | None) -> str | None:
     return journal.current_session() if value == "current" else value
 
 
-def _choose_units(plan: dict) -> bool | int:
+def _ask(prompt: str, *, to_stderr: bool = False) -> str:
+    """A prompt's answer; the end of input (a closed stdin, a host's pty) is no answer: a refusal, not a crash.
+    With `to_stderr` (`analyze --json`) the prompt goes to stderr, so stdout holds the result alone."""
+    try:
+        if to_stderr:
+            print(prompt, end="", file=sys.stderr, flush=True)
+            return input()
+        return input(prompt)
+    except EOFError:
+        raise Refused(tr("입력이 끝나 답을 받지 못했습니다. 프로그램에서 부를 때는 --yes와 --runner를 주세요.",
+                         "No answer: the input ended. From a program, pass --yes and --runner.")) from None
+
+
+def _choose_units(plan: dict, *, to_stderr: bool = False) -> bool | int:
     """Ask at a terminal how many units to run; Enter keeps the plan, n declines."""
     print(tr("선택지: ", "Choices: ") + plan_choices_text(plan), file=sys.stderr)
-    answer = input(tr(f"처리할 작업 단위 수 [Enter={plan['units_this_run']}개 · n 취소]: ",
-                      f"Work units to process [Enter={plan['units_this_run']} · n cancels]: ")).strip().lower()
+    answer = _ask(tr(f"처리할 작업 단위 수 [Enter={plan['units_this_run']}개 · n 취소]: ",
+                     f"Work units to process [Enter={plan['units_this_run']} · n cancels]: "),
+                  to_stderr=to_stderr).strip().lower()
     if not answer:
         return True
     if answer.isdigit() and int(answer) > 0:
@@ -460,14 +515,14 @@ def _reading_store(scope: Scope) -> Store | None:
         return ReadOnlyStore(scope.state_dir, scope.id).check_readable()
 
 
-def _no_state(scope: Scope, as_json: bool) -> int:
+def _no_state(scope: Scope, as_json: bool, command: str = "find") -> int:
     """What a read command says for a folder ContextTrail has never opened: nothing to read, and how to start."""
     text = tr(f"이 폴더에는 ContextTrail 상태가 없습니다(아직 scan·분석 전): {safe_text(scope.folder)}\n"
               "시작: contexttrail scan . (AI 호출 없음) 또는 contexttrail analyze .",
               f"ContextTrail has no state for this folder (never scanned or analysed): {safe_text(scope.folder)}\n"
               "Start with: contexttrail scan . (no AI calls) or contexttrail analyze .")
-    print(dumps({"state": "none", "scope": str(scope.folder), "events": [], "ai_calls": 0}, pretty=True)
-          if as_json else text)
+    print(dumps({"schema": schema(command), "state": "none", "scope": str(scope.folder), "events": [], "ai_calls": 0},
+                pretty=True) if as_json else text)
     return 0
 
 
@@ -481,7 +536,7 @@ def _find(args) -> int:
         else:
             args.folder = "."
     elif not Path(args.folder).expanduser().is_dir():
-        raise FlowError(tr(f"폴더가 없습니다: {args.folder}. 여러 단어를 찾으려면 따옴표로 묶으세요: find \"{args.query} {args.folder}\"",
+        raise UsageError(tr(f"폴더가 없습니다: {args.folder}. 여러 단어를 찾으려면 따옴표로 묶으세요: find \"{args.query} {args.folder}\"",
                            f"No such folder: {args.folder}. To search for several words, quote them: find \"{args.query} {args.folder}\""))
     scope = Scope.resolve(args.folder)
     store = _reading_store(scope)
@@ -490,10 +545,10 @@ def _find(args) -> int:
     _screen_language(None, store)
     result = find(store.graph(), args.query, store.evidence_many, limit=max(1, args.limit))
     # The header says what the graph does not hold yet; changed files are parsed up to a byte budget.
-    fresh = check_from_store(scope, store)
+    fresh = check_from_store(scope, store, sources=args.sources)
     result["freshness"] = fresh
     result["freshness_text"] = freshness_summary(fresh)
-    print(dumps(result, pretty=True) if args.json else "\n".join(find_text(result)))
+    print(dumps({"schema": schema("find"), **result}, pretty=True) if args.json else "\n".join(find_text(result)))
     return 0
 
 
@@ -506,7 +561,7 @@ def _auto_update(args) -> int:
         _screen_language(None, store)
         if args.enable:
             if not args.runner or not args.units:
-                raise FlowError(tr("--enable에는 --runner와 --units가 필요합니다.", "--enable needs --runner and --units."))
+                raise UsageError(tr("--enable에는 --runner와 --units가 필요합니다.", "--enable needs --runner and --units."))
             auto_update.enable(store, runner=args.runner, units=args.units, cooldown=auto_update.parse_duration(args.cooldown),
                                max_runs_per_day=args.max_runs_per_day)
             print(tr(f"켰습니다: {safe_text(scope.folder)}. 훅이 불릴 때마다 대기 기록이 있으면 {args.runner}로 {args.units}개 단위를 분석합니다 "
@@ -564,7 +619,7 @@ def _note(args) -> int:
         version = store.graph()["version"] if store else None
         waiting = journal.queued(scope, session)
         if args.json:
-            print(dumps({"session": session, "version": version, "enabled": journal.enabled(store) if store else journal.enabled_readonly(scope),
+            print(dumps({"schema": schema("note-list"), "session": session, "version": version, "enabled": journal.enabled(store) if store else journal.enabled_readonly(scope),
                          "events": events, "queued": [{k: v for k, v in item.items() if not k.startswith("_")} for item in waiting]}, pretty=True))
         else:
             for event in events:
@@ -579,7 +634,7 @@ def _note(args) -> int:
                 print("notes are off for this project (contexttrail note --enable turns them on)")
         return 0
     if not args.kind or not args.title:
-        raise FlowError("note needs --kind and --title (and at least one --quote)")
+        raise UsageError("note needs --kind and --title (and at least one --quote)")
     options = dict(kind=args.kind, title=args.title, summary=args.summary, quotes=args.quote, status=args.status,
                    actor=args.actor, relations={name: getattr(args, name) for name in journal.RELATION_OPTIONS})
     queued, why = None, "this environment cannot write the project's state"
@@ -599,9 +654,9 @@ def _note(args) -> int:
     if queued:
         message = (f"{queued['queued']} queued: {why}, so the note is stored, "
                    f"with every check, when the turn ends. Its quotes were found. Link to it as {queued['queued']}.")
-        print(dumps({"queued": queued["queued"]}, pretty=True) if args.json else message)
+        print(dumps({"schema": schema("note"), "queued": queued["queued"]}, pretty=True) if args.json else message)
         return 0
-    print(dumps(result, pretty=True) if args.json else result["ref"])
+    print(dumps({"schema": schema("note"), **result}, pretty=True) if args.json else result["ref"])
     return 0
 
 
@@ -659,11 +714,12 @@ def _status(args) -> int:
     scope = Scope.resolve(args.folder)
     store = _reading_store(scope)
     if store is None:
-        return _no_state(scope, args.json)
+        return _no_state(scope, args.json, "status")
     _screen_language(None, store)
-    result = check(scope, store, budget_bytes=None, **saved_homes(store))
+    result = check(scope, store, budget_bytes=None, sources=args.sources or saved_sources(store), **saved_homes(store))
     result["summary"] = freshness_summary(result)
-    print(dumps(result, pretty=True) if args.json else "\n".join(status_lines(result, Path(args.folder))))
+    print(dumps({"schema": schema("status"), **result}, pretty=True) if args.json
+          else "\n".join(status_lines(result, Path(args.folder))))
     return 0
 
 
@@ -676,7 +732,7 @@ def _show(args) -> int:
     _screen_language(None, store)
     graph = store.graph()
     result = show(args.ref, graph, store.evidence, store.graph, quote_lines=max(1, args.quote_lines))
-    print(dumps(result, pretty=True) if args.json else "\n".join(show_text(result)))
+    print(dumps({"schema": schema("show"), **result}, pretty=True) if args.json else "\n".join(show_text(result)))
     return 0
 
 
@@ -698,10 +754,25 @@ def _export(args, scope: Scope, store: Store) -> int:
             output.parent.mkdir(parents=True, mode=0o700)
         else:
             raise FlowError(tr("출력 상위 디렉터리가 없습니다.", "The output's parent directory does not exist."))
-    graph = store.graph()
-    # md and mmd number events as the screens do (in time order, folded reports moved); json stays the stored graph.
-    shown = graph if args.format == "json" else folded_view(graph)
-    text = export_text(shown, store.evidence_many(_evidence_ids(graph)), args.format)
+    latest = store.latest_version()
+    for flag, value in (("--graph-version", args.graph_version), ("--since-version", args.since_version)):
+        if value is not None and not 0 <= value <= latest:
+            raise UsageError(tr(f"{flag} {value}: 그래프 버전은 0~{latest}입니다.",
+                                f"{flag} {value}: graph versions run from 0 to {latest}."))
+    if args.since_version is not None and args.format != "json":
+        raise UsageError(tr("--since-version은 --format json에서만 씁니다.", "--since-version needs --format json."))
+    graph = store.graph(args.graph_version) if args.graph_version else (
+        store.graph() if args.graph_version is None else empty_graph(store.scope_id))
+    if args.since_version is not None:
+        if args.since_version > graph["version"]:
+            raise UsageError(tr(f"--since-version {args.since_version}이 내보낼 버전 {graph['version']}보다 큽니다.",
+                                f"--since-version {args.since_version} is after the exported version {graph['version']}."))
+        since = store.graph(args.since_version) if args.since_version else empty_graph(store.scope_id)
+        text = export_delta(since, graph, store.evidence_many)
+    else:
+        # md and mmd number events as the screens do (in time order, folded reports moved); json stays the stored graph.
+        shown = graph if args.format == "json" else folded_view(graph)
+        text = export_text(shown, store.evidence_many(_evidence_ids(graph)), args.format)
     store.set_meta("exports", list(dict.fromkeys(store.get_meta("exports", []) + [str(output)])))
     flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | (os.O_TRUNC if args.force else os.O_EXCL)
     fd = os.open(output, flags, 0o600)
@@ -716,7 +787,7 @@ def _doctor(args) -> int:
     results, failed = [], False
     for name in [args.runner] if args.runner else ["codex", "claude"]:
         runner = CLIRunner(name, model=args.model)
-        report = {"runner": name, "installed": bool(shutil.which(name)),
+        report = {"schema": schema("doctor"), "runner": name, "installed": bool(shutil.which(name)),
                   "live_model_test": "not_run", "auth": "not_verified"}
         if sys.platform == "linux":
             report["bubblewrap"] = bool(shutil.which("bwrap"))
@@ -728,11 +799,11 @@ def _doctor(args) -> int:
                 if not args.yes:
                     raise FlowError(tr("실제 계정 호출에는 doctor --smoke --yes가 필요합니다. 합성 문장만 전송합니다.",
                                        "A call on the real account needs doctor --smoke --yes; only a synthetic sentence is sent."))
-                schema = {"type": "object", "properties": {"status": {"type": "string", "enum": ["ok"]}},
-                          "required": ["status"], "additionalProperties": False}
+                answer_schema = {"type": "object", "properties": {"status": {"type": "string", "enum": ["ok"]}},
+                                 "required": ["status"], "additionalProperties": False}
                 value = runner.run({"system": "Return only the JSON object required by the schema. Do not use tools.",
                                     "stage": "smoke", "data": "Return status ok. This is synthetic test data."},
-                                   schema, threading.Event())
+                                   answer_schema, threading.Event())
                 if value != {"status": "ok"}:
                     raise FlowError(tr("실제 CLI smoke 출력이 계약과 다릅니다.", "The real CLI's smoke output does not match the contract."))
                 report["live_model_test"] = "passed_for_this_invocation"
@@ -818,6 +889,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if report["first_run"]["status"] == "complete" and report["expectations"].get("failed", 0) in (0, None) else 1
         if args.command == "doctor":
             return _doctor(args)
+        if args.command == "capabilities":
+            print(dumps(contract.capabilities(parser()), pretty=True))
+            return 0
         if args.command == "install-commands":
             paths = install_agent_commands(Path.home(), force=args.force)
             print(tr("설치한 에이전트 명령:", "Installed agent commands:"))
@@ -849,7 +923,7 @@ def main(argv: list[str] | None = None) -> int:
             return _auto_update(args)
         if args.command == "install-hooks":
             if not (args.claude or args.codex or args.opencode):
-                raise FlowError(tr("--claude, --codex, --opencode 중 하나 이상을 지정하세요.", "Give at least one of --claude, --codex, --opencode."))
+                raise UsageError(tr("--claude, --codex, --opencode 중 하나 이상을 지정하세요.", "Give at least one of --claude, --codex, --opencode."))
             for path in install_hooks(Path.home(), claude=args.claude, codex=args.codex, opencode=args.opencode, force=args.force):
                 print(" ", safe_text(path))
             print(tr("자동 갱신 훅은 자동 갱신을 켠 프로젝트에서만 동작합니다: 프로젝트 폴더에서 contexttrail auto-update --enable --runner codex|claude --units N",
@@ -893,12 +967,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "ops":
             calls = store.llm_calls(args.run_id)
             summary = summarize_calls(calls)
-            print(dumps({"summary": summary, "calls": call_timeline(calls)} if args.details else summary,
-                        pretty=True))
+            print(dumps({"schema": schema("ops"), "summary": summary, "calls": call_timeline(calls)} if args.details
+                        else {"schema": schema("ops"), **summary}, pretty=True))
             return 0
         if args.command == "export":
             return _export(args, scope, store)
+        saved_options = dict(store.get_meta("options", {}) or {})
         config, effective = _options(args, store, persist=args.command == "analyze")
+        as_json = bool(getattr(args, "json", False)) and args.command == "analyze"
         engine = Engine(scope, store, config)
         is_demo = store.get_meta("demo", False)
         def choose_runner() -> str:
@@ -906,12 +982,13 @@ def main(argv: list[str] | None = None) -> int:
             name = effective.get("runner")
             if not name:
                 if not sys.stdin.isatty():
-                    raise FlowError(tr("분석 Runner를 지정하세요: --runner codex 또는 --runner claude",
-                                       "Choose the analysis runner: --runner codex or --runner claude"))
-                answer = input(tr("분석 Runner [1 Codex / 2 Claude / q 취소]: ", "Analysis runner [1 Codex / 2 Claude / q cancels]: ")).strip()
+                    raise Refused(tr("분석 Runner를 지정하세요: --runner codex 또는 --runner claude",
+                                     "Choose the analysis runner: --runner codex or --runner claude"))
+                answer = _ask(tr("분석 Runner [1 Codex / 2 Claude / q 취소]: ", "Analysis runner [1 Codex / 2 Claude / q cancels]: "),
+                              to_stderr=as_json).strip()
                 name = {"1": "codex", "2": "claude"}.get(answer)
                 if not name:
-                    raise FlowError(tr("Runner를 선택하지 않았습니다.", "No runner was chosen."))
+                    raise Refused(tr("Runner를 선택하지 않았습니다.", "No runner was chosen."))
                 options["runner"] = effective["runner"] = name
                 store.set_meta("options", options)  # chosen at the prompt: the person's choice for the project
             return name
@@ -920,8 +997,8 @@ def main(argv: list[str] | None = None) -> int:
                 return FixtureRunner()
             name = effective.get("runner")
             if not name:
-                raise FlowError(tr("Runner 선택이 필요합니다. contexttrail analyze . --runner codex 또는 claude를 사용하세요.",
-                                   "A runner must be chosen: use contexttrail analyze . --runner codex or claude."))
+                raise Refused(tr("Runner 선택이 필요합니다. contexttrail analyze . --runner codex 또는 claude를 사용하세요.",
+                                 "A runner must be chosen: use contexttrail analyze . --runner codex or claude."))
             return CLIRunner(name, model=effective.get("model"), timeout=effective.get("timeout", 600))
         def consent(snapshot, plan):
             if is_demo:
@@ -933,21 +1010,26 @@ def main(argv: list[str] | None = None) -> int:
                 print(plan_text(plan), file=sys.stderr)
                 if args.yes or not sys.stdin.isatty():
                     return True
-                return _choose_units(plan)
+                return _choose_units(plan, to_stderr=as_json)
             if not sys.stdin.isatty():
-                raise FlowError(tr("클라우드 전송 동의가 필요합니다. 범위를 확인한 후 --yes를 사용하세요.",
-                                   "Consent to sending to the cloud is needed; check the scope, then use --yes."))
+                raise Refused(tr("클라우드 전송 동의가 필요합니다. 범위를 확인한 후 --yes를 사용하세요.",
+                                 "Consent to sending to the cloud is needed; check the scope, then use --yes."))
+            # With --json stdout holds the result only; the questions go where the progress goes.
+            out = sys.stderr if as_json else sys.stdout
             print(tr(f"범위: {safe_text(scope.folder)}\n연결 worktree: {len(scope.roots)} | 선택 원문: {len(snapshot.records)}개",
-                     f"Scope: {safe_text(scope.folder)}\nLinked worktrees: {len(scope.roots)} | selected records: {len(snapshot.records)}"))
+                     f"Scope: {safe_text(scope.folder)}\nLinked worktrees: {len(scope.roots)} | selected records: {len(snapshot.records)}"),
+                  file=out)
             print(tr(f"Codex·Claude 기록과 Git 근거 중 분석 입력이 {name} CLI의 클라우드 모델에 전송될 수 있습니다.",
-                     f"Analysis input from the Codex/Claude transcripts and Git evidence may be sent to the cloud model of the {name} CLI."))
-            print(plan_text(plan))
-            accepted = input(tr("이 scope와 Runner의 분석에 동의합니까? [y/N]: ",
-                                "Consent to analyzing this scope with this runner? [y/N]: ")).strip().lower() == "y"
+                     f"Analysis input from the Codex/Claude transcripts and Git evidence may be sent to the cloud model of the {name} CLI."),
+                  file=out)
+            print(plan_text(plan), file=out, flush=True)
+            accepted = _ask(tr("이 scope와 Runner의 분석에 동의합니까? [y/N]: ",
+                               "Consent to analyzing this scope with this runner? [y/N]: "),
+                            to_stderr=as_json).strip().lower() == "y"
             if not accepted:
                 return False
             store.set_meta(key, True)
-            return _choose_units(plan)
+            return _choose_units(plan, to_stderr=as_json)
         def authorize_ui(ask):
             if is_demo:
                 return True
@@ -1002,17 +1084,21 @@ def main(argv: list[str] | None = None) -> int:
                 engine.scan_progress = shown
             snapshot = engine.scan()
             try:
-                plan, plan_error = engine.preview_plan(snapshot), None
+                plan, plan_error, plan_kind = engine.preview_plan(snapshot), None, None
             except FlowError as exc:
-                plan, plan_error = None, str(exc)
+                plan, plan_error, plan_kind = None, str(exc), error_kind(exc)
             counts = {provider: sum(r.provider == provider for r in snapshot.records) for provider in ("codex", "claude", "opencode", "git")}
-            print(dumps({"scope": str(scope.folder), "worktrees": [str(p) for p in scope.roots],
+            print(dumps({"schema": schema("scan"), "scope": str(scope.folder), "worktrees": [str(p) for p in scope.roots],
                          "state_dir": str(scope.state_dir), "snapshot_id": snapshot.id,
                          "records": counts, "steps": classify_steps(snapshot.records),
                          "limitations": snapshot.limitations, "runner_calls": 0,
                          "runner": (store.get_meta("options", {}) or {}).get("runner"),
                          "plan": plan, "plan_text": plan_text(plan) if plan else plan_error,
                          "plan_choices": plan_choices_text(plan) if plan else None,
+                         "plan_error": {"kind": plan_kind, "message": plan_error} if plan_error else None,
+                         "sources": _source_report(args, saved_options, snapshot),
+                         "source_selection": {"sources": list(config.sources or SOURCES),
+                                              "origin": _origin(args, saved_options, "sources")},
                          "codex_selection": {
                              "files_examined": sum("selection" in f for f in snapshot.files),
                              "files_with_selected_records": sum(f.get("selection", {}).get("normalized_records", 0) > 0 for f in snapshot.files),
@@ -1022,7 +1108,8 @@ def main(argv: list[str] | None = None) -> int:
                              "transcript_files_reused": sum(bool(f.get("reused")) for f in snapshot.files),
                              "selection_basis": "record cwd / turn_context cwd / explicit tool workdir / verified worktree roots, not calendar folder"
                          }}, pretty=True))
-            return 0
+            # The scan itself ran; the plan could not be made because another analysis holds the project.
+            return EXIT_BUSY if plan_kind == "busy" else EXIT_OK
         if args.command == "serve":
             cancel = threading.Event()
             viewer = LocalViewer(store, refresh=lambda: analyze_callback(cancel, lambda _: None), port=args.port, scope=scope,
@@ -1045,7 +1132,8 @@ def main(argv: list[str] | None = None) -> int:
                 if viewer.refresh_thread:
                     viewer.refresh_thread.join(timeout=5)
             return 0
-        use_tui = not args.no_tui and sys.stdout.isatty() and sys.stdin.isatty() and os.environ.get("TERM", "dumb") != "dumb"
+        use_tui = (not args.no_tui and not as_json and sys.stdout.isatty() and sys.stdin.isatty()
+                   and os.environ.get("TERM", "dumb") != "dumb")
         if use_tui:
             TerminalApp(store, analyze_callback, refresh_ready=browser_ready, title=scope.folder.name,
                         initial_analyze=args.command == "analyze",
@@ -1054,6 +1142,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "analyze":
             result = engine.analyze(factory, consent=consent, update=lambda s: print(s, file=sys.stderr))
+            if as_json:
+                print(dumps(_analyze_result(result), pretty=True))
+                return run_exit(result)
             if args.brief:
                 _brief(result)
             else:
@@ -1061,12 +1152,67 @@ def main(argv: list[str] | None = None) -> int:
             if result.get("stop_reason") and not args.brief:
                 print(safe_text(result["stop_reason"]), file=sys.stderr)
             # call_limit is a planned stop (like partial), not a failure: the automatic hook does not count it.
-            return {"failed": 1, "partial": 2, "call_limit": 2, "cancelled": 130}.get(result["status"], 0)
+            # A refusal (no consent, no runner) is 77, whatever the run's status says (contract.run_exit).
+            return run_exit(result)
         plain(store, ascii_only=args.ascii)
         return 0
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
         print(tr("\n중단했습니다. 저장된 결과는 유지됩니다.", "\nInterrupted. The saved result is kept."), file=sys.stderr)
-        return 130
+        _not_started(args, exc)
+        return EXIT_INTERRUPTED
     except (FlowError, OSError) as exc:
         print(tr("오류:", "Error:"), safe_text(str(exc)), file=sys.stderr)
-        return 1
+        _not_started(args, exc)
+        return exit_for(exc)
+    except sqlite3.OperationalError as exc:
+        if error_kind(exc) != "busy":
+            raise
+        # Another process holds the state database's write lock past the wait (a long write).
+        print(tr("오류: 다른 실행이 상태 데이터베이스를 쓰고 있습니다. 잠시 뒤 다시 하세요.",
+                 "Error: another run is writing the state database; try again shortly."), file=sys.stderr)
+        _not_started(args, exc)
+        return EXIT_BUSY
+
+
+def _analyze_result(result: dict) -> dict:
+    """`analyze --json`: the run's result as one object (docs/HOST.md)."""
+    return {"schema": schema("analyze"), "status": result["status"], "exit_code": run_exit(result),
+            "run_id": result.get("run_id"),
+            "completed_units": result.get("completed_units", 0), "skipped_units": result.get("skipped_units", 0),
+            "reused_extractions": result.get("reused_extractions", 0), "runner_calls": result.get("runner_calls", 0),
+            "pending_records": result.get("pending_records"),
+            "graph_version": result.get("graph_version", (result.get("graph") or {}).get("version")),
+            "stop_reason": result.get("stop_reason"), "error_kind": result.get("error_kind"),
+            "error": result.get("error"), "limitations_count": len(result.get("limitations") or [])}
+
+
+def _not_started(args, exc: BaseException) -> None:
+    """`analyze --json` that stopped before or outside a run (busy, a bad option, an interrupt) still prints one
+    object on stdout, so a host always has a result to read."""
+    if getattr(args, "command", None) != "analyze" or not getattr(args, "json", False):
+        return
+    kind = error_kind(exc)
+    print(dumps({"schema": schema("analyze"), "status": "cancelled" if kind == "cancelled" else "not_started",
+                 "exit_code": EXIT_INTERRUPTED if kind == "cancelled" else exit_for(exc),
+                 "run_id": None, "completed_units": 0, "skipped_units": 0, "reused_extractions": 0, "runner_calls": 0,
+                 "pending_records": None, "graph_version": None, "stop_reason": None, "error_kind": kind,
+                 "error": str(exc) if isinstance(exc, (FlowError, OSError, sqlite3.Error)) else type(exc).__name__,
+                 "limitations_count": 0}, pretty=True))
+
+
+HOME_ENVIRONMENT = {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR", "opencode": "XDG_DATA_HOME"}
+
+
+def _origin(args, saved: dict, key: str) -> str:
+    """Where a setting came from: this command's flag, the project's saved options, the environment, the default."""
+    if getattr(args, key, None) is not None:
+        return "flag"
+    if saved.get(key):
+        return "saved"
+    variable = HOME_ENVIRONMENT.get(key.removesuffix("_home")) if key.endswith("_home") else None
+    return "environment" if variable and os.environ.get(variable) else "default"
+
+
+def _source_report(args, saved: dict, snapshot) -> list[dict]:
+    """scan's `sources`: per tool, its home and where that came from, with what the scan found there."""
+    return [{**entry, "origin": _origin(args, saved, entry["provider"] + "_home")} for entry in snapshot.sources]

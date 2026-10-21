@@ -513,6 +513,60 @@ def _md(text: Any) -> str:
     return re.sub(r"([\\`*_{}\[\]()#+.!|>~-])", r"\\\1", html.escape(safe_text(text), quote=False))
 
 
+def graph_changes(old: dict, new: dict) -> dict[str, Any]:
+    """What changed from one graph version to a later one, by ID: events, relations and open items added, updated,
+    invalidated (an event whose status became `withdrawn`, a relation made inactive; an open item resolved) or gone,
+    each item whole as the later version holds it. For `export --since-version`."""
+    def compare(before: list[dict], after: list[dict], invalidated) -> dict[str, list]:
+        earlier = {item["id"]: item for item in before}
+        result: dict[str, list] = {"added": [], "updated": [], "invalidated": [], "removed": []}
+        for item in after:
+            previous = earlier.pop(item["id"], None)
+            if previous is None:
+                result["added"].append(item)
+            elif previous != item:
+                result["invalidated" if invalidated(previous, item) else "updated"].append(item)
+        result["removed"] = list(earlier)
+        return result
+    events = compare(old.get("events", []), new.get("events", []),
+                     lambda a, b: b.get("status") == "withdrawn" and a.get("status") != "withdrawn")
+    edges = compare(old.get("edges", []), new.get("edges", []), lambda a, b: a.get("active") and not b.get("active"))
+    items = compare(old.get("open_items", []), new.get("open_items", []),
+                    lambda a, b: a.get("status") != b.get("status") and b.get("status") == "resolved")
+    changes: dict[str, Any] = {}
+    for name, found in (("events", events), ("edges", edges), ("open_items", items)):
+        for kind, values in found.items():
+            changes[f"{name}_{'resolved' if name == 'open_items' and kind == 'invalidated' else kind}"] = values
+    return changes
+
+
+def export_delta(old: dict, new: dict, evidence_for) -> str:
+    """`export --since-version N --format json`: the changes from version N to this one with the evidence they cite
+    (`evidence_for(ids)`), keyed on the `graph.version` a previous export carried."""
+    changes = graph_changes(old, new)
+    cited = [i for key, values in changes.items() if not key.endswith("_removed") for item in values
+             for i in _cited(item)]
+    return dumps({"format": "contexttrail.export-delta.v1", "sensitive": True, "scope_id": new.get("scope_id"),
+                  "from_version": old.get("version", 0), "to_version": new.get("version", 0),
+                  "schema_version": new.get("schema_version"), "analysis_status": new.get("analysis_status"),
+                  "analyzed_at": new.get("analyzed_at"), **changes,
+                  "evidence": evidence_for(list(dict.fromkeys(cited)))}, pretty=True) + "\n"
+
+
+def _cited(value: Any) -> list[str]:
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "evidence_ids" and isinstance(item, list):
+                found.extend(i for i in item if isinstance(i, str))
+            else:
+                found.extend(_cited(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_cited(item))
+    return found
+
+
 def export_text(graph: dict, evidence: dict[str, dict], fmt: str) -> str:
     if fmt == "mmd":
         return mermaid(graph)

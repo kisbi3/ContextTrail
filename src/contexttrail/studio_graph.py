@@ -37,7 +37,8 @@ from contexttrail.routing import RunnerPool, TaskValidationError
 from contexttrail.light import STORY_SCHEMA
 from contexttrail.schema import EvidenceValidator
 from contexttrail.store import Store
-from contexttrail.util import (CallLimitReached, Cancelled, FlowError, InputBudgetExceeded, ident, now,
+from contexttrail.contract import error_kind
+from contexttrail.util import (CallLimitReached, Cancelled, Declined, FlowError, InputBudgetExceeded, ident, now,
                                private_dir)
 
 
@@ -343,8 +344,8 @@ def plan_work_units(state: StudioState) -> StudioState:
                 "output_language": language}
         answer = session.consent(snapshot, plan) if units and session.consent else True
         if not answer:
-            raise Cancelled(tr("외부 전송에 동의하지 않아 분석하지 않았습니다.",
-                            "Not analyzed: consent to send data externally was not given."))
+            raise Declined(tr("외부 전송에 동의하지 않아 분석하지 않았습니다.",
+                           "Not analyzed: consent to send data externally was not given."))
         if units:
             # The run will send: a language detected from the person's messages is the project's from now on.
             language = engine.resolve_language(snapshot, save=True)
@@ -715,7 +716,7 @@ def finish_run(state: StudioState) -> StudioState:
                        "snapshot_id": state["snapshot_id"], "limitations": state["limitations"],
                        "pending_records": pending_count, "graph_version": graph["version"]}
             if status == "failed":
-                details["error"] = session.skip_error
+                details["error"], details["error_kind"] = session.skip_error, "units_failed"
             if stopped_for_calls:
                 details["stop_reason"] = tr(
                     f"남은 AI 호출 {budget.remaining()}개(상한 {budget.maximum})로는 다음 작업 단위를 끝낼 수 없어 시작하지 않았습니다. "
@@ -757,7 +758,7 @@ def _record_failure(store: Store, run_id: str, exc: BaseException, *,
                                                              f"Internal error: {type(exc).__name__}")
     details = {"run_id": run_id, "runner_calls": runner_calls,
                "completed_units": completed, "reused_extractions": reused,
-               "error": message, "limitations": limitations or [],
+               "error": message, "error_kind": error_kind(exc), "limitations": limitations or [],
                "graph_version": store.graph()["version"]}
     store.finish_run(run_id, status, details)
     return status, details

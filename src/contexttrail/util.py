@@ -35,6 +35,22 @@ class CallLimitReached(FlowError):
     """The run's cap on model calls was reached; a planned stop, not a failure."""
 
 
+class UsageError(FlowError):
+    """A command line or option value the program cannot act on (exit 64, as an argparse error)."""
+
+
+class Busy(FlowError):
+    """Another run holds the project (its analysis lock, or the state database's write lock) (exit 75)."""
+
+
+class Refused(FlowError):
+    """Not done for want of what only the person gives: consent, a runner choice, notes turned on (exit 77)."""
+
+
+class Declined(Cancelled, Refused):
+    """The person said no at the consent prompt: recorded as a cancelled run, reported as a refusal."""
+
+
 def input_tokens(usage: dict | None) -> int | None:
     """All input tokens one model call read, or None when the call reported none.
 
