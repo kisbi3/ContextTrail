@@ -137,8 +137,11 @@ def test_masking_work_is_bounded_on_adversarial_text():
         started = time.perf_counter()
         mask_secrets(text)
         assert time.perf_counter() - started < 0.5, unit
-    # A value longer than SECRET_VALUE_MAX is no value it masks; a key block with no END keeps to its first 100 lines.
-    assert mask_secrets("API_KEY=" + "a" * 600) == "API_KEY=" + "a" * 600
+    # A value of any length is masked whole; a key block with no END keeps to its first 100 lines.
+    assert mask_secrets("API_KEY=" + "a" * 600) == "API_KEY=" + SECRET_HIDDEN
+    # A quoted value cut before its closing quote, and a value on the line after its name, are values too.
+    assert mask_secrets('TOKEN="abcdefghijklmn') == 'TOKEN="' + SECRET_HIDDEN
+    assert mask_secrets("password:\n  hunter2hunter2") == "password:\n  " + SECRET_HIDDEN
     block = "\n".join([PEM[0], *["QUJD" * 16] * 150])
     assert mask_secrets(block).splitlines().count(SECRET_HIDDEN) == 101
 

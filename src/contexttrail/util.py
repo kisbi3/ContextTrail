@@ -135,11 +135,10 @@ def private_dir(path: Path) -> None:
 # promise that nothing secret is left (`docs/SECURITY.md`): a format it does not know passes as recorded. Masking
 # keeps every line break (a private key block becomes one masked line per line), so citations keep their line
 # numbers; it is idempotent; and it never cuts a backslash escape or a quote of a JSON string, so a tool call's
-# arguments stay readable JSON. Every pattern is bounded (a value at most `SECRET_VALUE_MAX` characters, a private
+# arguments stay readable JSON. Every pattern is bounded (values are matched by possessive runs, which never backtrack; a private
 # key block at most `PRIVATE_KEY_MAX` characters to its END line or `PRIVATE_KEY_LINES` lines without one), so the
 # work stays linear in the text.
 SECRET_HIDDEN = "[secret hidden]"
-SECRET_VALUE_MAX = 512
 PRIVATE_KEY_MAX, PRIVATE_KEY_LINES = 16_384, 100
 
 
@@ -165,7 +164,7 @@ _PRIVATE_KEY = re.compile(
     rf"(?:(?!-----BEGIN )[^\"'`\\]|\\[nrt]){{0,{PRIVATE_KEY_MAX}}}?-----END [A-Z ]{{0,40}}PRIVATE KEY-----"
     r"|(?:(?:\r?\n|(?:\\r)?\\n)(?:[A-Za-z0-9+/=]{1,256}+(?=\r?\n|\\[rn]|[\"'`]|\Z)"
     rf"|[A-Za-z-]{{1,64}}+: [^\n\"'`\\]{{0,256}}+)){{0,{PRIVATE_KEY_LINES}}})")
-_LINE_TEXT = re.compile(r"[^\n\r\x0b\x0c\x1c\x1d\x1e\x85  ]+")  # what `str.splitlines` keeps of a line
+_LINE_TEXT = re.compile(r"[^\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]+")  # what `str.splitlines` keeps of a line
 _BEARER = re.compile("(" + _token_start("(?i:bearer)") + r"[ \t]+)[A-Za-z0-9._~+/-]{20,}=*")
 # NAME_KEY=value, "api_token": "value", PASSWORD: value — the name stays, the value goes. Found from the name, so a
 # separator inside a URL or another assignment (`https://…?access_token=…`, `user:pw@…?password=…`) never claims
@@ -176,9 +175,12 @@ _VALUE_END = r"(?=[\s\"'`,;&\\)\]}>]|\Z)"
 _NOT_SECRET = (r"(?![0-9.]+\b)"  # a number
                rf"(?![a-z_]+(?:\.[a-z_][a-z0-9_]*)+{_VALUE_END})")  # a dotted name, `self._key`
 _ASSIGNED_VALUE = re.compile(
-    r"(?P<head>(?i:api[_-]?key|secret|token|passw(?:or)?d)[A-Za-z0-9_.-]{0,40}+(?:\\?[\"'])?[ \t]*[:=][ \t]*)(?:"
-    rf"(?P<quote>\\?[\"']){_NOT_SECRET}[^\s\"'`\\]{{8,{SECRET_VALUE_MAX}}}+(?=(?P=quote))"
-    rf"|{_NOT_SECRET}[^\s\"'`,;&\\()\[\]{{}}<>]{{8,{SECRET_VALUE_MAX}}}+{_VALUE_END})")
+    # The value may sit on the next line (`password:` then an indented value); a quoted one ends at its quote, or
+    # where the text does (a cut tool output); a value of any length is masked whole (possessive runs: linear).
+    r"(?P<head>(?i:api[_-]?key|secret|token|passw(?:or)?d)[A-Za-z0-9_.-]{0,40}+(?:\\?[\"'])?[ \t]*[:=][ \t]*"
+    r"(?:\r?\n[ \t]*)?)(?:"
+    rf"(?P<quote>\\?[\"']){_NOT_SECRET}[^\s\"'`\\]{{8,}}+(?:(?=(?P=quote))|{_VALUE_END})"
+    rf"|{_NOT_SECRET}[^\s\"'`,;&\\()\[\]{{}}<>]{{8,}}+{_VALUE_END})")
 # A text holding none of these holds nothing the patterns above mask (a quick test before the patterns).
 _MAYBE_SECRET = re.compile(r"(?i)sk-|gh[pousr]_|github_pat_|akia|xox[abposr]-|aiza|bearer|-----begin "
                            r"|api[_-]?key|secret|token|passw")

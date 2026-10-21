@@ -36,7 +36,7 @@ from .runners.cli_runner import DEFAULT_MODELS, EFFORTS
 from .schema import STATUSES, folded_view
 from .store import ReadOnlyStore, Store
 from .ui import GraphApp, TerminalApp, legend, token_usage_label
-from .util import FlowError, dumps, safe_text, within
+from .util import FlowError, dumps, mask_data, mask_evidence, safe_text, within
 from .webview import LocalViewer
 
 
@@ -295,7 +295,9 @@ def _graph(args) -> int:
             raise FlowError(tr("eval 결과 JSON을 읽을 수 없습니다.", "Cannot read the eval result JSON.")) from exc
         if not isinstance(result, dict) or not isinstance(result.get("graph"), dict) or not isinstance(result.get("evidence"), dict) or not isinstance(report, dict) or report.get("format") not in ("contexttrail-eval-report-v1", "projectflow-eval-report-v1"):
             raise FlowError(tr("지원하지 않는 eval 결과 형식입니다.", "Unsupported eval result format."))
-        graph, evidence = result["graph"], result["evidence"]
+        # An eval result written by an earlier version holds what it read unmasked; it is read as the store reads.
+        graph = mask_data(result["graph"])
+        evidence = {key: mask_evidence(item) if isinstance(item, dict) else item for key, item in result["evidence"].items()}
         title = report.get("name") or folder.name
         lookup = evidence.get
     else:
