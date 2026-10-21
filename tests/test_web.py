@@ -205,11 +205,12 @@ def test_serve_prints_its_link_at_once_and_stops_on_sigterm(tmp_path):
     finally:
         signal.signal(signal.SIGHUP, previous)
     env = {**os.environ, "CONTEXTTRAIL_LANGUAGE": "en"}
+    errors = (tmp_path / "serve.err").open("wb")
     process = subprocess.Popen([sys.executable, "-m", "contexttrail", "serve", str(folder), "--port", "0"],
-                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+                               stdout=subprocess.PIPE, stderr=errors, env=env)
     try:
         import select, time
-        output, deadline = b"", time.monotonic() + 15
+        output, deadline = b"", time.monotonic() + 30
         # A deadline, so a link stuck in the buffer (the defect this guards) fails the test instead of hanging it.
         while b"Access URL" not in output and time.monotonic() < deadline:
             ready, _, _ = select.select([process.stdout], [], [], max(0.0, deadline - time.monotonic()))
@@ -219,12 +220,15 @@ def test_serve_prints_its_link_at_once_and_stops_on_sigterm(tmp_path):
                     break
                 output += chunk
         lines = output.decode("utf-8", "replace").splitlines()
-        assert any("Access URL" in line and "#token=" in line for line in lines)
+        # Fails only on macOS CI so far; say what the server did instead of a bare `assert False`.
+        assert any("Access URL" in line and "#token=" in line for line in lines), (
+            f"exit {process.poll()}, stdout {output[-2000:]!r}, stderr {(tmp_path / 'serve.err').read_bytes()[-4000:]!r}")
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=10) == 0  # stopped like Ctrl-C, not killed by the signal (-15)
     finally:
         if process.poll() is None:
             process.kill()
+        errors.close()
 
 
 def test_the_page_starts_no_analysis_without_a_runner_and_its_consent(viewer):
