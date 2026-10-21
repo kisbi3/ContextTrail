@@ -288,7 +288,7 @@ contexttrail analyze /path/to/project --runner codex
 contexttrail analyze /path/to/project --runner claude
 ```
 
-Replace `/path/to/project` with the actual path on your server. The first analysis prompts for transmission consent. **Conversation turns, tool outputs, and code fragments may be sent to the model service of the chosen CLI.** This is not an automatic secret redactor — verify your project's transmission policy before proceeding with sensitive material.
+Replace `/path/to/project` with the actual path on your server. The first analysis prompts for transmission consent. **Conversation turns, tool outputs, and code fragments may be sent to the model service of the chosen CLI.** Values in known credential formats (`sk-…`, `ghp_…`, `AKIA…`, private key blocks, `NAME_KEY=value` and the like) are masked as `[secret hidden]` when transcripts are read, so they are not stored, sent, or exported; this is not a guarantee — formats it does not know pass as written, so verify your project's transmission policy before proceeding with sensitive material.
 
 The chosen runner, settings, and consent are stored in the per-scope local DB. Analysis proceeds oldest-first through **work units**. Each run first shows a summary such as "1,480 units pending · 15 this run (≤30 AI calls) · ~2.39M input tokens · ~120 min (estimated)" along with token/time projections for 5, 15, and 30 units, then prompts for the number of units to process (Enter = shown count, `n` = cancel, `--yes` = no prompt). Use `--units N` to specify in advance. Once units are set, the per-unit AI call cap is 6; `--max-calls` overrides that. Both values apply only to the current run and are not saved. Estimates are calibrated from actual input tokens and timing if ≥3 units with usage records exist. Use `contexttrail scan` to preview the plan without sending anything (`plan_text`, `plan_choices`).
 
@@ -530,7 +530,7 @@ All formats are generated from the same stored graph — no AI calls. Markdown i
 
 **Storage locations:** Git repos use `<git-common-dir>/contexttrail/<scope-key>/`; plain directories use `<folder>/.contexttrail/`. The same repo root/worktree set shares state; different specified sub-paths get separate scopes. Full source text is not permanently copied — only metadata, digests, cited excerpts, and stage results are stored.
 
-Permissions: state directory `0700`, DB and new exports `0600`. This does not imply disk encryption or automatic secret redaction. SQLite locking on network filesystems (NFS, etc.) is not validated.
+Permissions: state directory `0700`, DB and new exports `0600`. This does not imply disk encryption. Known credential formats are masked when read (see above), which is not a guarantee that nothing secret is stored. SQLite locking on network filesystems (NFS, etc.) is not validated.
 
 ---
 

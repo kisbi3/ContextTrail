@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -128,28 +129,71 @@ def private_dir(path: Path) -> None:
     os.chmod(path, 0o700)
 
 
-# Values shaped like credentials, hidden wherever a screen or an agent reads a quote or a summary: the stored evidence
-# stays byte-exact (its quote hash and citation lines depend on it). Not a promise that nothing secret is left
-# (`docs/SECURITY.md`): a format it does not know is shown as recorded.
+# Values shaped like credentials, masked where transcripts and Git are read (`mask_record`, through
+# `model.segment_record`), so they are not stored, sent to a model or exported; screens and exports mask them again
+# for states stored by earlier versions. Not a promise that nothing secret is left (`docs/SECURITY.md`): a format it
+# does not know passes as recorded. Masking keeps every line break (a private key block becomes one masked line per
+# line), so citations keep their line numbers; it is idempotent; and it never cuts a backslash escape or a quote of a
+# JSON string, so a tool call's arguments stay readable JSON.
 SECRET_HIDDEN = "[secret hidden]"
+# Each starts with its literal (a word boundary is checked after it), which lets `re` skip ahead fast.
 _SECRET_PATTERNS = (
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.DOTALL),
-    re.compile(r"\bsk-(?:proj-|ant-|svcacct-)?[A-Za-z0-9_-]{20,}"),
-    re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
-    re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
+    re.compile(r"sk-(?<!\wsk-)(?:proj-|ant-|svcacct-)?[A-Za-z0-9_-]{20,}"),
+    re.compile(r"gh[pousr]_(?<!\wgh[pousr]_)[A-Za-z0-9]{30,}"),
+    re.compile(r"github_pat_(?<!\wgithub_pat_)[A-Za-z0-9_]{30,}"),
+    re.compile(r"AKIA(?<!\wAKIA)[0-9A-Z]{16}\b"),
+    re.compile(r"xox[abposr]-(?<!\wxox[abposr]-)[A-Za-z0-9-]{10,}"),
+    re.compile(r"AIza(?<!\wAIza)[0-9A-Za-z_-]{35}\b"),
 )
-# NAME_KEY=value, "api_token": "value", PASSWORD: value — the name stays, the value goes.
-_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)(\b[A-Z0-9_.-]*(?:api[_-]?key|secret|token|passw(?:or)?d)[A-Z0-9_.-]*[\"']?\s*[:=]\s*[\"']?)"
-    r"(?![0-9.]+\b)([^\s\"'`,;]{8,})")  # a number (max_tokens=128000) is no secret
+# A private key block: to its END line, never past a quote (a key in a JSON string has `\n` escapes, and code that
+# names the header quotes it); one cut short keeps to its base64 and header lines.
+_PRIVATE_KEY = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?:[^\"'`\\]|\\[nrt])*?-----END [A-Z ]*PRIVATE KEY-----"
+                          r"|(?:(?:\r?\n|(?:\\r)?\\n)(?:[A-Za-z0-9+/=]+(?=\r?\n|\\[rn]|[\"'`]|\Z)|[A-Za-z-]+: [^\n\"'`\\]*))*)")
+_LINE_TEXT = re.compile(r"[^\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]+")  # what `str.splitlines` keeps of a line
+_BEARER = re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/-]{20,}=*")
+# NAME_KEY=value, "api_token": "value", PASSWORD: value — the name stays, the value goes. A value is one word ended by
+# a space, a quote, a backslash or punctuation, so `token = os.environ["X"]`, `get_token()` or `api_key=self._key`
+# is no secret. Found by its `=` or `:` first and kept only when the name before it says secret (`_SECRET_NAME`):
+# one pass, not a search from every word.
+_ASSIGNED_VALUE = re.compile(r"[:=]\s*(?:\\?[\"'])?(?![0-9.]+\b)"  # a number (max_tokens=128000) is no secret
+                             r"(?![a-z_]+(?:\.[a-z_][a-z0-9_]*)+(?=[\s\"'`,;&\\)\]}>]|\Z))"  # nor `self._key`
+                             r"[^\s\"'`,;&\\()\[\]{}<>]{8,}(?=[\s\"'`,;&\\)\]}>]|\Z)")
+_SECRET_NAME = re.compile(r"(?i)(?:api[_-]?key|secret|token|passw(?:or)?d)[A-Z0-9_.-]*(?:\\?[\"'])?\s*\Z")
+_VALUE_START = re.compile(r"[:=]\s*(?:\\?[\"'])?")
+
+
+def _hide_lines(match: re.Match) -> str:
+    return _LINE_TEXT.sub(lambda line: SECRET_HIDDEN if line.group().strip() else line.group(), match.group())
 
 
 def mask_secrets(text: str) -> str:
-    """The text with credential-shaped values replaced by `SECRET_HIDDEN` (display only)."""
+    """The text with credential-shaped values replaced by `SECRET_HIDDEN`, line for line."""
     if not text:
         return text
+    if "-----BEGIN " in text:
+        text = _PRIVATE_KEY.sub(_hide_lines, text)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(SECRET_HIDDEN, text)
-    return _SECRET_ASSIGNMENT.sub(lambda m: m.group(1) + (m.group(2) if m.group(2) == SECRET_HIDDEN else SECRET_HIDDEN), text)
+    text = _BEARER.sub(lambda m: m.group(1) + SECRET_HIDDEN, text)
+    def value(m: re.Match) -> str:
+        if not _SECRET_NAME.search(text, max(0, m.start() - 80), m.start()):
+            return m.group()
+        return _VALUE_START.match(m.group()).group() + SECRET_HIDDEN
+    return _ASSIGNED_VALUE.sub(value, text)
+
+
+def mask_record(record: Any) -> Any:
+    """A `SourceRecord` with its content masked (`mask_secrets`); the same object when nothing matched."""
+    content = mask_secrets(record.content)
+    return record if content == record.content else dataclasses.replace(record, content=content)
+
+
+def mask_data(value: Any) -> Any:
+    """A copy of JSON-shaped data with every string masked (keys stay); for an export of a stored graph."""
+    if isinstance(value, str):
+        return mask_secrets(value)
+    if isinstance(value, dict):
+        return {key: mask_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [mask_data(item) for item in value]
+    return value

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from .i18n import Labels, tr
-from .util import FlowError, cell_slice, dumps, ellipsis, mask_secrets, merge_focus, safe_text
+from .util import FlowError, cell_slice, dumps, ellipsis, mask_data, mask_secrets, merge_focus, safe_text
 
 # Screen labels follow the screen language at lookup time (`i18n.Labels`), so a module that
 # imports them keeps working whichever language the process chooses later.
@@ -598,7 +598,20 @@ def _md(text: Any) -> str:
     return re.sub(r"([\\`*_{}\[\]()#+.!|>~-])", r"\\\1", html.escape(safe_text(text), quote=False))
 
 
+def masked_evidence(item: dict) -> dict:
+    """An evidence item as an export gives it: its text masked (`util.mask_secrets`) for one stored before records
+    were masked at reading, marked `masked: true` when its quote changed. `quote_hash` and `focus` stay those of
+    the stored quote."""
+    shown = mask_data(item)
+    if shown.get("quote") != item.get("quote"):
+        shown["masked"] = True
+    return shown
+
+
 def export_text(graph: dict, evidence: dict[str, dict], fmt: str) -> str:
+    # Records are masked when read; a graph stored before that may still hold a credential in its text.
+    stored, graph = evidence, mask_data(graph)
+    evidence = {evidence_id: masked_evidence(item) for evidence_id, item in evidence.items()}
     if fmt == "mmd":
         return mermaid(graph)
     if fmt == "json":
@@ -619,7 +632,7 @@ def export_text(graph: dict, evidence: dict[str, dict], fmt: str) -> str:
                      f"Status: {_md(statuses[event['id']])} · basis: {_md(event['basis'])}"),
                   f"ID: `{event['id']}`", ""]
         for evidence_id in event["evidence_ids"]:
-            item = evidence.get(evidence_id)
+            item = stored.get(evidence_id)  # the excerpt is cut by the stored quote's offsets, then masked
             if not item:
                 continue
             lines += [tr(f"근거 `{evidence_id}` · `{item['source_id']}` · 줄 {item['start_line']}–{item['end_line']}",
@@ -628,7 +641,7 @@ def export_text(graph: dict, evidence: dict[str, dict], fmt: str) -> str:
             if excerpt:
                 lines += [tr(f"원문 줄 {len(item['quote'])}자 중 인용 부분 발췌 · 전체는 근거 색인 참조",
                              f"Cited parts of a {len(item['quote'])}-character source line · see the evidence index for the whole"), ""]
-            quote = safe_text(excerpt or item["quote"])
+            quote = safe_text(mask_secrets(excerpt or item["quote"]))
             fence = "~" * max(4, max((len(m) for m in re.findall(r"~+", quote)), default=0) + 1)
             lines += [fence + "text", quote, fence, ""]
     if graph["edges"]:

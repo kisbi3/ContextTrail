@@ -28,7 +28,8 @@ from .schema import (EDIT_TOOL_NAMES, EvidenceValidator, docs_only, draft_delta,
 from .sources import collect_logs
 from .sources.local import ScanCache, scan_cache_key
 from .store import Store, in_journal
-from .util import BrokenOutput, Cancelled, FlowError, InputBudgetExceeded, digest, dumps, ident, input_tokens
+from .util import (BrokenOutput, Cancelled, FlowError, InputBudgetExceeded, digest, dumps, ident, input_tokens,
+                   mask_data, mask_secrets)
 
 
 @dataclass
@@ -735,8 +736,10 @@ def _shown(record: SourceRecord, harness: "Harness", *, read: bool = False, cont
 
 
 def model_context(context: dict) -> dict:
-    """The context the model receives: the selection audit stays with us (ledger, preview, digest)."""
-    return {key: value for key, value in context.items() if key != "context_selection"}
+    """The context the model receives: the selection audit stays with us (ledger, preview, digest). What a graph
+    stored before records were masked at reading may still hold (titles, summaries, quotes) is masked here."""
+    return {key: mask_data(value) if key.startswith("existing_") else value
+            for key, value in context.items() if key != "context_selection"}
 
 
 def extract_request_data(unit: dict, snapshot_id: str, assigned: list[SourceRecord], harness: "Harness",
@@ -1388,8 +1391,9 @@ def _rehydrate(pool: dict[str, SourceRecord], provided: dict[str, list[tuple[int
         for item in items:
             lines[item["start_line"] - 1:item["end_line"]] = item["quote"].splitlines()
         source = items[0]["source"]
+        # A quote stored before records were masked at reading is masked like one (line for line); the hash stays.
         pool[source_id] = SourceRecord(source_id, source["provider"], source.get("session_id"),
-            source["role"], "\n".join(lines), {**source["locator"], "preserved_only": True},
+            source["role"], mask_secrets("\n".join(lines)), {**source["locator"], "preserved_only": True},
             native_record_id=source.get("native_record_id"), parent_record_id=source.get("parent_record_id"),
             recorded_at=source.get("recorded_at"), cwd=source.get("cwd"), worktree_id=source.get("worktree_id"),
             tool_call_id=source.get("tool_call_id"), derivation=source.get("derivation", "original"),

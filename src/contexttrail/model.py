@@ -5,7 +5,7 @@ import re
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from .util import digest, ident
+from .util import digest, ident, mask_record
 
 
 @dataclass
@@ -160,7 +160,12 @@ def is_queued_message(record: SourceRecord) -> bool:
 
 
 def segment_record(record: SourceRecord, max_chars: int = 32_000) -> list[SourceRecord]:
-    """Split a long source into stable, evidence-citable text fragments."""
+    """Split a long source into stable, evidence-citable text fragments.
+
+    Every reader (Codex, Claude Code, opencode, Git) passes its records through here, and credential-shaped values
+    are masked first (`util.mask_record`): a key split across fragments is masked whole, and a scan, the freshness
+    check and a note read the same content and content hash. The locator still points into the original."""
+    record = mask_record(record)
     if len(record.content) <= max_chars:
         return [record]
     pieces: list[tuple[str, int, int]] = []

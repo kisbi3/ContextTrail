@@ -151,7 +151,8 @@ def event_record(graph: dict, event_id: str, evidence: Callable[[str], dict | No
             "status": event["status"], "status_label": labels[event_id], "actor": event.get("actor"),
             "occurred_at": event.get("occurred_at") or event.get("recorded_at"),
             "authoring": event.get("authoring", []), "analysis": event.get("analysis"),
-            "summary": event["summary"], "out_of_order": event_id in graph.get("out_of_order_events", []),
+            "summary": mask_secrets(event["summary"]),  # `--json` too, for a summary an earlier version stored
+            "out_of_order": event_id in graph.get("out_of_order_events", []),
             "links": links, "open_items": open_items, "evidence": quotes}
 
 
